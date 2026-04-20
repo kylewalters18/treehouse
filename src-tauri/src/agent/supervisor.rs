@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use dashmap::DashMap;
 use parking_lot::Mutex;
@@ -12,7 +12,17 @@ use tauri::ipc::Channel;
 use crate::util::errors::{AppError, AppResult};
 use crate::util::ids::{AgentSessionId, WorktreeId};
 
-use super::{AgentBackendKind, AgentEvent, AgentSession, AgentStatus};
+use super::{AgentActivity, AgentBackendKind, AgentEvent, AgentSession, AgentStatus};
+
+/// Newlines are the universal "real output" signal across TUI agents — all of
+/// Claude Code, Codex, Kiro stream new content on new lines, and spinners
+/// never emit them (they rewrite a single line via `\r`). See
+/// `activity_for_worktree` for how the windows compose.
+const WORKING_WINDOW: Duration = Duration::from_secs(2);
+const IDLE_WINDOW: Duration = Duration::from_secs(10);
+/// Spinner or other byte activity seen within this window while newlines are
+/// stalled keeps us in `Idle` rather than escalating to `NeedsAttention`.
+const SPINNER_ACTIVITY_WINDOW: Duration = Duration::from_secs(3);
 
 /// Keep the last ~4 MB of agent output per session. Plan doc says 8 MB, but
 /// we pay JSON-number-array serialization cost on attach so smaller is kinder.
@@ -24,6 +34,10 @@ struct AgentShared {
     ring: VecDeque<u8>,
     channel: Option<Channel<AgentEvent>>,
     status: AgentStatus,
+    /// Last time the reader saw a `\n` byte — treated as "real output".
+    last_newline: Instant,
+    /// Last time the reader saw any byte at all (including spinner rewrites).
+    last_any_output: Instant,
 }
 
 /// Handle kept by the manager; holding it keeps the PTY + child alive.
@@ -65,6 +79,36 @@ impl AgentRegistry {
             .filter(|e| worktree_belongs(e.value().session.worktree_id))
             .map(|e| e.value().session.clone())
             .collect()
+    }
+
+    /// Coarse activity classification for a worktree's agent (if any).
+    ///
+    /// - `Working`: a newline arrived within [`WORKING_WINDOW`] — real output.
+    /// - `Idle`: no newline recently, but *any* bytes within
+    ///   [`SPINNER_ACTIVITY_WINDOW`] (spinner animating, model thinking).
+    /// - `NeedsAttention`: nothing happening; almost certainly waiting on stdin.
+    pub fn activity_for_worktree(&self, worktree_id: WorktreeId) -> AgentActivity {
+        let Some(id_ref) = self.by_worktree.get(&worktree_id) else {
+            return AgentActivity::Inactive;
+        };
+        let id = *id_ref.value();
+        let Some(handle) = self.inner.get(&id) else {
+            return AgentActivity::Inactive;
+        };
+        let sh = handle.shared.lock();
+        if !matches!(sh.status, AgentStatus::Running | AgentStatus::Starting) {
+            return AgentActivity::Inactive;
+        }
+        let since_newline = sh.last_newline.elapsed();
+        let since_any = sh.last_any_output.elapsed();
+
+        if since_newline < WORKING_WINDOW {
+            AgentActivity::Working
+        } else if since_newline < IDLE_WINDOW && since_any < SPINNER_ACTIVITY_WINDOW {
+            AgentActivity::Idle
+        } else {
+            AgentActivity::NeedsAttention
+        }
     }
 
     /// Kill every agent. Called from graceful shutdown.
@@ -156,6 +200,8 @@ pub fn launch(
         ring: VecDeque::with_capacity(RING_MAX_BYTES / 16),
         channel: Some(channel.clone()),
         status: AgentStatus::Running,
+        last_newline: Instant::now(),
+        last_any_output: Instant::now(),
     }));
 
     // Announce "Running" immediately so the UI can swap state.
@@ -175,11 +221,18 @@ pub fn launch(
                 match reader.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
+                        let chunk = &buf[..n];
+                        let saw_newline = chunk.contains(&b'\n');
                         let mut sh = shared_for_reader.lock();
-                        sh.ring.extend(buf[..n].iter().copied());
+                        sh.ring.extend(chunk.iter().copied());
                         let excess = sh.ring.len().saturating_sub(RING_MAX_BYTES);
                         if excess > 0 {
                             sh.ring.drain(..excess);
+                        }
+                        let now = Instant::now();
+                        sh.last_any_output = now;
+                        if saw_newline {
+                            sh.last_newline = now;
                         }
                         if let Some(ch) = sh.channel.as_ref() {
                             // If the current attached channel breaks, detach it;

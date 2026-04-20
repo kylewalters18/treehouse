@@ -59,3 +59,27 @@ pub enum AgentEvent {
     Data { bytes: Vec<u8> },
     Status { status: AgentStatus },
 }
+
+/// Coarse activity classification driven by time-since-last-output. The
+/// sidebar polls `list_agent_activity` every ~1.5s and paints a dot.
+#[derive(Debug, Clone, Copy, Serialize, TS, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub enum AgentActivity {
+    /// No agent session exists for the worktree.
+    Inactive,
+    /// Producing output now.
+    Working,
+    /// Briefly quiet — rendering or thinking.
+    Idle,
+    /// Quiet long enough that the agent is almost certainly awaiting input.
+    NeedsAttention,
+}
+
+#[derive(Debug, Clone, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct WorktreeActivity {
+    pub worktree_id: crate::util::ids::WorktreeId,
+    pub activity: AgentActivity,
+}

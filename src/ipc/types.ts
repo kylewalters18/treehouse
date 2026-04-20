@@ -25,5 +25,7 @@ export type { AgentSession } from "./bindings/AgentSession";
 export type { AgentBackendKind } from "./bindings/AgentBackendKind";
 export type { AgentStatus } from "./bindings/AgentStatus";
 export type { AgentEvent } from "./bindings/AgentEvent";
+export type { AgentActivity } from "./bindings/AgentActivity";
+export type { WorktreeActivity } from "./bindings/WorktreeActivity";
 
 export type { MergeResult } from "./bindings/MergeResult";

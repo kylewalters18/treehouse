@@ -2,9 +2,13 @@ import { useEffect, useRef, useState } from "react";
 import { useWorkspaceStore } from "@/stores/workspace";
 import { useWorktreesStore } from "@/stores/worktrees";
 import { useUiStore } from "@/stores/ui";
-import { mergeWorktree, onWorktreesChanged } from "@/ipc/client";
+import {
+  listAgentActivity,
+  mergeWorktree,
+  onWorktreesChanged,
+} from "@/ipc/client";
 import { toastError, toastInfo, toastSuccess } from "@/stores/toasts";
-import type { Worktree } from "@/ipc/types";
+import type { AgentActivity, Worktree, WorktreeId } from "@/ipc/types";
 import { cn } from "@/lib/cn";
 
 export function WorktreeSidebar() {
@@ -20,6 +24,9 @@ export function WorktreeSidebar() {
 
   const [name, setName] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
+  const [activity, setActivity] = useState<Record<WorktreeId, AgentActivity>>(
+    {},
+  );
 
   useEffect(() => {
     if (!workspace) return;
@@ -31,6 +38,30 @@ export function WorktreeSidebar() {
       unlistenPromise.then((fn) => fn()).catch(() => {});
     };
   }, [workspace, refresh]);
+
+  // Poll agent activity so the dot next to each worktree stays fresh.
+  useEffect(() => {
+    if (!workspace) return;
+    let cancelled = false;
+    async function tick() {
+      if (!workspace) return;
+      try {
+        const list = await listAgentActivity(workspace.id);
+        if (cancelled) return;
+        const map: Record<WorktreeId, AgentActivity> = {};
+        for (const w of list) map[w.worktreeId] = w.activity;
+        setActivity(map);
+      } catch {
+        // Transient; we'll retry on the next tick.
+      }
+    }
+    void tick();
+    const handle = window.setInterval(tick, 1500);
+    return () => {
+      cancelled = true;
+      window.clearInterval(handle);
+    };
+  }, [workspace]);
 
   async function onCreate(e: React.FormEvent) {
     e.preventDefault();
@@ -138,15 +169,21 @@ export function WorktreeSidebar() {
                 )}
                 onClick={() => selectWorktree(w.id)}
               >
-                <div className="min-w-0 flex-1">
-                  <div className="truncate font-mono text-xs text-neutral-200">
-                    {w.branch}
-                  </div>
-                  <div
-                    className="truncate font-mono text-[10px] text-neutral-500"
-                    title={w.path}
-                  >
-                    {shortenPath(w.path)}
+                <div className="flex min-w-0 flex-1 items-start gap-2">
+                  <StatusDot
+                    activity={activity[w.id] ?? "inactive"}
+                    className="mt-1"
+                  />
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate font-mono text-xs text-neutral-200">
+                      {w.branch}
+                    </div>
+                    <div
+                      className="truncate font-mono text-[10px] text-neutral-500"
+                      title={w.path}
+                    >
+                      {shortenPath(w.path)}
+                    </div>
                   </div>
                 </div>
                 <span className="flex items-center gap-1 opacity-0 transition group-hover:opacity-100">
@@ -183,4 +220,51 @@ export function WorktreeSidebar() {
 function shortenPath(p: string): string {
   const parts = p.split("/");
   return parts.slice(-2).join("/");
+}
+
+function StatusDot({
+  activity,
+  className,
+}: {
+  activity: AgentActivity;
+  className?: string;
+}) {
+  const { color, pulse, title } = activityStyle(activity);
+  return (
+    <span
+      title={title}
+      className={cn(
+        "inline-block h-2 w-2 shrink-0 rounded-full",
+        color,
+        pulse && "animate-pulse",
+        className,
+      )}
+    />
+  );
+}
+
+function activityStyle(activity: AgentActivity): {
+  color: string;
+  pulse: boolean;
+  title: string;
+} {
+  switch (activity) {
+    case "working":
+      return { color: "bg-emerald-500", pulse: true, title: "agent: working" };
+    case "idle":
+      return { color: "bg-amber-500", pulse: false, title: "agent: idle" };
+    case "needsAttention":
+      return {
+        color: "bg-orange-500",
+        pulse: true,
+        title: "agent: needs attention",
+      };
+    case "inactive":
+    default:
+      return {
+        color: "bg-neutral-700",
+        pulse: false,
+        title: "no agent",
+      };
+  }
 }

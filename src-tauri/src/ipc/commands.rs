@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use tauri::ipc::Channel;
 use tauri::{AppHandle, Emitter, Manager, State};
 
-use crate::agent::{self, AgentBackendKind, AgentEvent, AgentSession};
+use crate::agent::{self, AgentBackendKind, AgentEvent, AgentSession, WorktreeActivity};
 use crate::diff::{self, DiffSet};
 use crate::fs_api::{self, FileContent};
 use crate::fs_watch;
@@ -163,6 +163,21 @@ pub async fn get_agent_for_worktree(
     state: State<'_, AppState>,
 ) -> AppResult<Option<AgentSession>> {
     Ok(state.agents.get_for_worktree(worktree_id))
+}
+
+#[tauri::command]
+pub async fn list_agent_activity(
+    workspace_id: WorkspaceId,
+    state: State<'_, AppState>,
+) -> AppResult<Vec<WorktreeActivity>> {
+    let wts = worktree::list_for_workspace(workspace_id, &state);
+    Ok(wts
+        .into_iter()
+        .map(|w| WorktreeActivity {
+            worktree_id: w.id,
+            activity: state.agents.activity_for_worktree(w.id),
+        })
+        .collect())
 }
 
 #[tauri::command]

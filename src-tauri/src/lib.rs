@@ -50,6 +50,7 @@ pub fn run() {
             ipc::commands::kill_agent,
             ipc::commands::get_agent_for_worktree,
             ipc::commands::attach_agent,
+            ipc::commands::list_agent_activity,
         ])
         .setup(|_app| {
             tracing::info!("agent-ide started");

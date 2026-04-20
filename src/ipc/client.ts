@@ -14,6 +14,7 @@ import type {
   Workspace,
   WorkspaceId,
   Worktree,
+  WorktreeActivity,
   WorktreeId,
 } from "./types";
 
@@ -171,4 +172,10 @@ export function attachAgent(
   const channel = new Channel<AgentEvent>();
   channel.onmessage = onEvent;
   return invoke<AgentSession>("attach_agent", { agentId, channel });
+}
+
+export function listAgentActivity(
+  workspaceId: WorkspaceId,
+): Promise<WorktreeActivity[]> {
+  return invoke<WorktreeActivity[]>("list_agent_activity", { workspaceId });
 }
