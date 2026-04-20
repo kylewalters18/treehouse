@@ -1,0 +1,22 @@
+node_modules
+dist
+dist-ssr
+*.local
+.DS_Store
+.env
+.env.local
+.vscode/*
+!.vscode/extensions.json
+
+# Rust
+src-tauri/target
+src-tauri/gen
+
+# ts-rs generated bindings: keep the frontend mirror (src/ipc/bindings/) in
+# version control so fresh clones build without a separate generation step;
+# src-tauri/bindings/ is the raw output and stays ignored.
+src-tauri/bindings/
+
+# TS project-reference build artifacts
+*.tsbuildinfo
+dist-tsc-node
