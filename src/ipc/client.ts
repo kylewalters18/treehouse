@@ -11,6 +11,7 @@ import type {
   PtyEvent,
   TerminalId,
   TerminalSession,
+  TreeEntry,
   Workspace,
   WorkspaceId,
   Worktree,
@@ -77,6 +78,13 @@ export function readFile(
   path: string,
 ): Promise<FileContent> {
   return invoke<FileContent>("read_file", { worktreeId, path });
+}
+
+export function listTree(
+  worktreeId: WorktreeId,
+  dir: string = "",
+): Promise<TreeEntry[]> {
+  return invoke<TreeEntry[]>("list_tree", { worktreeId, dir });
 }
 
 // --- Terminals ---

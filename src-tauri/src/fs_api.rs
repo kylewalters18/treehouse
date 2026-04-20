@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 
+use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use serde::Serialize;
 use ts_rs::TS;
 
@@ -18,9 +19,32 @@ pub struct FileContent {
     pub binary: bool,
 }
 
+#[derive(Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct TreeEntry {
+    pub name: String,
+    /// Worktree-relative path, forward-slash-separated on all platforms.
+    pub path: String,
+    pub is_dir: bool,
+}
+
 /// Soft cap for in-memory file reads. Larger files are still returned but
 /// the frontend is expected to handle pagination (not in MVP).
 const MAX_READ_BYTES: u64 = 4 * 1024 * 1024;
+
+/// Built-in ignores applied on top of the worktree's `.gitignore`. Same list
+/// as `fs_watch::BUILTIN_IGNORES` — keep in sync.
+const BUILTIN_IGNORES: &[&str] = &[
+    ".git",
+    "node_modules",
+    "target",
+    "dist",
+    ".DS_Store",
+    ".next",
+    ".turbo",
+    ".cache",
+];
 
 pub async fn read_worktree_file(
     worktree_id: WorktreeId,
@@ -44,7 +68,7 @@ pub async fn read_worktree_file(
         return Ok(FileContent {
             text: None,
             size,
-            binary: false, // unknown; too big to sniff cheaply
+            binary: false,
         });
     }
 
@@ -61,6 +85,84 @@ pub async fn read_worktree_file(
             binary: true,
         }),
     }
+}
+
+/// List one directory's direct children (used by the lazy-expanding file
+/// tree). Directories come first, then files; both sorted case-insensitively.
+/// `dir` is worktree-relative. "" means the worktree root.
+pub async fn list_tree(
+    worktree_id: WorktreeId,
+    dir: &str,
+    state: &AppState,
+) -> AppResult<Vec<TreeEntry>> {
+    let wt = state
+        .worktrees
+        .get(&worktree_id)
+        .ok_or_else(|| AppError::Unknown(format!("unknown worktree: {worktree_id}")))?
+        .clone();
+
+    let root = wt.path.clone();
+    let sub = resolve_sandboxed(
+        &root,
+        if dir.is_empty() { "." } else { dir },
+    )?;
+
+    let gi = build_ignore(&root)?;
+    let mut entries: Vec<TreeEntry> = Vec::new();
+
+    let mut rd = tokio::fs::read_dir(&sub).await?;
+    while let Some(entry) = rd.next_entry().await? {
+        let path = entry.path();
+        let ft = match entry.file_type().await {
+            Ok(ft) => ft,
+            Err(_) => continue,
+        };
+        if ft.is_symlink() {
+            // Skip symlinks entirely for MVP — avoids cycles and surprising
+            // paths outside the worktree.
+            continue;
+        }
+        let name = match entry.file_name().into_string() {
+            Ok(n) => n,
+            Err(_) => continue, // non-UTF-8 filename
+        };
+        if is_ignored(&gi, &root, &path, ft.is_dir()) {
+            continue;
+        }
+        let rel = path
+            .strip_prefix(&root)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .replace(std::path::MAIN_SEPARATOR, "/");
+        entries.push(TreeEntry {
+            name,
+            path: rel,
+            is_dir: ft.is_dir(),
+        });
+    }
+
+    entries.sort_by(|a, b| {
+        (!a.is_dir)
+            .cmp(&!b.is_dir)
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    });
+    Ok(entries)
+}
+
+fn build_ignore(root: &Path) -> AppResult<Gitignore> {
+    let mut builder = GitignoreBuilder::new(root);
+    let _ = builder.add(root.join(".gitignore"));
+    for pat in BUILTIN_IGNORES {
+        let _ = builder.add_line(None, pat);
+    }
+    builder
+        .build()
+        .map_err(|e| AppError::Unknown(format!("gitignore build: {e}")))
+}
+
+fn is_ignored(gi: &Gitignore, root: &Path, path: &Path, is_dir: bool) -> bool {
+    let rel = path.strip_prefix(root).unwrap_or(path);
+    gi.matched_path_or_any_parents(rel, is_dir).is_ignore()
 }
 
 /// Resolve `rel` relative to `root`, canonicalize, and reject any result that

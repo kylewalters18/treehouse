@@ -40,6 +40,7 @@ pub fn run() {
             ipc::commands::merge_worktree,
             ipc::commands::get_diff,
             ipc::commands::read_file,
+            ipc::commands::list_tree,
             ipc::commands::open_terminal,
             ipc::commands::pty_write,
             ipc::commands::pty_resize,

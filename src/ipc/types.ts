@@ -11,6 +11,7 @@ export type { AppErrorKind } from "./bindings/AppErrorKind";
 export type { AppErrorPayload } from "./bindings/AppErrorPayload";
 
 export type { FileContent } from "./bindings/FileContent";
+export type { TreeEntry } from "./bindings/TreeEntry";
 export type { DiffSet } from "./bindings/DiffSet";
 export type { DiffStats } from "./bindings/DiffStats";
 export type { FileDiff } from "./bindings/FileDiff";

@@ -5,7 +5,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::agent::{self, AgentBackendKind, AgentEvent, AgentSession, WorktreeActivity};
 use crate::diff::{self, DiffSet};
-use crate::fs_api::{self, FileContent};
+use crate::fs_api::{self, FileContent, TreeEntry};
 use crate::fs_watch;
 use crate::ipc::events;
 use crate::pty::{self, PtyEvent, TerminalSession};
@@ -242,6 +242,15 @@ pub async fn read_file(
     state: State<'_, AppState>,
 ) -> AppResult<FileContent> {
     fs_api::read_worktree_file(worktree_id, &path, &state).await
+}
+
+#[tauri::command]
+pub async fn list_tree(
+    worktree_id: WorktreeId,
+    dir: String,
+    state: State<'_, AppState>,
+) -> AppResult<Vec<TreeEntry>> {
+    fs_api::list_tree(worktree_id, &dir, &state).await
 }
 
 #[tauri::command]
