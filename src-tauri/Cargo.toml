@@ -31,6 +31,7 @@ notify-debouncer-full = "0.3"
 ignore = "0.4"
 portable-pty = "0.8"
 bytes = "1"
+dunce = "1"
 
 [profile.dev]
 incremental = true

@@ -5,6 +5,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::agent::{self, AgentBackendKind, AgentEvent, AgentSession};
 use crate::diff::{self, DiffSet};
+use crate::fs_api::{self, FileContent};
 use crate::fs_watch;
 use crate::ipc::events;
 use crate::pty::{self, PtyEvent, TerminalSession};
@@ -217,6 +218,15 @@ pub async fn close_terminal(
 ) -> AppResult<()> {
     pty::manager::close(&state.terminals, terminal_id);
     Ok(())
+}
+
+#[tauri::command]
+pub async fn read_file(
+    worktree_id: WorktreeId,
+    path: String,
+    state: State<'_, AppState>,
+) -> AppResult<FileContent> {
+    fs_api::read_worktree_file(worktree_id, &path, &state).await
 }
 
 #[tauri::command]

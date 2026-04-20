@@ -6,6 +6,7 @@ import type {
   AgentSession,
   AgentSessionId,
   DiffSet,
+  FileContent,
   MergeResult,
   PtyEvent,
   TerminalId,
@@ -66,6 +67,15 @@ export function onDiffUpdated(
   return listen<DiffSet>(`diff://${worktreeId}/updated`, (ev) =>
     handler(ev.payload),
   );
+}
+
+// --- Files ---
+
+export function readFile(
+  worktreeId: WorktreeId,
+  path: string,
+): Promise<FileContent> {
+  return invoke<FileContent>("read_file", { worktreeId, path });
 }
 
 // --- Terminals ---

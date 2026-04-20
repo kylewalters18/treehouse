@@ -1,5 +1,6 @@
 mod agent;
 mod diff;
+mod fs_api;
 mod fs_watch;
 mod ipc;
 mod pty;
@@ -38,6 +39,7 @@ pub fn run() {
             ipc::commands::remove_worktree,
             ipc::commands::merge_worktree,
             ipc::commands::get_diff,
+            ipc::commands::read_file,
             ipc::commands::open_terminal,
             ipc::commands::pty_write,
             ipc::commands::pty_resize,

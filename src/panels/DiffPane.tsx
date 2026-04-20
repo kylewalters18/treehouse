@@ -5,6 +5,7 @@ import { useDiffsStore } from "@/stores/diffs";
 import { onDiffUpdated } from "@/ipc/client";
 import type { DiffLine, FileDiff, FileStatus, WorktreeId } from "@/ipc/types";
 import { cn } from "@/lib/cn";
+import { EditorPane } from "./EditorPane";
 
 export function DiffPane() {
   const worktreeId = useUiStore((s) => s.selectedWorktreeId);
@@ -30,9 +31,11 @@ function DiffView({ worktreeId }: { worktreeId: WorktreeId }) {
   const loading = useDiffsStore((s) => s.loading[worktreeId]);
   const error = useDiffsStore((s) => s.error[worktreeId]);
   const selectedFile = useDiffsStore((s) => s.selectedFile[worktreeId] ?? null);
+  const view = useDiffsStore((s) => s.view[worktreeId] ?? "diff");
   const fetchDiff = useDiffsStore((s) => s.fetch);
   const setDiff = useDiffsStore((s) => s.set);
   const selectFile = useDiffsStore((s) => s.selectFile);
+  const setView = useDiffsStore((s) => s.setView);
 
   useEffect(() => {
     fetchDiff(worktreeId);
@@ -107,16 +110,70 @@ function DiffView({ worktreeId }: { worktreeId: WorktreeId }) {
           ))}
         </ul>
       </aside>
-      <section className="flex-1 overflow-auto">
-        {selected ? (
-          <HunksView file={selected} />
-        ) : (
-          <div className="flex h-full items-center justify-center text-xs text-neutral-600">
-            Select a file
-          </div>
-        )}
+      <section className="flex flex-1 flex-col overflow-hidden">
+        <div className="flex shrink-0 items-center gap-1 border-b border-neutral-800 bg-neutral-950 px-2 py-1 text-[11px]">
+          <TabButton
+            active={view === "diff"}
+            onClick={() => setView(worktreeId, "diff")}
+          >
+            Diff
+          </TabButton>
+          <TabButton
+            active={view === "file"}
+            onClick={() => setView(worktreeId, "file")}
+            disabled={!selected || selected.binary || selected.status.kind === "deleted"}
+          >
+            File
+          </TabButton>
+          {selected && (
+            <span className="ml-2 truncate font-mono text-[11px] text-neutral-500">
+              {selected.path}
+            </span>
+          )}
+        </div>
+        <div className="flex-1 overflow-auto">
+          {selected ? (
+            view === "file" ? (
+              <EditorPane worktreeId={worktreeId} path={selected.path} />
+            ) : (
+              <HunksView file={selected} />
+            )
+          ) : (
+            <div className="flex h-full items-center justify-center text-xs text-neutral-600">
+              Select a file
+            </div>
+          )}
+        </div>
       </section>
     </div>
+  );
+}
+
+function TabButton({
+  active,
+  disabled,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  disabled?: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      className={cn(
+        "rounded px-2 py-0.5 text-[11px] font-medium",
+        active
+          ? "bg-neutral-800 text-neutral-100"
+          : "text-neutral-400 hover:bg-neutral-900 hover:text-neutral-200",
+        disabled && "cursor-not-allowed opacity-40 hover:bg-transparent hover:text-neutral-400",
+      )}
+    >
+      {children}
+    </button>
   );
 }
 
@@ -152,9 +209,6 @@ function HunksView({ file }: { file: FileDiff }) {
   }
   return (
     <div className="font-mono text-xs">
-      <div className="sticky top-0 border-b border-neutral-800 bg-neutral-950 px-3 py-2 text-[11px] text-neutral-400">
-        {file.path}
-      </div>
       {file.hunks.length === 0 ? (
         <div className="m-3 text-center text-xs text-neutral-600">
           {(file.status.kind === "deleted" && "File deleted.") ||

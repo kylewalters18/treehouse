@@ -2,14 +2,18 @@ import { create } from "zustand";
 import * as ipc from "@/ipc/client";
 import type { DiffSet, WorktreeId } from "@/ipc/types";
 
+type DiffView = "diff" | "file";
+
 type DiffsState = {
   byWorktree: Record<WorktreeId, DiffSet>;
   loading: Record<WorktreeId, boolean>;
   error: Record<WorktreeId, string | null>;
   selectedFile: Record<WorktreeId, string | null>;
+  view: Record<WorktreeId, DiffView>;
   fetch: (worktreeId: WorktreeId) => Promise<void>;
   set: (worktreeId: WorktreeId, diff: DiffSet) => void;
   selectFile: (worktreeId: WorktreeId, path: string | null) => void;
+  setView: (worktreeId: WorktreeId, view: DiffView) => void;
   reset: () => void;
 };
 
@@ -25,6 +29,7 @@ export const useDiffsStore = create<DiffsState>((set, get) => ({
   loading: {},
   error: {},
   selectedFile: {},
+  view: {},
   async fetch(worktreeId) {
     set((s) => ({
       loading: { ...s.loading, [worktreeId]: true },
@@ -62,7 +67,10 @@ export const useDiffsStore = create<DiffsState>((set, get) => ({
       selectedFile: { ...s.selectedFile, [worktreeId]: path },
     }));
   },
+  setView(worktreeId, view) {
+    set((s) => ({ view: { ...s.view, [worktreeId]: view } }));
+  },
   reset() {
-    set({ byWorktree: {}, loading: {}, error: {}, selectedFile: {} });
+    set({ byWorktree: {}, loading: {}, error: {}, selectedFile: {}, view: {} });
   },
 }));
