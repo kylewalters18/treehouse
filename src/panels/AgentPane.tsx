@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Terminal } from "xterm";
 import { FitAddon } from "xterm-addon-fit";
 import "xterm/css/xterm.css";
@@ -8,12 +8,14 @@ import { useWorktreesStore } from "@/stores/worktrees";
 import {
   agentResize,
   agentWrite,
+  attachAgent,
   getAgentForWorktree,
   killAgent,
   launchAgent,
 } from "@/ipc/client";
 import type {
   AgentBackendKind,
+  AgentEvent,
   AgentSession,
   AgentSessionId,
   WorktreeId,
@@ -43,43 +45,46 @@ export function AgentPane() {
   return <AgentInstance key={worktreeId} worktreeId={worktreeId} />;
 }
 
-type RunningState = {
-  session: AgentSession;
-  term: Terminal;
-  fit: FitAddon;
-};
-
 function AgentInstance({ worktreeId }: { worktreeId: WorktreeId }) {
-  const [existing, setExisting] = useState<AgentSession | null>(null);
+  const [session, setSession] = useState<AgentSession | null>(null);
   const [launching, setLaunching] = useState(false);
-  const [running, setRunning] = useState<RunningState | null>(null);
+  const [exited, setExited] = useState(false);
   const [backend, setBackend] = useState<AgentBackendKind>("claudeCode");
   const [error, setError] = useState<string | null>(null);
   const hostRef = useRef<HTMLDivElement>(null);
+  const termRef = useRef<Terminal | null>(null);
+  const fitRef = useRef<FitAddon | null>(null);
+  const idRef = useRef<AgentSessionId | null>(null);
 
-  // On mount: check if an agent is already running for this worktree.
+  // On mount: if an agent is already running for this worktree, auto-attach
+  // and replay its output. Otherwise wait for the user to click Launch.
   useEffect(() => {
-    let mounted = true;
+    let cancelled = false;
     getAgentForWorktree(worktreeId)
-      .then((s) => mounted && setExisting(s))
+      .then(async (existing) => {
+        if (cancelled || !existing) return;
+        await mountTerminal({ reattach: existing.id });
+      })
       .catch(() => {});
     return () => {
-      mounted = false;
+      cancelled = true;
+      termRef.current?.dispose();
+      termRef.current = null;
+      fitRef.current = null;
+      idRef.current = null;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [worktreeId]);
 
-  // Teardown on worktree change (don't kill — just dispose UI).
-  useEffect(() => {
-    return () => {
-      running?.term.dispose();
-    };
-  }, [running]);
-
-  async function onLaunch() {
+  async function mountTerminal({
+    launch,
+    reattach,
+  }: {
+    launch?: AgentBackendKind;
+    reattach?: AgentSessionId;
+  }) {
     const host = hostRef.current;
-    if (!host || launching) return;
-    setLaunching(true);
-    setError(null);
+    if (!host) return;
 
     const term = new Terminal({
       fontFamily:
@@ -98,49 +103,50 @@ function AgentInstance({ worktreeId }: { worktreeId: WorktreeId }) {
     term.loadAddon(fit);
     term.open(host);
     fit.fit();
+    termRef.current = term;
+    fitRef.current = fit;
 
     const encoder = new TextEncoder();
-    let idRef: AgentSessionId | null = null;
+    const onEvent = (ev: AgentEvent) => {
+      if (ev.kind === "data") {
+        term.write(new Uint8Array(ev.bytes));
+      } else if (ev.kind === "status") {
+        if (ev.status.kind === "exited" || ev.status.kind === "crashed") {
+          setExited(true);
+          const suffix =
+            ev.status.kind === "exited"
+              ? ev.status.code !== null
+                ? ` (code ${ev.status.code})`
+                : ""
+              : `: ${ev.status.message}`;
+          term.write(
+            `\r\n\x1b[38;2;115;115;115m[agent ${ev.status.kind}${suffix}]\x1b[0m\r\n`,
+          );
+        }
+      }
+    };
 
     try {
-      const session = await launchAgent(
-        worktreeId,
-        backend,
-        term.cols,
-        term.rows,
-        (ev) => {
-          if (ev.kind === "data") {
-            term.write(new Uint8Array(ev.bytes));
-          } else if (ev.kind === "status") {
-            if (
-              ev.status.kind === "exited" ||
-              ev.status.kind === "crashed"
-            ) {
-              const suffix =
-                ev.status.kind === "exited"
-                  ? ev.status.code !== null
-                    ? ` (code ${ev.status.code})`
-                    : ""
-                  : `: ${ev.status.message}`;
-              term.write(
-                `\r\n\x1b[38;2;115;115;115m[agent ${ev.status.kind}${suffix}]\x1b[0m\r\n`,
-              );
-            }
-          }
-        },
-      );
-      idRef = session.id;
-      setRunning({ session, term, fit });
-      setExisting(session);
+      const s = reattach
+        ? await attachAgent(reattach, onEvent)
+        : await launchAgent(
+            worktreeId,
+            launch ?? "claudeCode",
+            term.cols,
+            term.rows,
+            onEvent,
+          );
+      idRef.current = s.id;
+      setSession(s);
 
       term.onData((data) => {
-        if (idRef) {
-          agentWrite(idRef, encoder.encode(data)).catch(() => {});
+        if (idRef.current) {
+          agentWrite(idRef.current, encoder.encode(data)).catch(() => {});
         }
       });
       term.onResize(({ cols, rows }) => {
-        if (idRef) {
-          agentResize(idRef, cols, rows).catch(() => {});
+        if (idRef.current) {
+          agentResize(idRef.current, cols, rows).catch(() => {});
         }
       });
       const ro = new ResizeObserver(() => {
@@ -151,31 +157,37 @@ function AgentInstance({ worktreeId }: { worktreeId: WorktreeId }) {
       ro.observe(host);
     } catch (e: unknown) {
       term.dispose();
+      termRef.current = null;
       setError(asMessage(e));
-    } finally {
-      setLaunching(false);
     }
   }
 
-  async function onKill() {
-    if (running) {
-      await killAgent(running.session.id).catch(() => {});
-      running.term.dispose();
-      setRunning(null);
-      setExisting(null);
-    } else if (existing) {
-      await killAgent(existing.id).catch(() => {});
-      setExisting(null);
-    }
+  async function onLaunchClick() {
+    if (launching) return;
+    setLaunching(true);
+    setError(null);
+    setExited(false);
+    await mountTerminal({ launch: backend });
+    setLaunching(false);
   }
 
-  const statusLabel = useMemo(() => {
-    if (running) return "running";
-    if (existing) return "running (reattach lost — restart to view)";
-    return "not running";
-  }, [running, existing]);
+  async function onKillClick() {
+    if (session) {
+      await killAgent(session.id).catch(() => {});
+    }
+    termRef.current?.dispose();
+    termRef.current = null;
+    fitRef.current = null;
+    idRef.current = null;
+    setSession(null);
+    setExited(false);
+  }
 
-  const canLaunch = !running && !existing && !launching;
+  const statusLabel = !session
+    ? "not running"
+    : exited
+      ? "exited"
+      : "running";
 
   return (
     <div className="flex h-full flex-col border-l border-neutral-800 bg-neutral-950">
@@ -186,21 +198,24 @@ function AgentInstance({ worktreeId }: { worktreeId: WorktreeId }) {
           <span
             className={cn(
               "rounded px-1.5 py-0.5 text-[10px] font-mono",
-              running
+              session && !exited
                 ? "bg-emerald-900/40 text-emerald-300"
-                : "bg-neutral-800 text-neutral-400",
+                : exited
+                  ? "bg-amber-900/40 text-amber-300"
+                  : "bg-neutral-800 text-neutral-400",
             )}
           >
             {statusLabel}
           </span>
         </div>
         <div className="flex items-center gap-2">
-          {canLaunch && (
+          {!session && (
             <>
               <select
                 value={backend}
                 onChange={(e) => setBackend(e.target.value as AgentBackendKind)}
                 className="rounded border border-neutral-800 bg-neutral-900 px-2 py-0.5 text-[11px] focus:outline-none"
+                disabled={launching}
               >
                 {BACKENDS.map((b) => (
                   <option key={b.value} value={b.value}>
@@ -209,17 +224,17 @@ function AgentInstance({ worktreeId }: { worktreeId: WorktreeId }) {
                 ))}
               </select>
               <button
-                onClick={onLaunch}
+                onClick={onLaunchClick}
                 disabled={launching}
                 className="rounded bg-blue-600 px-2 py-0.5 text-[11px] font-medium text-white hover:bg-blue-500 disabled:opacity-50"
               >
-                Launch
+                {launching ? "Launching…" : "Launch"}
               </button>
             </>
           )}
-          {(running || existing) && (
+          {session && (
             <button
-              onClick={onKill}
+              onClick={onKillClick}
               className="rounded border border-neutral-800 px-2 py-0.5 text-[11px] text-neutral-300 hover:border-red-800 hover:text-red-400"
             >
               Kill
@@ -235,22 +250,16 @@ function AgentInstance({ worktreeId }: { worktreeId: WorktreeId }) {
       )}
 
       <div className="relative flex-1">
-        {!running && !existing && (
+        {!session && !launching && (
           <div className="absolute inset-0 flex items-center justify-center text-xs text-neutral-600">
             Pick a backend and click Launch
-          </div>
-        )}
-        {existing && !running && (
-          <div className="absolute inset-0 flex items-center justify-center text-xs text-neutral-500">
-            Agent is running but this window lost its live stream. Kill and
-            relaunch to view output.
           </div>
         )}
         <div
           ref={hostRef}
           className={cn(
             "absolute inset-0 p-2",
-            (!running || launching) && "pointer-events-none opacity-0",
+            !session && "pointer-events-none opacity-0",
           )}
         />
       </div>

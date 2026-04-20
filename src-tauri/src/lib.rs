@@ -47,6 +47,7 @@ pub fn run() {
             ipc::commands::agent_resize,
             ipc::commands::kill_agent,
             ipc::commands::get_agent_for_worktree,
+            ipc::commands::attach_agent,
         ])
         .setup(|_app| {
             tracing::info!("agent-ide started");

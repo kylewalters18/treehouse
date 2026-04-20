@@ -153,3 +153,12 @@ export function getAgentForWorktree(
 ): Promise<AgentSession | null> {
   return invoke<AgentSession | null>("get_agent_for_worktree", { worktreeId });
 }
+
+export function attachAgent(
+  agentId: AgentSessionId,
+  onEvent: (ev: AgentEvent) => void,
+): Promise<AgentSession> {
+  const channel = new Channel<AgentEvent>();
+  channel.onmessage = onEvent;
+  return invoke<AgentSession>("attach_agent", { agentId, channel });
+}

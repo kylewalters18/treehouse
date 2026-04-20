@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -13,12 +14,25 @@ use crate::util::ids::{AgentSessionId, WorktreeId};
 
 use super::{AgentBackendKind, AgentEvent, AgentSession, AgentStatus};
 
+/// Keep the last ~4 MB of agent output per session. Plan doc says 8 MB, but
+/// we pay JSON-number-array serialization cost on attach so smaller is kinder.
+const RING_MAX_BYTES: usize = 4 * 1024 * 1024;
+
+/// Shared mutable state per agent. Reader thread writes to `ring` + `channel`;
+/// `attach` swaps the channel and replays the ring.
+struct AgentShared {
+    ring: VecDeque<u8>,
+    channel: Option<Channel<AgentEvent>>,
+    status: AgentStatus,
+}
+
 /// Handle kept by the manager; holding it keeps the PTY + child alive.
 pub struct AgentHandle {
     pub session: AgentSession,
     master: Arc<Mutex<Box<dyn MasterPty + Send>>>,
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
     child: Arc<Mutex<Box<dyn Child + Send + Sync>>>,
+    shared: Arc<Mutex<AgentShared>>,
 }
 
 #[derive(Default)]
@@ -138,13 +152,21 @@ pub fn launch(
         status: AgentStatus::Running,
     };
 
+    let shared = Arc::new(Mutex::new(AgentShared {
+        ring: VecDeque::with_capacity(RING_MAX_BYTES / 16),
+        channel: Some(channel.clone()),
+        status: AgentStatus::Running,
+    }));
+
     // Announce "Running" immediately so the UI can swap state.
     let _ = channel.send(AgentEvent::Status {
         status: AgentStatus::Running,
     });
 
-    // Reader thread: pump PTY output into the Channel. Exit event fires on EOF.
-    let channel_for_reader = channel.clone();
+    // Reader thread: pump PTY output into the ring buffer + currently-attached
+    // channel. Exit event fires on EOF and updates the shared status so future
+    // attaches see it.
+    let shared_for_reader = shared.clone();
     std::thread::Builder::new()
         .name(format!("agent-reader-{session_id}"))
         .spawn(move || {
@@ -153,13 +175,23 @@ pub fn launch(
                 match reader.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
-                        if channel_for_reader
-                            .send(AgentEvent::Data {
-                                bytes: buf[..n].to_vec(),
-                            })
-                            .is_err()
-                        {
-                            break;
+                        let mut sh = shared_for_reader.lock();
+                        sh.ring.extend(buf[..n].iter().copied());
+                        let excess = sh.ring.len().saturating_sub(RING_MAX_BYTES);
+                        if excess > 0 {
+                            sh.ring.drain(..excess);
+                        }
+                        if let Some(ch) = sh.channel.as_ref() {
+                            // If the current attached channel breaks, detach it;
+                            // ring buffer still fills so a reattach recovers.
+                            if ch
+                                .send(AgentEvent::Data {
+                                    bytes: buf[..n].to_vec(),
+                                })
+                                .is_err()
+                            {
+                                sh.channel = None;
+                            }
                         }
                     }
                     Err(e) => {
@@ -168,9 +200,12 @@ pub fn launch(
                     }
                 }
             }
-            let _ = channel_for_reader.send(AgentEvent::Status {
-                status: AgentStatus::Exited { code: None },
-            });
+            let exit = AgentStatus::Exited { code: None };
+            let mut sh = shared_for_reader.lock();
+            sh.status = exit.clone();
+            if let Some(ch) = sh.channel.as_ref() {
+                let _ = ch.send(AgentEvent::Status { status: exit });
+            }
             tracing::info!(%session_id, "agent stream closed");
         })
         .map_err(|e| AppError::Unknown(format!("spawn agent reader: {e}")))?;
@@ -182,11 +217,39 @@ pub fn launch(
             master: Arc::new(Mutex::new(pair.master)),
             writer: Arc::new(Mutex::new(writer)),
             child: Arc::new(Mutex::new(child)),
+            shared,
         },
     );
     registry.by_worktree.insert(worktree_id, session_id);
     tracing::info!(%session_id, %worktree_id, ?argv, "launched agent");
 
+    Ok(session)
+}
+
+/// Attach a fresh Channel to an existing session. Replays the ring buffer
+/// into the new channel in one chunk, then wires subsequent reader output to
+/// it. Returns the session snapshot (status may be `Exited` if the child
+/// already died — caller decides whether to still show the replay).
+pub fn attach(
+    registry: &AgentRegistry,
+    id: AgentSessionId,
+    channel: Channel<AgentEvent>,
+) -> AppResult<AgentSession> {
+    let handle = registry
+        .inner
+        .get(&id)
+        .ok_or_else(|| AppError::Unknown(format!("unknown agent: {id}")))?;
+    let session = handle.session.clone();
+    let mut sh = handle.shared.lock();
+
+    if !sh.ring.is_empty() {
+        let replay: Vec<u8> = sh.ring.iter().copied().collect();
+        let _ = channel.send(AgentEvent::Data { bytes: replay });
+    }
+    let _ = channel.send(AgentEvent::Status {
+        status: sh.status.clone(),
+    });
+    sh.channel = Some(channel);
     Ok(session)
 }
 

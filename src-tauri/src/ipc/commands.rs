@@ -165,6 +165,15 @@ pub async fn get_agent_for_worktree(
 }
 
 #[tauri::command]
+pub async fn attach_agent(
+    agent_id: AgentSessionId,
+    channel: Channel<AgentEvent>,
+    state: State<'_, AppState>,
+) -> AppResult<AgentSession> {
+    agent::supervisor::attach(&state.agents, agent_id, channel)
+}
+
+#[tauri::command]
 pub async fn open_terminal(
     worktree_id: WorktreeId,
     cols: u16,
