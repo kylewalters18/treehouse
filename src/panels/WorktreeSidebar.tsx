@@ -293,13 +293,23 @@ export function WorktreeSidebar() {
             No worktrees yet. Create one above.
           </div>
         ) : (
-          <ul className="divide-y divide-neutral-900">
-            {regular.map((w) => (
+          (() => {
+            // "Inactive" = no commits ahead of default AND no uncommitted
+            // changes. Covers both merged-back worktrees and ones that
+            // never accumulated work — both have nothing pending to review.
+            const isActive = (w: Worktree) => {
+              const a = activity[w.id];
+              return (a?.ahead ?? 0) > 0 || (a?.dirty ?? false);
+            };
+            const active = regular.filter(isActive);
+            const inactive = regular.filter((w) => !isActive(w));
+            const renderRow = (w: Worktree, dim: boolean) => (
               <li
                 key={w.id}
                 className={cn(
                   "group relative flex cursor-pointer items-start px-3 py-2 hover:bg-neutral-900/50",
                   selectedId === w.id && "bg-neutral-900",
+                  dim && "opacity-60",
                 )}
                 onClick={() => selectWorktree(w.id)}
               >
@@ -333,8 +343,27 @@ export function WorktreeSidebar() {
                   onRemove={() => onRemove(w)}
                 />
               </li>
-            ))}
-          </ul>
+            );
+            return (
+              <>
+                {active.length > 0 && (
+                  <ul className="divide-y divide-neutral-900">
+                    {active.map((w) => renderRow(w, false))}
+                  </ul>
+                )}
+                {inactive.length > 0 && (
+                  <>
+                    <div className="border-t border-neutral-800 px-3 py-1.5 text-[10px] uppercase tracking-wider text-neutral-600">
+                      Inactive ({inactive.length})
+                    </div>
+                    <ul className="divide-y divide-neutral-900">
+                      {inactive.map((w) => renderRow(w, true))}
+                    </ul>
+                  </>
+                )}
+              </>
+            );
+          })()
         )}
       </div>
       {mergeTarget && (
