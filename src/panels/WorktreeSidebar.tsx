@@ -196,31 +196,30 @@ export function WorktreeSidebar() {
           ▶
         </button>
         {mainClone && (
-          <button
+          <RailButton
+            tooltip={`${mainClone.branch} — main clone`}
             onClick={() => selectWorktree(mainClone.id)}
-            title={`${mainClone.branch} — main clone`}
-            className={cn(
-              "flex h-7 w-7 items-center justify-center rounded text-[13px] text-blue-400 hover:bg-neutral-900",
-              selectedId === mainClone.id && "bg-neutral-900",
-            )}
+            selected={selectedId === mainClone.id}
+            variant="main"
           >
             ◆
-          </button>
+          </RailButton>
         )}
         {regular.map((w) => {
           const a = activity[w.id];
+          const tooltip =
+            w.branch +
+            (a?.ahead ? `  ↑${a.ahead}` : "") +
+            (a?.behind ? `  ↓${a.behind}` : "");
           return (
-            <button
+            <RailButton
               key={w.id}
+              tooltip={tooltip}
               onClick={() => selectWorktree(w.id)}
-              title={`${w.branch}${a?.ahead ? `  ↑${a.ahead}` : ""}${a?.behind ? `  ↓${a.behind}` : ""}`}
-              className={cn(
-                "flex h-7 w-7 items-center justify-center rounded hover:bg-neutral-900",
-                selectedId === w.id && "bg-neutral-900 ring-1 ring-neutral-700",
-              )}
+              selected={selectedId === w.id}
             >
               <StatusDot activity={a?.activity ?? "inactive"} />
-            </button>
+            </RailButton>
           );
         })}
       </div>
@@ -494,6 +493,84 @@ function strategyLabel(s: MergeBackStrategy): string {
     case "rebaseFf":
       return "Rebase merge";
   }
+}
+
+/// Rail button with a delayed floating tooltip anchored to the right of the
+/// button. Tooltip uses `position: fixed` + the button's bounding rect so it
+/// escapes the sidebar's `overflow-y-auto` clipping.
+function RailButton({
+  tooltip,
+  onClick,
+  selected,
+  variant,
+  children,
+}: {
+  tooltip: string;
+  onClick: () => void;
+  selected: boolean;
+  variant?: "main";
+  children: React.ReactNode;
+}) {
+  const btnRef = useRef<HTMLButtonElement>(null);
+  const timerRef = useRef<number | null>(null);
+  const [coords, setCoords] = useState<{ top: number; left: number } | null>(
+    null,
+  );
+
+  function onEnter() {
+    if (timerRef.current) window.clearTimeout(timerRef.current);
+    timerRef.current = window.setTimeout(() => {
+      const rect = btnRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      setCoords({ top: rect.top + rect.height / 2, left: rect.right + 8 });
+    }, 300);
+  }
+  function onLeave() {
+    if (timerRef.current) {
+      window.clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+    setCoords(null);
+  }
+  useEffect(() => {
+    return () => {
+      if (timerRef.current) window.clearTimeout(timerRef.current);
+    };
+  }, []);
+
+  return (
+    <>
+      <button
+        ref={btnRef}
+        onClick={onClick}
+        onMouseEnter={onEnter}
+        onMouseLeave={onLeave}
+        className={cn(
+          "flex h-7 w-7 items-center justify-center rounded hover:bg-neutral-900",
+          variant === "main" && "text-[13px] text-blue-400",
+          selected &&
+            (variant === "main"
+              ? "bg-neutral-900"
+              : "bg-neutral-900 ring-1 ring-neutral-700"),
+        )}
+      >
+        {children}
+      </button>
+      {coords && (
+        <div
+          style={{
+            position: "fixed",
+            top: coords.top,
+            left: coords.left,
+            transform: "translateY(-50%)",
+          }}
+          className="pointer-events-none z-50 whitespace-nowrap rounded border border-neutral-800 bg-neutral-900 px-2 py-1 font-mono text-[11px] text-neutral-200 shadow-lg"
+        >
+          {tooltip}
+        </div>
+      )}
+    </>
+  );
 }
 
 function SyncDialog({
