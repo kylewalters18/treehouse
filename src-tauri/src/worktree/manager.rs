@@ -94,24 +94,51 @@ pub async fn create(
     let path: PathBuf = root.join(&slug);
 
     if path.exists() {
-        return Err(AppError::AlreadyOpen(format!("worktree dir exists: {}", path.display())));
-    }
-    if git_ops::branch_exists(&ws.root, &branch).await? {
-        return Err(AppError::AlreadyOpen(format!("branch exists: {branch}")));
+        return Err(AppError::AlreadyOpen(format!(
+            "worktree dir exists: {}",
+            path.display()
+        )));
     }
     tokio::fs::create_dir_all(&root).await?;
 
-    let base_ref = ws.default_branch.clone();
-    let base_sha = git_ops::rev_parse(&ws.root, &base_ref).await?;
-    git_ops::add(&ws.root, &path, &branch, &base_ref).await?;
+    // Fetch so we consider remote refs too. Best-effort: repos without a
+    // remote configured silently no-op.
+    let _ = git_ops::fetch_all(&ws.root).await;
+
+    let local_exists = git_ops::branch_exists(&ws.root, &branch).await?;
+    let remote_exists = git_ops::remote_branch_exists(&ws.root, &branch, "origin")
+        .await
+        .unwrap_or(false);
+
+    // base_ref is the comparison anchor for the Changes pane — use
+    // default's current tip so anything on the (new or reused) branch
+    // beyond default shows as pending.
+    let base_sha = git_ops::rev_parse(&ws.root, &ws.default_branch).await?;
+
+    let head_sha = if local_exists {
+        tracing::info!(%branch, "reusing existing local branch");
+        git_ops::add_existing(&ws.root, &path, &branch).await?;
+        git_ops::rev_parse(&ws.root, &branch)
+            .await
+            .unwrap_or_else(|_| base_sha.clone())
+    } else if remote_exists {
+        tracing::info!(%branch, "reusing origin/{branch} as new local tracking branch");
+        git_ops::add_tracking(&ws.root, &path, &branch, "origin").await?;
+        git_ops::rev_parse(&ws.root, &branch)
+            .await
+            .unwrap_or_else(|_| base_sha.clone())
+    } else {
+        git_ops::add(&ws.root, &path, &branch, &ws.default_branch).await?;
+        base_sha.clone()
+    };
 
     let worktree = Worktree {
         id: WorktreeId::new(),
         workspace_id,
         path,
         branch,
-        base_ref: base_sha.clone(),
-        head: base_sha,
+        base_ref: base_sha,
+        head: head_sha,
         dirty: false,
         is_main_clone: false,
     };
@@ -494,12 +521,37 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_is_rejected_when_branch_already_exists() {
+    async fn create_errors_when_worktree_dir_already_exists() {
         let repo = TempRepo::new();
         let (state, ws_id) = setup(&repo);
         create(ws_id, "same", &state).await.unwrap();
+        // The first create left a dir on disk; second should refuse.
         let err = create(ws_id, "same", &state).await.unwrap_err();
         assert!(matches!(err, AppError::AlreadyOpen(_)));
+    }
+
+    #[tokio::test]
+    async fn create_reuses_preexisting_local_branch() {
+        let repo = TempRepo::new();
+        let (state, ws_id) = setup(&repo);
+        // Simulate a branch that already exists — e.g. the user created it
+        // in a terminal, or it was fetched from elsewhere. We need a commit
+        // on it so reuse is observably different from a fresh branch.
+        run_in(&repo.root, &["branch", "agent/reused", "main"]);
+        run_in(&repo.root, &["checkout", "-q", "agent/reused"]);
+        std::fs::write(repo.root.join("carried-over.txt"), "prior work\n")
+            .unwrap();
+        run_in(&repo.root, &["add", "carried-over.txt"]);
+        run_in(&repo.root, &["commit", "-q", "-m", "prior"]);
+        let expected_head = repo.head();
+        run_in(&repo.root, &["checkout", "-q", "main"]);
+
+        let wt = create(ws_id, "reused", &state).await.unwrap();
+        assert_eq!(wt.head, expected_head, "reused branch's HEAD should carry over");
+        assert!(
+            wt.path.join("carried-over.txt").exists(),
+            "worktree should check out the existing branch's files"
+        );
     }
 
     #[tokio::test]

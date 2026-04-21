@@ -266,6 +266,78 @@ pub async fn branch_exists(repo_root: &Path, branch: &str) -> AppResult<bool> {
     Ok(res.status.success())
 }
 
+/// `true` if `refs/remotes/<remote>/<branch>` exists.
+pub async fn remote_branch_exists(
+    repo_root: &Path,
+    branch: &str,
+    remote: &str,
+) -> AppResult<bool> {
+    let res = Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args([
+            "show-ref",
+            "--verify",
+            "--quiet",
+            &format!("refs/remotes/{remote}/{branch}"),
+        ])
+        .output()
+        .await?;
+    Ok(res.status.success())
+}
+
+/// `git fetch --all --prune --quiet`. Best-effort: repos with no remotes
+/// no-op silently; caller typically ignores the result and continues.
+pub async fn fetch_all(repo_root: &Path) -> AppResult<()> {
+    git(repo_root, ["fetch", "--all", "--prune", "--quiet"])
+        .await
+        .map(|_| ())
+}
+
+/// Add a worktree checking out an *already-existing* branch (no -b). Used
+/// to reuse a local branch that's still around from a previous run.
+pub async fn add_existing(
+    repo_root: &Path,
+    worktree_path: &Path,
+    branch: &str,
+) -> AppResult<()> {
+    git(
+        repo_root,
+        [
+            "worktree".as_ref(),
+            "add".as_ref(),
+            worktree_path.as_os_str(),
+            branch.as_ref(),
+        ],
+    )
+    .await
+    .map(|_| ())
+}
+
+/// Add a worktree creating a local branch that tracks `<remote>/<branch>`.
+/// Used when only a remote ref exists and we want a proper local counterpart.
+pub async fn add_tracking(
+    repo_root: &Path,
+    worktree_path: &Path,
+    new_branch: &str,
+    remote: &str,
+) -> AppResult<()> {
+    let remote_ref = format!("{remote}/{new_branch}");
+    git(
+        repo_root,
+        [
+            "worktree".as_ref(),
+            "add".as_ref(),
+            "-b".as_ref(),
+            new_branch.as_ref(),
+            worktree_path.as_os_str(),
+            remote_ref.as_ref(),
+        ],
+    )
+    .await
+    .map(|_| ())
+}
+
 /// Slugify a friendly name into a filesystem- and branch-safe segment.
 /// "Add README!" -> "add-readme". Empty result falls back to "wt".
 pub fn slugify(name: &str) -> String {
@@ -430,6 +502,22 @@ mod tests {
         // Exactly one new commit on main (the squash) even though feature
         // had two.
         assert_eq!(after, 1);
+    }
+
+    #[tokio::test]
+    async fn remote_branch_exists_false_on_repo_with_no_remote() {
+        let r = TempRepo::new();
+        assert!(!remote_branch_exists(&r.root, "main", "origin")
+            .await
+            .unwrap());
+    }
+
+    #[tokio::test]
+    async fn fetch_all_is_a_clean_noop_without_remotes() {
+        let r = TempRepo::new();
+        // Best-effort contract: no remotes means nothing to fetch, not an
+        // error. Also exercises the path in manager::create.
+        fetch_all(&r.root).await.unwrap();
     }
 
     #[tokio::test]
