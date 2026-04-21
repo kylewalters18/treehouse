@@ -124,6 +124,8 @@ pub async fn remove_worktree(
 #[tauri::command]
 pub async fn merge_worktree(
     worktree_id: WorktreeId,
+    squash: bool,
+    commit_message: Option<String>,
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> AppResult<MergeResult> {
@@ -131,7 +133,7 @@ pub async fn merge_worktree(
         .worktrees
         .get(&worktree_id)
         .map(|e| e.value().workspace_id);
-    let result = worktree::merge(worktree_id, &state).await?;
+    let result = worktree::merge(worktree_id, squash, commit_message, &state).await?;
     // On a clean merge we DON'T auto-remove the worktree — keep it around so
     // the user can inspect or continue iterating. They can hit the ✕ button
     // to delete it when they're done.
@@ -213,13 +215,32 @@ pub async fn list_agent_activity(
     state: State<'_, AppState>,
 ) -> AppResult<Vec<WorktreeActivity>> {
     let wts = worktree::list_for_workspace(workspace_id, &state);
-    Ok(wts
-        .into_iter()
-        .map(|w| WorktreeActivity {
+    let ws = state
+        .workspaces
+        .get(&workspace_id)
+        .map(|e| e.value().clone());
+
+    let mut out = Vec::with_capacity(wts.len());
+    for w in wts {
+        let (ahead, behind) = if w.is_main_clone {
+            (0, 0)
+        } else if let Some(ref ws) = ws {
+            // Resolve against the base ref captured at creation (workspace
+            // default branch). Best-effort: any git failure leaves (0, 0).
+            crate::worktree::git_ops::ahead_behind(&ws.root, &ws.default_branch, &w.branch)
+                .await
+                .unwrap_or((0, 0))
+        } else {
+            (0, 0)
+        };
+        out.push(WorktreeActivity {
             worktree_id: w.id,
             activity: state.agents.activity_for_worktree(w.id),
-        })
-        .collect())
+            ahead,
+            behind,
+        });
+    }
+    Ok(out)
 }
 
 #[tauri::command]

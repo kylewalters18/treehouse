@@ -107,6 +107,8 @@ pub async fn remove(
 
 pub async fn merge(
     worktree_id: WorktreeId,
+    squash: bool,
+    commit_message: Option<String>,
     state: &AppState,
 ) -> AppResult<MergeResult> {
     let wt = state
@@ -146,9 +148,29 @@ pub async fn merge(
         });
     }
 
-    match git_ops::merge_no_ff(&ws.root, &wt.branch).await {
+    let merge_result = if squash {
+        let msg = commit_message
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or("");
+        if msg.is_empty() {
+            return Err(AppError::Unknown(
+                "squash merge requires a commit message".into(),
+            ));
+        }
+        git_ops::merge_squash_and_commit(&ws.root, &wt.branch, msg).await
+    } else {
+        git_ops::merge_no_ff(&ws.root, &wt.branch).await
+    };
+
+    match merge_result {
         Ok(()) => {
-            tracing::info!(id = %worktree_id, branch = %wt.branch, "merged worktree");
+            tracing::info!(
+                id = %worktree_id,
+                branch = %wt.branch,
+                squash,
+                "merged worktree"
+            );
             Ok(MergeResult::Clean)
         }
         Err(AppError::GitError(msg)) => {

@@ -2,4 +2,12 @@
 import type { AgentActivity } from "./AgentActivity";
 import type { WorktreeId } from "./WorktreeId";
 
-export type WorktreeActivity = { worktreeId: WorktreeId, activity: AgentActivity, };
+export type WorktreeActivity = { worktreeId: WorktreeId, activity: AgentActivity, 
+/**
+ * Commits on the worktree's branch not on the workspace's default branch.
+ */
+ahead: number, 
+/**
+ * Commits on the default branch not on the worktree's branch.
+ */
+behind: number, };

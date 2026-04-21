@@ -54,8 +54,15 @@ export function removeWorktree(
   return invoke<void>("remove_worktree", { worktreeId, force });
 }
 
-export function mergeWorktree(worktreeId: WorktreeId): Promise<MergeResult> {
-  return invoke<MergeResult>("merge_worktree", { worktreeId });
+export function mergeWorktree(
+  worktreeId: WorktreeId,
+  opts: { squash?: boolean; commitMessage?: string } = {},
+): Promise<MergeResult> {
+  return invoke<MergeResult>("merge_worktree", {
+    worktreeId,
+    squash: opts.squash ?? false,
+    commitMessage: opts.commitMessage ?? null,
+  });
 }
 
 export function onWorktreesChanged(

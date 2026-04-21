@@ -145,6 +145,30 @@ pub async fn commits_ahead(repo_root: &Path, base: &str, branch: &str) -> AppRes
     Ok(stdout.trim().parse::<u32>().unwrap_or(0))
 }
 
+/// Single-call ahead/behind using `git rev-list --left-right --count
+/// base...branch`. Returns `(ahead, behind)` where `ahead` is commits on
+/// `branch` not on `base` and `behind` is commits on `base` not on `branch`.
+pub async fn ahead_behind(
+    repo_root: &Path,
+    base: &str,
+    branch: &str,
+) -> AppResult<(u32, u32)> {
+    let stdout = git(
+        repo_root,
+        [
+            "rev-list".to_string(),
+            "--left-right".to_string(),
+            "--count".to_string(),
+            format!("{base}...{branch}"),
+        ],
+    )
+    .await?;
+    let mut parts = stdout.split_whitespace();
+    let behind: u32 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    let ahead: u32 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    Ok((ahead, behind))
+}
+
 /// Short name of the currently checked-out branch (e.g. "main"). Returns
 /// "HEAD" if detached.
 pub async fn current_branch(repo_root: &Path) -> AppResult<String> {
@@ -171,6 +195,26 @@ pub async fn merge_no_ff(repo_root: &Path, branch: &str) -> AppResult<()> {
 /// Abort an in-progress merge (used to roll back on conflict).
 pub async fn merge_abort(repo_root: &Path) -> AppResult<()> {
     git(repo_root, ["merge", "--abort"]).await.map(|_| ())
+}
+
+/// Squash-merge `branch` into the current HEAD and commit with `message`.
+/// This is two ops: `git merge --squash` (stages changes, no commit) then
+/// `git commit -m "<message>"`. If either step fails, the caller should
+/// decide whether to abort the merge.
+pub async fn merge_squash_and_commit(
+    repo_root: &Path,
+    branch: &str,
+    message: &str,
+) -> AppResult<()> {
+    git(repo_root, ["merge", "--squash", branch]).await?;
+    // Use --cleanup=verbatim so leading whitespace / blank lines in the
+    // user's message aren't silently stripped.
+    git(
+        repo_root,
+        ["commit", "-m", message, "--cleanup=verbatim"],
+    )
+    .await?;
+    Ok(())
 }
 
 /// `true` if the branch ref (e.g. "agent/foo") exists locally.

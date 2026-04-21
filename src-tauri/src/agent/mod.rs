@@ -82,4 +82,8 @@ pub enum AgentActivity {
 pub struct WorktreeActivity {
     pub worktree_id: crate::util::ids::WorktreeId,
     pub activity: AgentActivity,
+    /// Commits on the worktree's branch not on the workspace's default branch.
+    pub ahead: u32,
+    /// Commits on the default branch not on the worktree's branch.
+    pub behind: u32,
 }

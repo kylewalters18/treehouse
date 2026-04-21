@@ -8,7 +8,12 @@ import {
   onWorktreesChanged,
 } from "@/ipc/client";
 import { toastError, toastInfo, toastSuccess } from "@/stores/toasts";
-import type { AgentActivity, Worktree, WorktreeId } from "@/ipc/types";
+import type {
+  AgentActivity,
+  Worktree,
+  WorktreeActivity,
+  WorktreeId,
+} from "@/ipc/types";
 import { cn } from "@/lib/cn";
 
 export function WorktreeSidebar() {
@@ -24,9 +29,10 @@ export function WorktreeSidebar() {
 
   const [name, setName] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
-  const [activity, setActivity] = useState<Record<WorktreeId, AgentActivity>>(
-    {},
-  );
+  const [mergeTarget, setMergeTarget] = useState<Worktree | null>(null);
+  const [activity, setActivity] = useState<
+    Record<WorktreeId, WorktreeActivity>
+  >({});
 
   const mainClone = worktrees.find((w) => w.isMainClone) ?? null;
   const regular = worktrees.filter((w) => !w.isMainClone);
@@ -51,8 +57,8 @@ export function WorktreeSidebar() {
       try {
         const list = await listAgentActivity(workspace.id);
         if (cancelled) return;
-        const map: Record<WorktreeId, AgentActivity> = {};
-        for (const w of list) map[w.worktreeId] = w.activity;
+        const map: Record<WorktreeId, WorktreeActivity> = {};
+        for (const w of list) map[w.worktreeId] = w;
         setActivity(map);
       } catch {
         // Transient; we'll retry on the next tick.
@@ -85,15 +91,17 @@ export function WorktreeSidebar() {
     await removeWt(w.id, true);
   }
 
-  async function onMerge(w: Worktree) {
-    const ok = window.confirm(
-      `Merge "${w.branch}" into the default branch?\n\nThis runs \`git merge --no-ff ${w.branch}\` on the main repo.`,
-    );
-    if (!ok) return;
+  async function runMerge(
+    w: Worktree,
+    opts: { squash: boolean; commitMessage?: string },
+  ) {
     try {
-      const result = await mergeWorktree(w.id);
+      const result = await mergeWorktree(w.id, opts);
       if (result.kind === "clean") {
-        toastSuccess(`Merged ${w.branch}`, "Merge-back completed cleanly.");
+        toastSuccess(
+          `Merged ${w.branch}`,
+          opts.squash ? "Squash-merge committed." : "Merge-back completed cleanly.",
+        );
       } else if (result.kind === "nothingToMerge") {
         toastInfo(
           `Nothing to merge on ${w.branch}`,
@@ -196,12 +204,18 @@ export function WorktreeSidebar() {
               >
                 <div className="flex min-w-0 flex-1 items-start gap-2">
                   <StatusDot
-                    activity={activity[w.id] ?? "inactive"}
+                    activity={activity[w.id]?.activity ?? "inactive"}
                     className="mt-1"
                   />
                   <div className="min-w-0 flex-1">
-                    <div className="truncate font-mono text-xs text-neutral-200">
-                      {w.branch}
+                    <div className="flex items-baseline gap-2">
+                      <span className="truncate font-mono text-xs text-neutral-200">
+                        {w.branch}
+                      </span>
+                      <AheadBehind
+                        ahead={activity[w.id]?.ahead ?? 0}
+                        behind={activity[w.id]?.behind ?? 0}
+                      />
                     </div>
                     <div
                       className="truncate font-mono text-[10px] text-neutral-500"
@@ -215,7 +229,7 @@ export function WorktreeSidebar() {
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
-                      onMerge(w);
+                      setMergeTarget(w);
                     }}
                     className="rounded border border-neutral-800 px-1.5 py-0.5 text-[10px] text-neutral-400 hover:border-emerald-800 hover:text-emerald-300"
                     title="Merge into default branch"
@@ -238,6 +252,117 @@ export function WorktreeSidebar() {
           </ul>
         )}
       </div>
+      {mergeTarget && (
+        <MergeDialog
+          worktree={mergeTarget}
+          defaultBranch={workspace?.defaultBranch ?? "main"}
+          onClose={() => setMergeTarget(null)}
+          onConfirm={async (opts) => {
+            const target = mergeTarget;
+            setMergeTarget(null);
+            await runMerge(target, opts);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function MergeDialog({
+  worktree,
+  defaultBranch,
+  onConfirm,
+  onClose,
+}: {
+  worktree: Worktree;
+  defaultBranch: string;
+  onConfirm: (opts: { squash: boolean; commitMessage?: string }) => void;
+  onClose: () => void;
+}) {
+  const [squash, setSquash] = useState(false);
+  const [message, setMessage] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") onClose();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  const canConfirm = !submitting && (!squash || message.trim().length > 0);
+
+  async function submit() {
+    if (!canConfirm) return;
+    setSubmitting(true);
+    onConfirm(
+      squash ? { squash: true, commitMessage: message.trim() } : { squash: false },
+    );
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-40 flex items-center justify-center bg-black/50"
+      onClick={onClose}
+    >
+      <div
+        className="w-[28rem] rounded-xl border border-neutral-800 bg-neutral-900 p-5 shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="mb-4">
+          <div className="text-sm font-semibold text-neutral-100">
+            Merge into {defaultBranch}
+          </div>
+          <div className="mt-1 font-mono text-[11px] text-neutral-500">
+            {worktree.branch}
+          </div>
+        </div>
+        <label className="flex items-center gap-2 text-xs text-neutral-200">
+          <input
+            type="checkbox"
+            checked={squash}
+            onChange={(e) => setSquash(e.target.checked)}
+            className="h-3.5 w-3.5 accent-blue-600"
+          />
+          Squash into a single commit
+        </label>
+        <div className="mt-1 pl-[22px] text-[11px] text-neutral-500">
+          {squash
+            ? "Combines all commits on this branch into one on the default branch."
+            : "Keeps per-commit history with a --no-ff merge commit."}
+        </div>
+        {squash && (
+          <div className="mt-3">
+            <label className="mb-1 block text-[11px] uppercase tracking-wider text-neutral-500">
+              Commit message
+            </label>
+            <textarea
+              value={message}
+              onChange={(e) => setMessage(e.target.value)}
+              placeholder="one line summary, blank line, optional body"
+              rows={4}
+              className="w-full rounded border border-neutral-800 bg-neutral-950 px-2 py-1 font-mono text-xs text-neutral-200 placeholder:text-neutral-600 focus:border-neutral-700 focus:outline-none"
+              autoFocus
+            />
+          </div>
+        )}
+        <div className="mt-5 flex justify-end gap-2">
+          <button
+            onClick={onClose}
+            className="rounded border border-neutral-800 px-3 py-1 text-xs text-neutral-300 hover:bg-neutral-800"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={submit}
+            disabled={!canConfirm}
+            className="rounded bg-blue-600 px-3 py-1 text-xs font-medium text-white hover:bg-blue-500 disabled:opacity-50"
+          >
+            {submitting ? "Merging…" : squash ? "Squash merge" : "Merge"}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -245,6 +370,25 @@ export function WorktreeSidebar() {
 function shortenPath(p: string): string {
   const parts = p.split("/");
   return parts.slice(-2).join("/");
+}
+
+function AheadBehind({ ahead, behind }: { ahead: number; behind: number }) {
+  if (ahead === 0 && behind === 0) return null;
+  const fmt = (n: number) => (n > 99 ? "99+" : String(n));
+  return (
+    <span
+      className="shrink-0 font-mono text-[10px] text-neutral-500"
+      title={`${ahead} ahead of / ${behind} behind default branch`}
+    >
+      {ahead > 0 && (
+        <span className="text-emerald-400">↑{fmt(ahead)}</span>
+      )}
+      {ahead > 0 && behind > 0 && <span className="mx-0.5 text-neutral-700">·</span>}
+      {behind > 0 && (
+        <span className="text-amber-400">↓{fmt(behind)}</span>
+      )}
+    </span>
+  );
 }
 
 function StatusDot({
