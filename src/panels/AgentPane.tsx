@@ -42,6 +42,8 @@ export function AgentPane() {
       </div>
     );
   }
+  // Main-clone case is handled at the Workspace layout level — the entire
+  // agent panel is omitted, so we never render here with a main-clone target.
   return <AgentInstance key={worktreeId} worktreeId={worktreeId} />;
 }
 

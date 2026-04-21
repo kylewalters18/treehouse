@@ -30,7 +30,10 @@ pub async fn open_workspace(
     }
     // Reconcile any pre-existing worktrees under <repo>__worktrees/.
     worktree::reconcile(ws.id, &state).await?;
-    // Start watchers + compute initial diffs for every adopted worktree.
+    // Register the main clone as a synthetic sidebar entry.
+    let _ = worktree::register_main_clone(ws.id, &state).await;
+    // Start watchers + compute initial diffs for every adopted worktree,
+    // including the main clone.
     for entry in state.worktrees.iter() {
         let wt = entry.value().clone();
         if wt.workspace_id != ws.id {
@@ -132,6 +135,7 @@ pub async fn launch_agent(
         &state.agents,
         worktree_id,
         wt.path,
+        wt.is_main_clone,
         backend,
         argv,
         cols,

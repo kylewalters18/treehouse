@@ -2,4 +2,10 @@
 import type { WorkspaceId } from "./WorkspaceId";
 import type { WorktreeId } from "./WorktreeId";
 
-export type Worktree = { id: WorktreeId, workspaceId: WorkspaceId, path: string, branch: string, baseRef: string, head: string, dirty: boolean, };
+export type Worktree = { id: WorktreeId, workspaceId: WorkspaceId, path: string, branch: string, baseRef: string, head: string, dirty: boolean, 
+/**
+ * The main repository's own workdir — not a true worktree. Rendered at
+ * the top of the sidebar with a distinct style; launch / merge /
+ * remove are all refused for this entry.
+ */
+isMainClone: boolean, };

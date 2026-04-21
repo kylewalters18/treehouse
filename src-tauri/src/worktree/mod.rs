@@ -19,6 +19,12 @@ pub struct Worktree {
     pub base_ref: String,
     pub head: String,
     pub dirty: bool,
+    /// The main repository's own workdir — not a true worktree. Rendered at
+    /// the top of the sidebar with a distinct style; launch / merge /
+    /// remove are all refused for this entry.
+    pub is_main_clone: bool,
 }
 
-pub use manager::{create, list_for_workspace, merge, reconcile, remove, MergeResult};
+pub use manager::{
+    create, list_for_workspace, merge, reconcile, register_main_clone, remove, MergeResult,
+};

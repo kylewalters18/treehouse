@@ -28,6 +28,9 @@ export function WorktreeSidebar() {
     {},
   );
 
+  const mainClone = worktrees.find((w) => w.isMainClone) ?? null;
+  const regular = worktrees.filter((w) => !w.isMainClone);
+
   useEffect(() => {
     if (!workspace) return;
     refresh(workspace.id);
@@ -123,7 +126,7 @@ export function WorktreeSidebar() {
         <span className="text-[11px] font-semibold uppercase tracking-wider text-neutral-500">
           Worktrees
         </span>
-        <span className="text-[11px] text-neutral-600">{worktrees.length}</span>
+        <span className="text-[11px] text-neutral-600">{regular.length}</span>
       </div>
 
       <form
@@ -154,13 +157,35 @@ export function WorktreeSidebar() {
       )}
 
       <div className="flex-1 overflow-y-auto">
-        {worktrees.length === 0 ? (
+        {mainClone && (
+          <button
+            onClick={() => selectWorktree(mainClone.id)}
+            className={cn(
+              "flex w-full items-center justify-between gap-2 border-b border-neutral-900 px-3 py-2 text-left hover:bg-neutral-900/50",
+              selectedId === mainClone.id && "bg-neutral-900",
+            )}
+            title={`${mainClone.path} — main clone (merges land here; agents don't run here)`}
+          >
+            <div className="flex min-w-0 flex-1 items-start gap-2">
+              <span className="mt-0.5 shrink-0 text-[10px] text-blue-400">◆</span>
+              <div className="min-w-0 flex-1">
+                <div className="truncate font-mono text-xs text-neutral-100">
+                  {mainClone.branch}
+                </div>
+                <div className="truncate text-[10px] uppercase tracking-wider text-neutral-500">
+                  main clone
+                </div>
+              </div>
+            </div>
+          </button>
+        )}
+        {regular.length === 0 ? (
           <div className="m-3 rounded border border-dashed border-neutral-800 p-3 text-center text-[11px] text-neutral-600">
             No worktrees yet. Create one above.
           </div>
         ) : (
           <ul className="divide-y divide-neutral-900">
-            {worktrees.map((w) => (
+            {regular.map((w) => (
               <li
                 key={w.id}
                 className={cn(

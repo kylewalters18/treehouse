@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useMemo } from "react";
 import { PanelGroup, Panel, PanelResizeHandle } from "react-resizable-panels";
 import { useWorkspaceStore } from "@/stores/workspace";
 import { useWorktreesStore } from "@/stores/worktrees";
@@ -17,6 +17,12 @@ export function Workspace() {
   const resetUi = useUiStore((s) => s.reset);
   const focusMode = useUiStore((s) => s.focusMode);
   const toggleFocusMode = useUiStore((s) => s.toggleFocusMode);
+  const worktrees = useWorktreesStore((s) => s.worktrees);
+  const selectedWorktreeId = useUiStore((s) => s.selectedWorktreeId);
+  const hideAgent = useMemo(() => {
+    const sel = worktrees.find((w) => w.id === selectedWorktreeId);
+    return sel?.isMainClone ?? false;
+  }, [worktrees, selectedWorktreeId]);
 
   useEffect(() => {
     return () => {
@@ -44,7 +50,7 @@ export function Workspace() {
     <div className="flex h-full w-full flex-col">
       <header className="flex items-center justify-between border-b border-neutral-800 px-4 py-2 text-xs">
         <div className="flex items-center gap-3">
-          <span className="font-semibold">agent-ide</span>
+          <span className="font-semibold">treehouse</span>
           <span className="font-mono text-neutral-400">{workspace.root}</span>
           <span className="rounded bg-neutral-800 px-2 py-0.5 font-mono text-[11px] text-neutral-300">
             {workspace.defaultBranch}
@@ -80,16 +86,16 @@ export function Workspace() {
         </PanelGroup>
       ) : (
         <PanelGroup
-          key="normal"
+          key={hideAgent ? "normal-no-agent" : "normal"}
           direction="horizontal"
           className="flex-1"
-          autoSaveId="layout-normal"
+          autoSaveId={hideAgent ? "layout-normal-no-agent" : "layout-normal"}
         >
           <Panel defaultSize={18} minSize={14}>
             <WorktreeSidebar />
           </Panel>
           <PanelResizeHandle className="w-px bg-neutral-800 hover:bg-neutral-700" />
-          <Panel defaultSize={48}>
+          <Panel defaultSize={hideAgent ? 82 : 48}>
             <PanelGroup direction="vertical" autoSaveId="center-normal">
               <Panel defaultSize={60}>
                 <DiffPane />
@@ -100,10 +106,14 @@ export function Workspace() {
               </Panel>
             </PanelGroup>
           </Panel>
-          <PanelResizeHandle className="w-px bg-neutral-800 hover:bg-neutral-700" />
-          <Panel defaultSize={34} minSize={20}>
-            <AgentPane />
-          </Panel>
+          {!hideAgent && (
+            <>
+              <PanelResizeHandle className="w-px bg-neutral-800 hover:bg-neutral-700" />
+              <Panel defaultSize={34} minSize={20}>
+                <AgentPane />
+              </Panel>
+            </>
+          )}
         </PanelGroup>
       )}
     </div>

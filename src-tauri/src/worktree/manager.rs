@@ -63,6 +63,7 @@ pub async fn create(
         base_ref: base_sha.clone(),
         head: base_sha,
         dirty: false,
+        is_main_clone: false,
     };
     state.worktrees.insert(worktree.id, worktree.clone());
     tracing::info!(id = %worktree.id, path = %worktree.path.display(), "created worktree");
@@ -79,6 +80,9 @@ pub async fn remove(
         .get(&worktree_id)
         .ok_or_else(|| AppError::Unknown(format!("unknown worktree: {worktree_id}")))?
         .clone();
+    if wt.is_main_clone {
+        return Err(AppError::Unknown("cannot remove the main clone".into()));
+    }
     let ws = state
         .workspaces
         .get(&wt.workspace_id)
@@ -110,6 +114,9 @@ pub async fn merge(
         .get(&worktree_id)
         .ok_or_else(|| AppError::Unknown(format!("unknown worktree: {worktree_id}")))?
         .clone();
+    if wt.is_main_clone {
+        return Err(AppError::Unknown("cannot merge the main clone into itself".into()));
+    }
     let ws = state
         .workspaces
         .get(&wt.workspace_id)
@@ -215,10 +222,51 @@ pub async fn reconcile(workspace_id: WorkspaceId, state: &AppState) -> AppResult
             base_ref: head.clone(),
             head,
             dirty: false,
+            is_main_clone: false,
         };
         tracing::info!(id = %worktree.id, path = %worktree.path.display(), "adopted worktree");
         state.worktrees.insert(worktree.id, worktree);
     }
 
     Ok(())
+}
+
+/// Create the synthetic entry for the main repo's own workdir, so the sidebar
+/// can show it alongside agent worktrees (read-only tools only — no launch,
+/// no merge, no remove).
+pub async fn register_main_clone(
+    workspace_id: WorkspaceId,
+    state: &AppState,
+) -> AppResult<Worktree> {
+    let ws = state
+        .workspaces
+        .get(&workspace_id)
+        .ok_or_else(|| AppError::Unknown(format!("unknown workspace: {workspace_id}")))?
+        .clone();
+
+    // If one is already registered (re-open), reuse it.
+    if let Some(existing) = state
+        .worktrees
+        .iter()
+        .find(|e| e.value().workspace_id == workspace_id && e.value().is_main_clone)
+    {
+        return Ok(existing.value().clone());
+    }
+
+    let branch = git_ops::current_branch(&ws.root).await.unwrap_or_else(|_| ws.default_branch.clone());
+    let head = git_ops::rev_parse(&ws.root, "HEAD").await.unwrap_or_default();
+
+    let worktree = Worktree {
+        id: WorktreeId::new(),
+        workspace_id,
+        path: ws.root.clone(),
+        branch,
+        base_ref: head.clone(),
+        head,
+        dirty: false,
+        is_main_clone: true,
+    };
+    state.worktrees.insert(worktree.id, worktree.clone());
+    tracing::info!(id = %worktree.id, path = %worktree.path.display(), "registered main clone");
+    Ok(worktree)
 }
