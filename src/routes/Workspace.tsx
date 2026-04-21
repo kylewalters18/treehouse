@@ -1,5 +1,10 @@
-import { useEffect, useMemo } from "react";
-import { PanelGroup, Panel, PanelResizeHandle } from "react-resizable-panels";
+import { useEffect, useMemo, useRef } from "react";
+import {
+  PanelGroup,
+  Panel,
+  PanelResizeHandle,
+  type ImperativePanelHandle,
+} from "react-resizable-panels";
 import { useWorkspaceStore } from "@/stores/workspace";
 import { useWorktreesStore } from "@/stores/worktrees";
 import { useDiffsStore } from "@/stores/diffs";
@@ -18,12 +23,37 @@ export function Workspace() {
   const resetUi = useUiStore((s) => s.reset);
   const focusMode = useUiStore((s) => s.focusMode);
   const toggleFocusMode = useUiStore((s) => s.toggleFocusMode);
+  const sidebarCollapsed = useUiStore((s) => s.worktreeSidebarCollapsed);
+  const toggleSidebar = useUiStore((s) => s.toggleWorktreeSidebar);
   const worktrees = useWorktreesStore((s) => s.worktrees);
   const selectedWorktreeId = useUiStore((s) => s.selectedWorktreeId);
   const hideAgent = useMemo(() => {
     const sel = worktrees.find((w) => w.id === selectedWorktreeId);
     return sel?.isMainClone ?? false;
   }, [worktrees, selectedWorktreeId]);
+  const sidebarPanelRef = useRef<ImperativePanelHandle>(null);
+
+  // Reflect store state onto the Panel imperatively. Keeping state in the
+  // store (not inside the Panel) lets the sidebar content + keyboard shortcut
+  // both toggle from outside the Panel component.
+  //
+  // `focusMode` and `hideAgent` are in the deps because each toggle swaps
+  // which PanelGroup (and therefore which Panel) is mounted — the ref points
+  // at a fresh Panel at its default size, so we need to re-assert the
+  // collapsed state so focus mode and sidebar collapse behave independently.
+  //
+  // The rAF defer is because react-resizable-panels' imperative API doesn't
+  // take effect if called before the newly-mounted Panel has registered with
+  // its PanelGroup. Running on the next frame ensures registration is done.
+  useEffect(() => {
+    const id = requestAnimationFrame(() => {
+      const panel = sidebarPanelRef.current;
+      if (!panel) return;
+      if (sidebarCollapsed) panel.collapse();
+      else panel.expand();
+    });
+    return () => cancelAnimationFrame(id);
+  }, [sidebarCollapsed, focusMode, hideAgent]);
 
   useEffect(() => {
     return () => {
@@ -34,16 +64,22 @@ export function Workspace() {
   }, [workspace, resetWorktrees, resetDiffs, resetUi]);
 
   // Cmd+\ (Ctrl+\ on Linux/Win) toggles focus mode.
+  // Cmd+B toggles the worktree sidebar (VS Code muscle memory).
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      if ((e.metaKey || e.ctrlKey) && e.key === "\\") {
+      const mod = e.metaKey || e.ctrlKey;
+      if (!mod) return;
+      if (e.key === "\\") {
         e.preventDefault();
         toggleFocusMode();
+      } else if (e.key === "b" || e.key === "B") {
+        e.preventDefault();
+        toggleSidebar();
       }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [toggleFocusMode]);
+  }, [toggleFocusMode, toggleSidebar]);
 
   if (!workspace) return null;
 
@@ -80,7 +116,13 @@ export function Workspace() {
           className="flex-1"
           autoSaveId="layout-focus"
         >
-          <Panel defaultSize={14} minSize={10}>
+          <Panel
+            ref={sidebarPanelRef}
+            defaultSize={14}
+            minSize={10}
+            collapsible
+            collapsedSize={3}
+          >
             <WorktreeSidebar />
           </Panel>
           <PanelResizeHandle className="w-px bg-neutral-800 hover:bg-neutral-700" />
@@ -95,7 +137,13 @@ export function Workspace() {
           className="flex-1"
           autoSaveId={hideAgent ? "layout-normal-no-agent" : "layout-normal"}
         >
-          <Panel defaultSize={18} minSize={14}>
+          <Panel
+            ref={sidebarPanelRef}
+            defaultSize={18}
+            minSize={14}
+            collapsible
+            collapsedSize={3}
+          >
             <WorktreeSidebar />
           </Panel>
           <PanelResizeHandle className="w-px bg-neutral-800 hover:bg-neutral-700" />

@@ -30,6 +30,8 @@ export function WorktreeSidebar() {
   const removeWt = useWorktreesStore((s) => s.remove);
   const selectedId = useUiStore((s) => s.selectedWorktreeId);
   const selectWorktree = useUiStore((s) => s.selectWorktree);
+  const collapsed = useUiStore((s) => s.worktreeSidebarCollapsed);
+  const toggleCollapsed = useUiStore((s) => s.toggleWorktreeSidebar);
 
   const [name, setName] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
@@ -183,13 +185,64 @@ export function WorktreeSidebar() {
     }
   }
 
+  if (collapsed) {
+    return (
+      <div className="flex h-full flex-col items-center gap-1 overflow-y-auto border-r border-neutral-800 py-2">
+        <button
+          onClick={toggleCollapsed}
+          title="Expand sidebar (⌘B)"
+          className="rounded p-1 text-neutral-500 hover:bg-neutral-900 hover:text-neutral-200"
+        >
+          ▶
+        </button>
+        {mainClone && (
+          <button
+            onClick={() => selectWorktree(mainClone.id)}
+            title={`${mainClone.branch} — main clone`}
+            className={cn(
+              "flex h-7 w-7 items-center justify-center rounded text-[13px] text-blue-400 hover:bg-neutral-900",
+              selectedId === mainClone.id && "bg-neutral-900",
+            )}
+          >
+            ◆
+          </button>
+        )}
+        {regular.map((w) => {
+          const a = activity[w.id];
+          return (
+            <button
+              key={w.id}
+              onClick={() => selectWorktree(w.id)}
+              title={`${w.branch}${a?.ahead ? `  ↑${a.ahead}` : ""}${a?.behind ? `  ↓${a.behind}` : ""}`}
+              className={cn(
+                "flex h-7 w-7 items-center justify-center rounded hover:bg-neutral-900",
+                selectedId === w.id && "bg-neutral-900 ring-1 ring-neutral-700",
+              )}
+            >
+              <StatusDot activity={a?.activity ?? "inactive"} />
+            </button>
+          );
+        })}
+      </div>
+    );
+  }
+
   return (
     <div className="flex h-full flex-col border-r border-neutral-800">
       <div className="flex items-center justify-between border-b border-neutral-900 px-3 py-2">
         <span className="text-[11px] font-semibold uppercase tracking-wider text-neutral-500">
           Worktrees
         </span>
-        <span className="text-[11px] text-neutral-600">{regular.length}</span>
+        <div className="flex items-center gap-2">
+          <span className="text-[11px] text-neutral-600">{regular.length}</span>
+          <button
+            onClick={toggleCollapsed}
+            title="Collapse sidebar (⌘B)"
+            className="rounded px-1 text-[11px] text-neutral-500 hover:bg-neutral-900 hover:text-neutral-200"
+          >
+            ◀
+          </button>
+        </div>
       </div>
 
       <form
@@ -264,7 +317,7 @@ export function WorktreeSidebar() {
                   />
                   <div className="min-w-0 flex-1">
                     <div className="flex items-baseline gap-2">
-                      <span className="truncate font-mono text-sm text-neutral-100">
+                      <span className="truncate font-mono text-xs text-neutral-200">
                         {w.branch}
                       </span>
                       <AheadBehind
