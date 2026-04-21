@@ -57,14 +57,14 @@ impl WatchRegistry {
     }
 }
 
-/// Start watching `worktree_path`. `base_ref` is captured up-front; subsequent
-/// diff recomputes always use this ref. Safe to call twice for the same id
-/// (second call replaces the first).
+/// Start watching `worktree_path`. The watcher reads the current `base_ref`
+/// from `AppState` on each debounce flush, so later mutations (e.g. after
+/// sync or merge-back advance it) take effect for subsequent recomputes.
+/// Safe to call twice for the same id — the second call replaces the first.
 pub fn start(
     app: AppHandle,
     worktree_id: WorktreeId,
     worktree_path: PathBuf,
-    base_ref: String,
 ) -> AppResult<()> {
     let state = app.state::<AppState>();
     let registry = state.watchers.clone();
@@ -76,7 +76,6 @@ pub fn start(
     let ignore = Arc::new(build_ignore(&worktree_path)?);
     let app_for_events = app.clone();
     let root = worktree_path.clone();
-    let base = base_ref.clone();
 
     let mut debouncer = new_debouncer(
         Duration::from_millis(DEBOUNCE_MS),
@@ -115,14 +114,22 @@ pub fn start(
 
             // Recompute + cache + emit.
             tracing::debug!(worktree_id = %worktree_id, "fs batch: recomputing diff");
-            let diff_set = match diff::compute::compute(worktree_id, &root, &base) {
+            let state = app_for_events.state::<AppState>();
+            let base_current = state
+                .worktrees
+                .get(&worktree_id)
+                .map(|e| e.value().base_ref.clone());
+            let Some(base_current) = base_current else {
+                tracing::warn!(%worktree_id, "worktree vanished during debounce");
+                return;
+            };
+            let diff_set = match diff::compute::compute(worktree_id, &root, &base_current) {
                 Ok(d) => d,
                 Err(e) => {
                     tracing::warn!(?e, worktree_id = %worktree_id, "diff compute failed");
                     return;
                 }
             };
-            let state = app_for_events.state::<AppState>();
             state.diffs.insert(worktree_id, diff_set.clone());
             match app_for_events.emit(&crate::ipc::events::diff_updated(worktree_id), &diff_set) {
                 Ok(()) => tracing::debug!(
@@ -154,6 +161,38 @@ pub fn start(
 pub fn stop(app: &AppHandle, id: &WorktreeId) {
     let state = app.state::<AppState>();
     state.watchers.stop(id);
+}
+
+/// Recompute the cached DiffSet for a worktree and emit `diff_updated`.
+/// Reads the latest `base_ref` from state — call this after mutating
+/// `base_ref` (sync, merge-back) so the frontend sees the fresh view even
+/// though no filesystem event fired.
+pub fn recompute_and_emit(app: &AppHandle, worktree_id: WorktreeId) {
+    let app_clone = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let state = app_clone.state::<AppState>();
+        let Some(wt) = state
+            .worktrees
+            .get(&worktree_id)
+            .map(|e| e.value().clone())
+        else {
+            return;
+        };
+        let path = wt.path.clone();
+        let base_ref = wt.base_ref.clone();
+        let res = tokio::task::spawn_blocking(move || {
+            diff::compute::compute(worktree_id, &path, &base_ref)
+        })
+        .await;
+        match res {
+            Ok(Ok(d)) => {
+                state.diffs.insert(worktree_id, d.clone());
+                let _ = app_clone.emit(&crate::ipc::events::diff_updated(worktree_id), &d);
+            }
+            Ok(Err(e)) => tracing::warn!(?e, %worktree_id, "recompute failed"),
+            Err(e) => tracing::warn!(?e, %worktree_id, "recompute task join failed"),
+        }
+    });
 }
 
 fn interesting_kind(kind: &EventKind) -> bool {

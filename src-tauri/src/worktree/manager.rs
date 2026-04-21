@@ -164,8 +164,17 @@ pub async fn sync_with_default(
             let new_head = git_ops::rev_parse(&wt.path, "HEAD")
                 .await
                 .unwrap_or_default();
+            // After sync, the branch now contains every commit on default.
+            // Advance `base_ref` to default's current HEAD so the Changes
+            // list reflects "what's on this branch beyond default" cleanly
+            // — everything we just pulled in is no longer highlighted as
+            // pending.
+            let new_base = git_ops::rev_parse(&ws.root, &ws.default_branch)
+                .await
+                .unwrap_or_else(|_| new_head.clone());
             if let Some(mut entry) = state.worktrees.get_mut(&worktree_id) {
                 entry.head = new_head.clone();
+                entry.base_ref = new_base;
             }
             tracing::info!(
                 id = %worktree_id,
@@ -297,6 +306,34 @@ pub async fn merge(
 
     match op_result {
         Ok(()) => {
+            // Merge-back advances default's HEAD but leaves the merged
+            // worktree's files untouched. Re-anchor its `base_ref` so the
+            // Changes list collapses to just whatever's still pending.
+            //
+            // The main clone ALSO needs updating: its workdir just advanced
+            // (`git merge` moves HEAD + updates files in the main repo
+            // we ran it in), but our cached `base_ref` and `head` are from
+            // before. Otherwise the main clone's DiffPane will keep showing
+            // the merged-in commits as pending changes.
+            let new_base = git_ops::rev_parse(&ws.root, &ws.default_branch)
+                .await
+                .unwrap_or_default();
+            if let Some(mut entry) = state.worktrees.get_mut(&worktree_id) {
+                entry.base_ref = new_base.clone();
+            }
+            let main_clone_id: Option<WorktreeId> = state
+                .worktrees
+                .iter()
+                .find(|e| {
+                    e.value().workspace_id == wt.workspace_id && e.value().is_main_clone
+                })
+                .map(|e| *e.key());
+            if let Some(id) = main_clone_id {
+                if let Some(mut entry) = state.worktrees.get_mut(&id) {
+                    entry.base_ref = new_base.clone();
+                    entry.head = new_base.clone();
+                }
+            }
             tracing::info!(
                 id = %worktree_id,
                 branch = %wt.branch,

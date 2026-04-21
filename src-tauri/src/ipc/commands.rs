@@ -141,9 +141,17 @@ pub async fn remove_worktree(
 pub async fn sync_worktree(
     worktree_id: WorktreeId,
     strategy: SyncStrategy,
+    app: AppHandle,
     state: State<'_, AppState>,
 ) -> AppResult<SyncResult> {
-    worktree::sync_with_default(worktree_id, strategy, &state).await
+    let result = worktree::sync_with_default(worktree_id, strategy, &state).await?;
+    if matches!(result, SyncResult::Clean { .. }) {
+        // base_ref just advanced; force a recompute + emit since most of
+        // the sync file churn has already debounced and the final state may
+        // not have triggered another event.
+        fs_watch::recompute_and_emit(&app, worktree_id);
+    }
+    Ok(result)
 }
 
 #[tauri::command]
@@ -164,6 +172,19 @@ pub async fn merge_worktree(
     // to delete it when they're done.
     if let (Some(ws_id), MergeResult::Clean) = (workspace_id, &result) {
         let _ = app.emit(&events::worktrees_changed(ws_id), ());
+        // base_ref just advanced for both the merged worktree AND the main
+        // clone (the merge ran there — its HEAD + workdir moved). Neither
+        // triggers a useful fs event; explicitly recompute both so the
+        // Changes list refreshes wherever the user happens to be looking.
+        fs_watch::recompute_and_emit(&app, worktree_id);
+        let main_clone_id: Option<WorktreeId> = state
+            .worktrees
+            .iter()
+            .find(|e| e.value().workspace_id == ws_id && e.value().is_main_clone)
+            .map(|e| *e.key());
+        if let Some(id) = main_clone_id {
+            fs_watch::recompute_and_emit(&app, id);
+        }
     }
     Ok(result)
 }
@@ -375,7 +396,7 @@ fn prime_worktree_watch(app: &AppHandle, wt: &Worktree) {
     let worktree_path = wt.path.clone();
     let base_ref = wt.base_ref.clone();
 
-    if let Err(e) = fs_watch::start(app.clone(), worktree_id, worktree_path.clone(), base_ref.clone()) {
+    if let Err(e) = fs_watch::start(app.clone(), worktree_id, worktree_path.clone()) {
         tracing::warn!(?e, "fs_watch start failed");
     }
 
