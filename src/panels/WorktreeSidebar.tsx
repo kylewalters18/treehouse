@@ -35,6 +35,7 @@ export function WorktreeSidebar() {
   const [name, setName] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
   const [mergeTarget, setMergeTarget] = useState<Worktree | null>(null);
+  const [syncTarget, setSyncTarget] = useState<Worktree | null>(null);
   const syncStrategyDefault = useSettingsStore((s) => s.settings.syncStrategy);
   const mergeStrategyDefault = useSettingsStore(
     (s) => s.settings.mergeBackStrategy,
@@ -326,35 +327,12 @@ export function WorktreeSidebar() {
                     </div>
                   </div>
                 </div>
-                <span className="pointer-events-none absolute right-2 top-1.5 flex items-center gap-1 rounded bg-neutral-900/95 px-1 opacity-0 shadow-sm transition group-hover:pointer-events-auto group-hover:opacity-100">
-                  {(activity[w.id]?.behind ?? 0) > 0 && (
-                    <SyncButton
-                      behind={activity[w.id]?.behind ?? 0}
-                      defaultStrategy={syncStrategyDefault}
-                      onSync={(strategy) => onSync(w, strategy)}
-                    />
-                  )}
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setMergeTarget(w);
-                    }}
-                    className="rounded border border-neutral-800 px-1.5 py-0.5 text-[10px] text-neutral-400 hover:border-emerald-800 hover:text-emerald-300"
-                    title="Merge into default branch"
-                  >
-                    Merge
-                  </button>
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onRemove(w);
-                    }}
-                    className="text-[11px] text-neutral-500 hover:text-red-400"
-                    title="Remove worktree"
-                  >
-                    ✕
-                  </button>
-                </span>
+                <RowMenu
+                  behind={activity[w.id]?.behind ?? 0}
+                  onSync={() => setSyncTarget(w)}
+                  onMerge={() => setMergeTarget(w)}
+                  onRemove={() => onRemove(w)}
+                />
               </li>
             ))}
           </ul>
@@ -370,6 +348,20 @@ export function WorktreeSidebar() {
             const target = mergeTarget;
             setMergeTarget(null);
             await runMerge(target, opts);
+          }}
+        />
+      )}
+      {syncTarget && (
+        <SyncDialog
+          worktree={syncTarget}
+          defaultBranch={workspace?.defaultBranch ?? "main"}
+          behind={activity[syncTarget.id]?.behind ?? 0}
+          initialStrategy={syncStrategyDefault}
+          onClose={() => setSyncTarget(null)}
+          onConfirm={async (strategy) => {
+            const target = syncTarget;
+            setSyncTarget(null);
+            await onSync(target, strategy);
           }}
         />
       )}
@@ -493,16 +485,111 @@ function MergeDialog({
   );
 }
 
-function StrategyOption({
+function strategyLabel(s: MergeBackStrategy): string {
+  switch (s) {
+    case "mergeNoFf":
+      return "Merge";
+    case "squash":
+      return "Squash merge";
+    case "rebaseFf":
+      return "Rebase merge";
+  }
+}
+
+function SyncDialog({
+  worktree,
+  defaultBranch,
+  behind,
+  initialStrategy,
+  onConfirm,
+  onClose,
+}: {
+  worktree: Worktree;
+  defaultBranch: string;
+  behind: number;
+  initialStrategy: SyncStrategy;
+  onConfirm: (strategy: SyncStrategy) => void;
+  onClose: () => void;
+}) {
+  const [strategy, setStrategy] = useState<SyncStrategy>(initialStrategy);
+  const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") onClose();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  return (
+    <div
+      className="fixed inset-0 z-40 flex items-center justify-center bg-black/50"
+      onClick={onClose}
+    >
+      <div
+        className="w-[26rem] rounded-xl border border-neutral-800 bg-neutral-900 p-5 shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="mb-4">
+          <div className="text-xs font-semibold text-neutral-100">
+            Sync from {defaultBranch}
+          </div>
+          <div className="mt-1 font-mono text-[11px] text-neutral-500">
+            {worktree.branch} · {behind} commit{behind === 1 ? "" : "s"} behind
+          </div>
+        </div>
+        <div className="flex flex-col gap-2">
+          <StrategyOption
+            value="rebase"
+            current={strategy}
+            onChange={setStrategy}
+            label="Rebase"
+            help="git rebase default — replays the agent's commits on top of the latest default. Auto-aborts on conflict."
+          />
+          <StrategyOption
+            value="merge"
+            current={strategy}
+            onChange={setStrategy}
+            label="Merge"
+            help="git merge default — adds a merge commit. Conflicts are left in the workdir for you to resolve."
+          />
+        </div>
+        <div className="mt-5 flex justify-end gap-2">
+          <button
+            onClick={onClose}
+            className="rounded border border-neutral-800 px-3 py-1 text-xs text-neutral-300 hover:bg-neutral-800"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={() => {
+              setSubmitting(true);
+              onConfirm(strategy);
+            }}
+            disabled={submitting}
+            className="rounded bg-blue-600 px-3 py-1 text-xs font-medium text-white hover:bg-blue-500 disabled:opacity-50"
+          >
+            {submitting ? "Syncing…" : strategy === "rebase" ? "Rebase" : "Merge"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// StrategyOption is shared between MergeDialog and SyncDialog — generic over
+// the strategy enum via `value`/`current`.
+function StrategyOption<T extends string>({
   value,
   current,
   onChange,
   label,
   help,
 }: {
-  value: MergeBackStrategy;
-  current: MergeBackStrategy;
-  onChange: (v: MergeBackStrategy) => void;
+  value: T;
+  current: T;
+  onChange: (v: T) => void;
   label: string;
   help: string;
 }) {
@@ -530,106 +617,105 @@ function StrategyOption({
   );
 }
 
-function strategyLabel(s: MergeBackStrategy): string {
-  switch (s) {
-    case "mergeNoFf":
-      return "Merge";
-    case "squash":
-      return "Squash merge";
-    case "rebaseFf":
-      return "Rebase merge";
-  }
-}
-
-function SyncButton({
+function RowMenu({
   behind,
-  defaultStrategy,
   onSync,
+  onMerge,
+  onRemove,
 }: {
   behind: number;
-  defaultStrategy: SyncStrategy;
-  onSync: (strategy: SyncStrategy) => void;
+  onSync: () => void;
+  onMerge: () => void;
+  onRemove: () => void;
 }) {
   const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
   useEffect(() => {
     if (!open) return;
-    function onDocClick() {
-      setOpen(false);
+    function onDocClick(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
     }
-    window.addEventListener("click", onDocClick);
-    return () => window.removeEventListener("click", onDocClick);
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") setOpen(false);
+    }
+    window.addEventListener("mousedown", onDocClick);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousedown", onDocClick);
+      window.removeEventListener("keydown", onKey);
+    };
   }, [open]);
 
-  const defaultLabel = defaultStrategy === "rebase" ? "rebase" : "merge";
+  function run(fn: () => void) {
+    return (e: React.MouseEvent) => {
+      e.stopPropagation();
+      setOpen(false);
+      fn();
+    };
+  }
 
   return (
-    <span className="relative inline-flex">
-      <button
-        onClick={(e) => {
-          e.stopPropagation();
-          onSync(defaultStrategy);
-        }}
-        className="rounded-l border border-r-0 border-neutral-800 px-1.5 py-0.5 text-[10px] text-neutral-400 hover:border-blue-800 hover:text-blue-300"
-        title={`Pull ${behind} commit(s) from default branch (${defaultLabel}; configurable in ⚙)`}
-      >
-        Sync ↓
-      </button>
+    <div ref={ref} className="absolute right-2 top-1.5">
       <button
         onClick={(e) => {
           e.stopPropagation();
           setOpen((v) => !v);
         }}
-        className="rounded-r border border-neutral-800 px-1 py-0.5 text-[10px] text-neutral-400 hover:border-blue-800 hover:text-blue-300"
-        title="One-off sync strategy override"
+        className={cn(
+          "rounded px-1.5 py-0.5 text-[13px] leading-none text-neutral-400 transition hover:bg-neutral-800 hover:text-neutral-200",
+          open
+            ? "bg-neutral-800 text-neutral-100 opacity-100"
+            : "opacity-0 group-hover:opacity-100",
+        )}
+        title="Actions"
       >
-        ▾
+        ⋯
       </button>
       {open && (
-        <div className="absolute right-0 top-[110%] z-30 w-44 rounded border border-neutral-800 bg-neutral-900 py-1 shadow-xl">
-          <SyncMenuItem
-            label="Rebase"
-            sub="git rebase default; aborts on conflict"
-            onClick={() => {
-              setOpen(false);
-              onSync("rebase");
-            }}
-          />
-          <SyncMenuItem
-            label="Merge"
-            sub="git merge default"
-            onClick={() => {
-              setOpen(false);
-              onSync("merge");
-            }}
-          />
+        <div className="absolute right-0 top-[110%] z-30 w-40 overflow-hidden rounded border border-neutral-800 bg-neutral-900 py-1 shadow-xl">
+          {behind > 0 && (
+            <MenuItem onClick={run(onSync)}>
+              Sync <span className="text-neutral-600">↓{behind}</span>
+            </MenuItem>
+          )}
+          <MenuItem onClick={run(onMerge)}>Merge…</MenuItem>
+          <div className="my-1 border-t border-neutral-800" />
+          <MenuItem onClick={run(onRemove)} danger>
+            Remove
+          </MenuItem>
         </div>
       )}
-    </span>
+    </div>
   );
 }
 
-function SyncMenuItem({
-  label,
-  sub,
+function MenuItem({
   onClick,
+  children,
+  danger,
 }: {
-  label: string;
-  sub: string;
-  onClick: () => void;
+  onClick: (e: React.MouseEvent) => void;
+  children: React.ReactNode;
+  danger?: boolean;
 }) {
   return (
     <button
-      onClick={(e) => {
-        e.stopPropagation();
-        onClick();
-      }}
-      className="block w-full px-2 py-1 text-left text-[11px] hover:bg-neutral-800"
+      onClick={onClick}
+      className={cn(
+        "block w-full px-3 py-1 text-left text-xs",
+        danger
+          ? "text-red-400 hover:bg-red-950/40"
+          : "text-neutral-200 hover:bg-neutral-800",
+      )}
     >
-      <div className="text-neutral-100">{label}</div>
-      <div className="font-mono text-[10px] text-neutral-500">{sub}</div>
+      {children}
     </button>
   );
 }
+
 
 function shortenPath(p: string): string {
   const parts = p.split("/");
