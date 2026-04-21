@@ -197,6 +197,39 @@ pub async fn merge_abort(repo_root: &Path) -> AppResult<()> {
     git(repo_root, ["merge", "--abort"]).await.map(|_| ())
 }
 
+/// Plain `git merge <branch>` into the current HEAD. Used by worktree
+/// sync-from-default. Treat git's exit code as the success/failure signal;
+/// caller distinguishes "conflict" by inspecting the error body.
+pub async fn merge_into_current(repo_root: &Path, branch: &str) -> AppResult<()> {
+    git(
+        repo_root,
+        ["merge", "--no-edit", branch],
+    )
+    .await
+    .map(|_| ())
+}
+
+/// `git rebase <upstream>` in the given workdir. On any failure (typically a
+/// conflict), automatically `git rebase --abort` so the workdir is left
+/// clean — sparing users from having to know `git rebase --continue`. Caller
+/// surfaces a "rebase aborted" result with the original git stderr.
+pub async fn rebase_onto(workdir: &Path, upstream: &str) -> AppResult<()> {
+    match git(workdir, ["rebase", upstream]).await {
+        Ok(_) => Ok(()),
+        Err(e) => {
+            let _ = git(workdir, ["rebase", "--abort"]).await;
+            Err(e)
+        }
+    }
+}
+
+/// `git merge --ff-only <branch>` — refuses to merge if a fast-forward isn't
+/// possible. Used by the merge-back "rebase + ff" strategy after the agent
+/// branch has been rebased onto the default branch.
+pub async fn merge_ff_only(repo_root: &Path, branch: &str) -> AppResult<()> {
+    git(repo_root, ["merge", "--ff-only", branch]).await.map(|_| ())
+}
+
 /// Squash-merge `branch` into the current HEAD and commit with `message`.
 /// This is two ops: `git merge --squash` (stages changes, no commit) then
 /// `git commit -m "<message>"`. If either step fails, the caller should

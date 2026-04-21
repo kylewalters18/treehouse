@@ -2,14 +2,18 @@ import { useEffect, useRef, useState } from "react";
 import { useWorkspaceStore } from "@/stores/workspace";
 import { useWorktreesStore } from "@/stores/worktrees";
 import { useUiStore } from "@/stores/ui";
+import { useSettingsStore } from "@/stores/settings";
 import {
   listAgentActivity,
   mergeWorktree,
   onWorktreesChanged,
+  syncWorktree,
 } from "@/ipc/client";
 import { toastError, toastInfo, toastSuccess } from "@/stores/toasts";
 import type {
   AgentActivity,
+  MergeBackStrategy,
+  SyncStrategy,
   Worktree,
   WorktreeActivity,
   WorktreeId,
@@ -30,6 +34,10 @@ export function WorktreeSidebar() {
   const [name, setName] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
   const [mergeTarget, setMergeTarget] = useState<Worktree | null>(null);
+  const syncStrategyDefault = useSettingsStore((s) => s.settings.syncStrategy);
+  const mergeStrategyDefault = useSettingsStore(
+    (s) => s.settings.mergeBackStrategy,
+  );
   const [activity, setActivity] = useState<
     Record<WorktreeId, WorktreeActivity>
   >({});
@@ -84,24 +92,66 @@ export function WorktreeSidebar() {
   }
 
   async function onRemove(w: Worktree) {
-    const ok = window.confirm(
-      `Remove worktree "${w.branch}"?\n\n${w.path}\n\nThis will delete the checkout and local branch.`,
-    );
+    const a = activity[w.id];
+    const warnings: string[] = [];
+    if (a?.dirty) warnings.push("• uncommitted changes in the workdir");
+    if ((a?.ahead ?? 0) > 0)
+      warnings.push(`• ${a?.ahead} unmerged commit(s) on ${w.branch}`);
+    const lead = `Remove worktree "${w.branch}"?\n\n${w.path}`;
+    const tail = warnings.length
+      ? `\n\nWarning — this will be lost:\n${warnings.join("\n")}\n\nDelete anyway?`
+      : "\n\nThis will delete the checkout and local branch.";
+    const ok = window.confirm(lead + tail);
     if (!ok) return;
     await removeWt(w.id, true);
   }
 
-  async function runMerge(
-    w: Worktree,
-    opts: { squash: boolean; commitMessage?: string },
-  ) {
+  async function onSync(w: Worktree, strategy: SyncStrategy) {
     try {
-      const result = await mergeWorktree(w.id, opts);
+      const result = await syncWorktree(w.id, strategy);
       if (result.kind === "clean") {
         toastSuccess(
-          `Merged ${w.branch}`,
-          opts.squash ? "Squash-merge committed." : "Merge-back completed cleanly.",
+          `Synced ${w.branch}`,
+          strategy === "rebase"
+            ? `Rebased onto default branch.`
+            : `Default branch merged into ${w.branch}.`,
         );
+      } else if (result.kind === "alreadyUpToDate") {
+        toastInfo(`${w.branch} is up to date`, "Nothing to sync.");
+      } else if (result.kind === "dirty") {
+        toastInfo(
+          `${w.branch} has uncommitted changes`,
+          "Commit them before syncing — git won't merge or rebase over a dirty workdir.",
+        );
+      } else if (result.kind === "conflict") {
+        toastError(
+          `Conflicts syncing ${w.branch}`,
+          `${result.message}\n\nResolve in the worktree's terminal and commit.`,
+        );
+      } else if (result.kind === "rebaseAborted") {
+        toastError(
+          `Rebase aborted on ${w.branch}`,
+          `${result.message}\n\nThe worktree was left clean. Try the Merge sync strategy instead.`,
+        );
+      }
+    } catch (e: unknown) {
+      const msg =
+        e && typeof e === "object" && "message" in e
+          ? String((e as { message: unknown }).message)
+          : String(e);
+      toastError("Sync failed", msg);
+    }
+  }
+
+  async function runMerge(
+    w: Worktree,
+    opts: { strategy: MergeBackStrategy; commitMessage?: string },
+  ) {
+    try {
+      const result = await mergeWorktree(w.id, opts.strategy, opts.commitMessage);
+      const label = strategyLabel(opts.strategy);
+      if (result.kind === "clean") {
+        toastSuccess(`Merged ${w.branch}`, `${label} completed cleanly.`);
       } else if (result.kind === "nothingToMerge") {
         toastInfo(
           `Nothing to merge on ${w.branch}`,
@@ -113,6 +163,11 @@ export function WorktreeSidebar() {
         toastError(
           `Conflicts merging ${w.branch}`,
           `${result.message}\n\nResolve in the main repo and commit.`,
+        );
+      } else if (result.kind === "rebaseAborted") {
+        toastError(
+          `Rebase pre-step aborted on ${w.branch}`,
+          `${result.message}\n\nThe worktree was left as-is. Try a Merge-commit strategy, or sync first.`,
         );
       } else if (result.kind === "wrongBranch") {
         toastInfo(
@@ -226,6 +281,13 @@ export function WorktreeSidebar() {
                   </div>
                 </div>
                 <span className="flex items-center gap-1 opacity-0 transition group-hover:opacity-100">
+                  {(activity[w.id]?.behind ?? 0) > 0 && (
+                    <SyncButton
+                      behind={activity[w.id]?.behind ?? 0}
+                      defaultStrategy={syncStrategyDefault}
+                      onSync={(strategy) => onSync(w, strategy)}
+                    />
+                  )}
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
@@ -256,6 +318,7 @@ export function WorktreeSidebar() {
         <MergeDialog
           worktree={mergeTarget}
           defaultBranch={workspace?.defaultBranch ?? "main"}
+          initialStrategy={mergeStrategyDefault}
           onClose={() => setMergeTarget(null)}
           onConfirm={async (opts) => {
             const target = mergeTarget;
@@ -271,15 +334,20 @@ export function WorktreeSidebar() {
 function MergeDialog({
   worktree,
   defaultBranch,
+  initialStrategy,
   onConfirm,
   onClose,
 }: {
   worktree: Worktree;
   defaultBranch: string;
-  onConfirm: (opts: { squash: boolean; commitMessage?: string }) => void;
+  initialStrategy: MergeBackStrategy;
+  onConfirm: (opts: {
+    strategy: MergeBackStrategy;
+    commitMessage?: string;
+  }) => void;
   onClose: () => void;
 }) {
-  const [squash, setSquash] = useState(false);
+  const [strategy, setStrategy] = useState<MergeBackStrategy>(initialStrategy);
   const [message, setMessage] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
@@ -291,14 +359,17 @@ function MergeDialog({
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  const canConfirm = !submitting && (!squash || message.trim().length > 0);
+  const needsMessage = strategy === "squash";
+  const canConfirm =
+    !submitting && (!needsMessage || message.trim().length > 0);
 
   async function submit() {
     if (!canConfirm) return;
     setSubmitting(true);
-    onConfirm(
-      squash ? { squash: true, commitMessage: message.trim() } : { squash: false },
-    );
+    onConfirm({
+      strategy,
+      commitMessage: needsMessage ? message.trim() : undefined,
+    });
   }
 
   return (
@@ -318,21 +389,30 @@ function MergeDialog({
             {worktree.branch}
           </div>
         </div>
-        <label className="flex items-center gap-2 text-xs text-neutral-200">
-          <input
-            type="checkbox"
-            checked={squash}
-            onChange={(e) => setSquash(e.target.checked)}
-            className="h-3.5 w-3.5 accent-blue-600"
+        <div className="flex flex-col gap-2">
+          <StrategyOption
+            value="mergeNoFf"
+            current={strategy}
+            onChange={setStrategy}
+            label="Merge commit"
+            help="git merge --no-ff — keeps per-commit history with an explicit merge commit."
           />
-          Squash into a single commit
-        </label>
-        <div className="mt-1 pl-[22px] text-[11px] text-neutral-500">
-          {squash
-            ? "Combines all commits on this branch into one on the default branch."
-            : "Keeps per-commit history with a --no-ff merge commit."}
+          <StrategyOption
+            value="squash"
+            current={strategy}
+            onChange={setStrategy}
+            label="Squash + commit"
+            help="git merge --squash + commit — collapses every commit on this branch into one on default."
+          />
+          <StrategyOption
+            value="rebaseFf"
+            current={strategy}
+            onChange={setStrategy}
+            label="Rebase + fast-forward"
+            help="git rebase default in the worktree, then git merge --ff-only — linear history, no merge commit. Auto-aborts the rebase if it conflicts."
+          />
         </div>
-        {squash && (
+        {needsMessage && (
           <div className="mt-3">
             <label className="mb-1 block text-[11px] uppercase tracking-wider text-neutral-500">
               Commit message
@@ -359,11 +439,149 @@ function MergeDialog({
             disabled={!canConfirm}
             className="rounded bg-blue-600 px-3 py-1 text-xs font-medium text-white hover:bg-blue-500 disabled:opacity-50"
           >
-            {submitting ? "Merging…" : squash ? "Squash merge" : "Merge"}
+            {submitting ? "Merging…" : strategyLabel(strategy)}
           </button>
         </div>
       </div>
     </div>
+  );
+}
+
+function StrategyOption({
+  value,
+  current,
+  onChange,
+  label,
+  help,
+}: {
+  value: MergeBackStrategy;
+  current: MergeBackStrategy;
+  onChange: (v: MergeBackStrategy) => void;
+  label: string;
+  help: string;
+}) {
+  const active = value === current;
+  return (
+    <label
+      className={cn(
+        "flex cursor-pointer items-start gap-2 rounded border px-2 py-1.5 text-xs",
+        active
+          ? "border-blue-700 bg-blue-950/30"
+          : "border-neutral-800 hover:bg-neutral-950",
+      )}
+    >
+      <input
+        type="radio"
+        checked={active}
+        onChange={() => onChange(value)}
+        className="mt-0.5 accent-blue-600"
+      />
+      <span className="flex-1">
+        <div className="font-medium text-neutral-100">{label}</div>
+        <div className="mt-0.5 text-[11px] text-neutral-500">{help}</div>
+      </span>
+    </label>
+  );
+}
+
+function strategyLabel(s: MergeBackStrategy): string {
+  switch (s) {
+    case "mergeNoFf":
+      return "Merge";
+    case "squash":
+      return "Squash merge";
+    case "rebaseFf":
+      return "Rebase merge";
+  }
+}
+
+function SyncButton({
+  behind,
+  defaultStrategy,
+  onSync,
+}: {
+  behind: number;
+  defaultStrategy: SyncStrategy;
+  onSync: (strategy: SyncStrategy) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (!open) return;
+    function onDocClick() {
+      setOpen(false);
+    }
+    window.addEventListener("click", onDocClick);
+    return () => window.removeEventListener("click", onDocClick);
+  }, [open]);
+
+  const defaultLabel = defaultStrategy === "rebase" ? "rebase" : "merge";
+
+  return (
+    <span className="relative inline-flex">
+      <button
+        onClick={(e) => {
+          e.stopPropagation();
+          onSync(defaultStrategy);
+        }}
+        className="rounded-l border border-r-0 border-neutral-800 px-1.5 py-0.5 text-[10px] text-neutral-400 hover:border-blue-800 hover:text-blue-300"
+        title={`Pull ${behind} commit(s) from default branch (${defaultLabel}; configurable in ⚙)`}
+      >
+        Sync ↓
+      </button>
+      <button
+        onClick={(e) => {
+          e.stopPropagation();
+          setOpen((v) => !v);
+        }}
+        className="rounded-r border border-neutral-800 px-1 py-0.5 text-[10px] text-neutral-400 hover:border-blue-800 hover:text-blue-300"
+        title="One-off sync strategy override"
+      >
+        ▾
+      </button>
+      {open && (
+        <div className="absolute right-0 top-[110%] z-30 w-44 rounded border border-neutral-800 bg-neutral-900 py-1 shadow-xl">
+          <SyncMenuItem
+            label="Rebase"
+            sub="git rebase default; aborts on conflict"
+            onClick={() => {
+              setOpen(false);
+              onSync("rebase");
+            }}
+          />
+          <SyncMenuItem
+            label="Merge"
+            sub="git merge default"
+            onClick={() => {
+              setOpen(false);
+              onSync("merge");
+            }}
+          />
+        </div>
+      )}
+    </span>
+  );
+}
+
+function SyncMenuItem({
+  label,
+  sub,
+  onClick,
+}: {
+  label: string;
+  sub: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={(e) => {
+        e.stopPropagation();
+        onClick();
+      }}
+      className="block w-full px-2 py-1 text-left text-[11px] hover:bg-neutral-800"
+    >
+      <div className="text-neutral-100">{label}</div>
+      <div className="font-mono text-[10px] text-neutral-500">{sub}</div>
+    </button>
   );
 }
 

@@ -9,6 +9,52 @@ use crate::util::ids::{WorkspaceId, WorktreeId};
 
 use super::{git_ops, Worktree};
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, TS, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub enum SyncStrategy {
+    /// `git merge <default>` — adds a merge commit, conflicts left in workdir.
+    Merge,
+    /// `git rebase <default>` — replays agent commits on top of default.
+    /// On conflict we auto-abort so the workdir is left clean.
+    #[default]
+    Rebase,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, TS, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub enum MergeBackStrategy {
+    /// `git merge --no-ff <branch>` on default — preserves branch history.
+    MergeNoFf,
+    /// `git merge --squash <branch>` on default + commit with message.
+    Squash,
+    /// Rebase the agent branch onto default, then ff-only merge — linear
+    /// history, no merge commit.
+    #[default]
+    RebaseFf,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+#[ts(export)]
+pub enum SyncResult {
+    /// Pulled cleanly — the worktree now has every commit from the default
+    /// branch. New `head` sha returned.
+    Clean { head: String },
+    /// Already includes everything from the default branch — nothing to do.
+    AlreadyUpToDate,
+    /// Workdir has uncommitted changes; the merge/rebase would clobber them.
+    /// User should commit (or stash manually) first.
+    Dirty,
+    /// Merge attempted but produced conflicts. The conflicts are sitting in
+    /// the workdir for the user to resolve in the worktree's terminal.
+    Conflict { message: String },
+    /// Rebase produced conflicts; auto-aborted so the workdir is clean. User
+    /// can retry with the merge strategy or resolve the underlying issue.
+    RebaseAborted { message: String },
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 #[ts(export)]
@@ -21,6 +67,10 @@ pub enum MergeResult {
         uncommitted_changes: bool,
     },
     Conflict { message: String },
+    /// Rebase pre-step (RebaseFf strategy) produced conflicts and was
+    /// auto-aborted; nothing was merged. Try MergeNoFf or resolve the
+    /// underlying drift first.
+    RebaseAborted { message: String },
     /// Main repo is not on the default branch; user must check it out first.
     WrongBranch { current: String, expected: String },
 }
@@ -70,6 +120,72 @@ pub async fn create(
     Ok(worktree)
 }
 
+pub async fn sync_with_default(
+    worktree_id: WorktreeId,
+    strategy: SyncStrategy,
+    state: &AppState,
+) -> AppResult<SyncResult> {
+    let wt = state
+        .worktrees
+        .get(&worktree_id)
+        .ok_or_else(|| AppError::Unknown(format!("unknown worktree: {worktree_id}")))?
+        .clone();
+    if wt.is_main_clone {
+        return Err(AppError::Unknown("cannot sync the main clone".into()));
+    }
+    let ws = state
+        .workspaces
+        .get(&wt.workspace_id)
+        .ok_or_else(|| AppError::Unknown(format!("unknown workspace: {}", wt.workspace_id)))?
+        .clone();
+
+    // Nothing to do if there's no behind state.
+    let behind = git_ops::commits_ahead(&ws.root, &wt.branch, &ws.default_branch)
+        .await
+        .unwrap_or(0);
+    if behind == 0 {
+        return Ok(SyncResult::AlreadyUpToDate);
+    }
+
+    // Refuse if the workdir has uncommitted edits. Both merge and rebase
+    // would refuse anyway, and per the no-auto-commit rule we don't stash
+    // on the user's behalf.
+    if git_ops::has_changes(&wt.path).await.unwrap_or(false) {
+        return Ok(SyncResult::Dirty);
+    }
+
+    let op = match strategy {
+        SyncStrategy::Merge => git_ops::merge_into_current(&wt.path, &ws.default_branch).await,
+        SyncStrategy::Rebase => git_ops::rebase_onto(&wt.path, &ws.default_branch).await,
+    };
+
+    match op {
+        Ok(()) => {
+            let new_head = git_ops::rev_parse(&wt.path, "HEAD")
+                .await
+                .unwrap_or_default();
+            if let Some(mut entry) = state.worktrees.get_mut(&worktree_id) {
+                entry.head = new_head.clone();
+            }
+            tracing::info!(
+                id = %worktree_id,
+                new_head = %new_head,
+                ?strategy,
+                "synced worktree"
+            );
+            Ok(SyncResult::Clean { head: new_head })
+        }
+        Err(AppError::GitError(msg)) => {
+            tracing::warn!(id = %worktree_id, %msg, ?strategy, "sync conflicts");
+            match strategy {
+                SyncStrategy::Merge => Ok(SyncResult::Conflict { message: msg }),
+                SyncStrategy::Rebase => Ok(SyncResult::RebaseAborted { message: msg }),
+            }
+        }
+        Err(e) => Err(e),
+    }
+}
+
 pub async fn remove(
     worktree_id: WorktreeId,
     force: bool,
@@ -107,7 +223,7 @@ pub async fn remove(
 
 pub async fn merge(
     worktree_id: WorktreeId,
-    squash: bool,
+    strategy: MergeBackStrategy,
     commit_message: Option<String>,
     state: &AppState,
 ) -> AppResult<MergeResult> {
@@ -138,8 +254,6 @@ pub async fn merge(
     }
 
     // If the agent branch has nothing beyond base, the merge would be a no-op.
-    // Tell the user — and if they have uncommitted changes in the worktree,
-    // point them at that so they can commit themselves.
     let ahead = git_ops::commits_ahead(&ws.root, &ws.default_branch, &wt.branch).await?;
     if ahead == 0 {
         let dirty = git_ops::has_changes(&wt.path).await.unwrap_or(false);
@@ -148,34 +262,50 @@ pub async fn merge(
         });
     }
 
-    let merge_result = if squash {
-        let msg = commit_message
-            .as_deref()
-            .map(str::trim)
-            .unwrap_or("");
-        if msg.is_empty() {
-            return Err(AppError::Unknown(
-                "squash merge requires a commit message".into(),
-            ));
+    let op_result = match strategy {
+        MergeBackStrategy::MergeNoFf => git_ops::merge_no_ff(&ws.root, &wt.branch).await,
+        MergeBackStrategy::Squash => {
+            let msg = commit_message
+                .as_deref()
+                .map(str::trim)
+                .unwrap_or("");
+            if msg.is_empty() {
+                return Err(AppError::Unknown(
+                    "squash merge requires a commit message".into(),
+                ));
+            }
+            git_ops::merge_squash_and_commit(&ws.root, &wt.branch, msg).await
         }
-        git_ops::merge_squash_and_commit(&ws.root, &wt.branch, msg).await
-    } else {
-        git_ops::merge_no_ff(&ws.root, &wt.branch).await
+        MergeBackStrategy::RebaseFf => {
+            // Rebase the agent branch onto default *inside the worktree*,
+            // then ff-only merge in the main repo. If rebase fails it
+            // auto-aborts so we never leave a half-rebased branch behind.
+            match git_ops::rebase_onto(&wt.path, &ws.default_branch).await {
+                Ok(()) => git_ops::merge_ff_only(&ws.root, &wt.branch).await,
+                Err(AppError::GitError(msg)) => {
+                    tracing::warn!(
+                        id = %worktree_id,
+                        %msg,
+                        "rebase pre-step aborted"
+                    );
+                    return Ok(MergeResult::RebaseAborted { message: msg });
+                }
+                Err(e) => return Err(e),
+            }
+        }
     };
 
-    match merge_result {
+    match op_result {
         Ok(()) => {
             tracing::info!(
                 id = %worktree_id,
                 branch = %wt.branch,
-                squash,
+                ?strategy,
                 "merged worktree"
             );
             Ok(MergeResult::Clean)
         }
         Err(AppError::GitError(msg)) => {
-            // Leave the conflict visible in the main repo's workdir for the
-            // user to resolve in their own terminal — don't auto-abort.
             tracing::warn!(id = %worktree_id, %msg, "merge produced conflicts");
             Ok(MergeResult::Conflict { message: msg })
         }

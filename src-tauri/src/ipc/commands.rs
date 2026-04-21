@@ -6,7 +6,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use crate::agent::{self, AgentBackendKind, AgentEvent, AgentSession, WorktreeActivity};
 use crate::diff::{self, DiffSet};
 use crate::fs_api::{self, FileContent, TreeEntry};
-use crate::storage::{self, RecentWorkspace};
+use crate::storage::{self, RecentWorkspace, Settings};
 use crate::fs_watch;
 use crate::ipc::events;
 use crate::pty::{self, PtyEvent, TerminalSession};
@@ -14,7 +14,9 @@ use crate::state::AppState;
 use crate::util::errors::{AppError, AppResult};
 use crate::util::ids::{AgentSessionId, TerminalId, WorkspaceId, WorktreeId};
 use crate::workspace::{self, Workspace};
-use crate::worktree::{self, MergeResult, Worktree};
+use crate::worktree::{
+    self, MergeBackStrategy, MergeResult, SyncResult, SyncStrategy, Worktree,
+};
 
 #[tauri::command]
 pub async fn open_workspace(
@@ -47,6 +49,20 @@ pub async fn open_workspace(
 #[tauri::command]
 pub async fn list_recent_workspaces(app: AppHandle) -> AppResult<Vec<RecentWorkspace>> {
     storage::list_recent(&app).await
+}
+
+#[tauri::command]
+pub async fn get_settings(app: AppHandle) -> AppResult<Settings> {
+    storage::load_settings(&app).await
+}
+
+#[tauri::command]
+pub async fn update_settings(
+    settings: Settings,
+    app: AppHandle,
+) -> AppResult<Settings> {
+    storage::save_settings(&app, &settings).await?;
+    Ok(settings)
 }
 
 #[tauri::command]
@@ -122,9 +138,18 @@ pub async fn remove_worktree(
 }
 
 #[tauri::command]
+pub async fn sync_worktree(
+    worktree_id: WorktreeId,
+    strategy: SyncStrategy,
+    state: State<'_, AppState>,
+) -> AppResult<SyncResult> {
+    worktree::sync_with_default(worktree_id, strategy, &state).await
+}
+
+#[tauri::command]
 pub async fn merge_worktree(
     worktree_id: WorktreeId,
-    squash: bool,
+    strategy: MergeBackStrategy,
     commit_message: Option<String>,
     app: AppHandle,
     state: State<'_, AppState>,
@@ -133,7 +158,7 @@ pub async fn merge_worktree(
         .worktrees
         .get(&worktree_id)
         .map(|e| e.value().workspace_id);
-    let result = worktree::merge(worktree_id, squash, commit_message, &state).await?;
+    let result = worktree::merge(worktree_id, strategy, commit_message, &state).await?;
     // On a clean merge we DON'T auto-remove the worktree — keep it around so
     // the user can inspect or continue iterating. They can hit the ✕ button
     // to delete it when they're done.
@@ -233,11 +258,15 @@ pub async fn list_agent_activity(
         } else {
             (0, 0)
         };
+        let dirty = crate::worktree::git_ops::has_changes(&w.path)
+            .await
+            .unwrap_or(false);
         out.push(WorktreeActivity {
             worktree_id: w.id,
             activity: state.agents.activity_for_worktree(w.id),
             ahead,
             behind,
+            dirty,
         });
     }
     Ok(out)

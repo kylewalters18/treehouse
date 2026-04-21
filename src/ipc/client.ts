@@ -8,8 +8,12 @@ import type {
   DiffSet,
   FileContent,
   MergeResult,
+  MergeBackStrategy,
+  SyncResult,
+  SyncStrategy,
   PtyEvent,
   RecentWorkspace,
+  Settings,
   TerminalId,
   TerminalSession,
   TreeEntry,
@@ -34,6 +38,14 @@ export function listRecentWorkspaces(): Promise<RecentWorkspace[]> {
   return invoke<RecentWorkspace[]>("list_recent_workspaces");
 }
 
+export function getSettings(): Promise<Settings> {
+  return invoke<Settings>("get_settings");
+}
+
+export function updateSettings(settings: Settings): Promise<Settings> {
+  return invoke<Settings>("update_settings", { settings });
+}
+
 // --- Worktrees ---
 
 export function listWorktrees(workspaceId: WorkspaceId): Promise<Worktree[]> {
@@ -56,13 +68,21 @@ export function removeWorktree(
 
 export function mergeWorktree(
   worktreeId: WorktreeId,
-  opts: { squash?: boolean; commitMessage?: string } = {},
+  strategy: MergeBackStrategy,
+  commitMessage?: string,
 ): Promise<MergeResult> {
   return invoke<MergeResult>("merge_worktree", {
     worktreeId,
-    squash: opts.squash ?? false,
-    commitMessage: opts.commitMessage ?? null,
+    strategy,
+    commitMessage: commitMessage ?? null,
   });
+}
+
+export function syncWorktree(
+  worktreeId: WorktreeId,
+  strategy: SyncStrategy,
+): Promise<SyncResult> {
+  return invoke<SyncResult>("sync_worktree", { worktreeId, strategy });
 }
 
 export function onWorktreesChanged(

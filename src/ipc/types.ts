@@ -13,6 +13,7 @@ export type { AppErrorPayload } from "./bindings/AppErrorPayload";
 export type { FileContent } from "./bindings/FileContent";
 export type { TreeEntry } from "./bindings/TreeEntry";
 export type { RecentWorkspace } from "./bindings/RecentWorkspace";
+export type { Settings } from "./bindings/Settings";
 export type { DiffSet } from "./bindings/DiffSet";
 export type { DiffStats } from "./bindings/DiffStats";
 export type { FileDiff } from "./bindings/FileDiff";
@@ -31,3 +32,6 @@ export type { AgentActivity } from "./bindings/AgentActivity";
 export type { WorktreeActivity } from "./bindings/WorktreeActivity";
 
 export type { MergeResult } from "./bindings/MergeResult";
+export type { MergeBackStrategy } from "./bindings/MergeBackStrategy";
+export type { SyncResult } from "./bindings/SyncResult";
+export type { SyncStrategy } from "./bindings/SyncStrategy";

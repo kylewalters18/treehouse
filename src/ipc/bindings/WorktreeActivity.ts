@@ -10,4 +10,9 @@ ahead: number,
 /**
  * Commits on the default branch not on the worktree's branch.
  */
-behind: number, };
+behind: number, 
+/**
+ * `git status --porcelain` returned anything: tracked or untracked
+ * changes exist in the worktree's workdir.
+ */
+dirty: boolean, };

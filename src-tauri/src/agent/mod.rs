@@ -86,4 +86,7 @@ pub struct WorktreeActivity {
     pub ahead: u32,
     /// Commits on the default branch not on the worktree's branch.
     pub behind: u32,
+    /// `git status --porcelain` returned anything: tracked or untracked
+    /// changes exist in the worktree's workdir.
+    pub dirty: bool,
 }

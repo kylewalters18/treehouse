@@ -11,9 +11,11 @@ use tauri::{AppHandle, Manager};
 use ts_rs::TS;
 
 use crate::util::errors::{AppError, AppResult};
+use crate::worktree::{MergeBackStrategy, SyncStrategy};
 
 const RECENT_MAX: usize = 20;
 const RECENT_FILE: &str = "recent.json";
+const SETTINGS_FILE: &str = "settings.json";
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -97,4 +99,47 @@ fn now_millis() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+// --- Settings ---
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, TS, Default)]
+#[serde(rename_all = "camelCase", default)]
+#[ts(export)]
+pub struct Settings {
+    /// Default strategy when the user clicks Sync. Defaults to Rebase
+    /// (linear agent-branch history; auto-aborts on conflict).
+    pub sync_strategy: SyncStrategy,
+    /// Default strategy preselected in the Merge dialog. Defaults to
+    /// RebaseFf (rebase agent branch + ff-only merge — linear history).
+    pub merge_back_strategy: MergeBackStrategy,
+}
+
+fn settings_path(app: &AppHandle) -> AppResult<PathBuf> {
+    Ok(config_dir(app)?.join(SETTINGS_FILE))
+}
+
+pub async fn load_settings(app: &AppHandle) -> AppResult<Settings> {
+    let path = settings_path(app)?;
+    let bytes = match tokio::fs::read(&path).await {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(Settings::default())
+        }
+        Err(e) => return Err(AppError::Io(format!("read {}: {e}", path.display()))),
+    };
+    // Tolerant: bad JSON falls back to defaults instead of bricking the app.
+    Ok(serde_json::from_slice(&bytes).unwrap_or_default())
+}
+
+pub async fn save_settings(app: &AppHandle, settings: &Settings) -> AppResult<()> {
+    let dir = config_dir(app)?;
+    let _ = tokio::fs::create_dir_all(&dir).await;
+    let path = settings_path(app)?;
+    let bytes = serde_json::to_vec_pretty(settings)
+        .map_err(|e| AppError::Unknown(format!("serialize settings: {e}")))?;
+    tokio::fs::write(&path, bytes)
+        .await
+        .map_err(|e| AppError::Io(format!("write {}: {e}", path.display())))?;
+    Ok(())
 }

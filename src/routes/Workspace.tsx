@@ -8,6 +8,7 @@ import { WorktreeSidebar } from "@/panels/WorktreeSidebar";
 import { DiffPane } from "@/panels/DiffPane";
 import { TerminalPane } from "@/panels/TerminalPane";
 import { AgentPane } from "@/panels/AgentPane";
+import { SettingsMenu } from "@/components/SettingsMenu";
 
 export function Workspace() {
   const workspace = useWorkspaceStore((s) => s.workspace);
@@ -61,12 +62,15 @@ export function Workspace() {
             </span>
           )}
         </div>
-        <button
-          onClick={closeWorkspace}
-          className="rounded border border-neutral-700 px-2 py-1 text-neutral-400 hover:bg-neutral-800"
-        >
-          Close
-        </button>
+        <div className="flex items-center gap-2">
+          <SettingsMenu />
+          <button
+            onClick={closeWorkspace}
+            className="rounded border border-neutral-700 px-2 py-1 text-neutral-400 hover:bg-neutral-800"
+          >
+            Close
+          </button>
+        </div>
       </header>
 
       {focusMode ? (
