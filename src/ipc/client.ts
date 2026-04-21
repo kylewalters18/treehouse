@@ -5,6 +5,7 @@ import type {
   AgentEvent,
   AgentSession,
   AgentSessionId,
+  CreateWorktreeResult,
   DiffSet,
   FileContent,
   MergeResult,
@@ -55,8 +56,13 @@ export function listWorktrees(workspaceId: WorkspaceId): Promise<Worktree[]> {
 export function createWorktree(
   workspaceId: WorkspaceId,
   name: string,
-): Promise<Worktree> {
-  return invoke<Worktree>("create_worktree", { workspaceId, name });
+  opts: { initSubmodules?: boolean } = {},
+): Promise<CreateWorktreeResult> {
+  return invoke<CreateWorktreeResult>("create_worktree", {
+    workspaceId,
+    name,
+    initSubmodules: opts.initSubmodules ?? false,
+  });
 }
 
 export function removeWorktree(

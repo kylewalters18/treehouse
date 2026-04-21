@@ -11,6 +11,7 @@ function freshState() {
       syncStrategy: "rebase",
       mergeBackStrategy: "rebaseFf",
       zoom: 1.0,
+      initSubmodules: false,
     },
     loaded: false,
   });
@@ -27,6 +28,7 @@ describe("settings store", () => {
       syncStrategy: "merge",
       mergeBackStrategy: "squash",
       zoom: 1.25,
+      initSubmodules: true,
     });
     await useSettingsStore.getState().load();
     const s = useSettingsStore.getState();
@@ -48,6 +50,7 @@ describe("settings store", () => {
       syncStrategy: "merge",
       mergeBackStrategy: "rebaseFf",
       zoom: 1.0,
+      initSubmodules: false,
     });
     await useSettingsStore.getState().setSyncStrategy("merge");
     expect(useSettingsStore.getState().settings.syncStrategy).toBe("merge");
@@ -61,6 +64,7 @@ describe("settings store", () => {
       syncStrategy: "rebase",
       mergeBackStrategy: "rebaseFf",
       zoom: 1.0,
+      initSubmodules: false,
     });
     await useSettingsStore.getState().setZoom(10);
     expect(useSettingsStore.getState().settings.zoom).toBe(ZOOM_MAX);
@@ -73,6 +77,7 @@ describe("settings store", () => {
       syncStrategy: "rebase",
       mergeBackStrategy: "rebaseFf",
       zoom: 1.0,
+      initSubmodules: false,
     });
     await useSettingsStore.getState().adjustZoom(0.1);
     expect(useSettingsStore.getState().settings.zoom).toBeCloseTo(1.1);
@@ -88,6 +93,7 @@ describe("settings store", () => {
       syncStrategy: "rebase",
       mergeBackStrategy: "rebaseFf",
       zoom: 1.5,
+      initSubmodules: false,
     });
     await useSettingsStore.getState().setZoom(1.5);
     await useSettingsStore.getState().resetZoom();

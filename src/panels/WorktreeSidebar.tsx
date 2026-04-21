@@ -40,6 +40,9 @@ export function WorktreeSidebar() {
   const mergeStrategyDefault = useSettingsStore(
     (s) => s.settings.mergeBackStrategy,
   );
+  const initSubmodulesDefault = useSettingsStore(
+    (s) => s.settings.initSubmodules,
+  );
   const [activity, setActivity] = useState<
     Record<WorktreeId, WorktreeActivity>
   >({});
@@ -85,7 +88,9 @@ export function WorktreeSidebar() {
   async function onCreate(e: React.FormEvent) {
     e.preventDefault();
     if (!workspace || !name.trim() || creating) return;
-    const wt = await createWt(workspace.id, name.trim());
+    const wt = await createWt(workspace.id, name.trim(), {
+      initSubmodules: initSubmodulesDefault,
+    });
     if (wt) {
       setName("");
       inputRef.current?.focus();

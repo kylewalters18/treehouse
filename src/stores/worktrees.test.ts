@@ -36,10 +36,27 @@ describe("worktrees store", () => {
 
   it("create appends a new worktree and returns it", async () => {
     const newWt = wt({ id: "wt-1", branch: "agent/one" });
-    ipcMocked.createWorktree.mockResolvedValueOnce(newWt);
+    ipcMocked.createWorktree.mockResolvedValueOnce({
+      worktree: newWt,
+      warning: null,
+    });
     const result = await useWorktreesStore.getState().create("ws-1", "one");
     expect(result).toEqual(newWt);
     expect(useWorktreesStore.getState().worktrees).toEqual([newWt]);
+  });
+
+  it("create surfaces a non-fatal warning as an info toast", async () => {
+    const newWt = wt({ id: "wt-2", branch: "agent/two" });
+    ipcMocked.createWorktree.mockResolvedValueOnce({
+      worktree: newWt,
+      warning: "Submodule init failed: auth required",
+    });
+    const result = await useWorktreesStore.getState().create("ws-1", "two");
+    expect(result).toEqual(newWt);
+    const toasts = useToastsStore.getState().toasts;
+    expect(toasts).toHaveLength(1);
+    expect(toasts[0].kind).toBe("info");
+    expect(toasts[0].title).toContain("Submodule init failed");
   });
 
   it("create failure fires a toast instead of wedging store.error", async () => {
@@ -84,13 +101,15 @@ describe("worktrees store", () => {
   });
 
   it("creating flag flips around the IPC call", async () => {
-    let resolve!: (w: Worktree) => void;
+    let resolve!: (
+      r: { worktree: Worktree; warning: string | null },
+    ) => void;
     ipcMocked.createWorktree.mockImplementationOnce(
       () => new Promise((r) => (resolve = r)),
     );
     const p = useWorktreesStore.getState().create("ws-1", "pending");
     expect(useWorktreesStore.getState().creating).toBe(true);
-    resolve(wt({ id: "p" }));
+    resolve({ worktree: wt({ id: "p" }), warning: null });
     await p;
     expect(useWorktreesStore.getState().creating).toBe(false);
   });

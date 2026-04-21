@@ -20,6 +20,7 @@ export function SettingsMenu() {
   const settings = useSettingsStore((s) => s.settings);
   const setSync = useSettingsStore((s) => s.setSyncStrategy);
   const setMerge = useSettingsStore((s) => s.setMergeBackStrategy);
+  const setInitSubmodules = useSettingsStore((s) => s.setInitSubmodules);
 
   useEffect(() => {
     if (!open) return;
@@ -66,6 +67,24 @@ export function SettingsMenu() {
               value={settings.mergeBackStrategy}
               onChange={(v) => void setMerge(v)}
             />
+          </div>
+          <div className="mt-3 border-t border-neutral-800 pt-3">
+            <label className="flex cursor-pointer items-start gap-2 rounded border border-neutral-800 px-2 py-1.5 text-xs hover:bg-neutral-950">
+              <input
+                type="checkbox"
+                checked={settings.initSubmodules}
+                onChange={(e) => void setInitSubmodules(e.target.checked)}
+                className="mt-0.5 accent-blue-600"
+              />
+              <span className="flex-1">
+                <div className="font-medium text-neutral-100">
+                  Initialize submodules on create
+                </div>
+                <div className="font-mono text-[10px] text-neutral-500">
+                  git submodule update --init --recursive
+                </div>
+              </span>
+            </label>
           </div>
         </div>
       )}

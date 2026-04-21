@@ -2,14 +2,18 @@ import { create } from "zustand";
 import * as ipc from "@/ipc/client";
 import type { Worktree, WorkspaceId, WorktreeId } from "@/ipc/types";
 import { asMessage } from "@/lib/errors";
-import { toastError } from "@/stores/toasts";
+import { toastError, toastInfo } from "@/stores/toasts";
 
 type WorktreesState = {
   worktrees: Worktree[];
   loading: boolean;
   creating: boolean;
   refresh: (workspaceId: WorkspaceId) => Promise<void>;
-  create: (workspaceId: WorkspaceId, name: string) => Promise<Worktree | null>;
+  create: (
+    workspaceId: WorkspaceId,
+    name: string,
+    opts?: { initSubmodules?: boolean },
+  ) => Promise<Worktree | null>;
   remove: (worktreeId: WorktreeId, force?: boolean) => Promise<void>;
   reset: () => void;
 };
@@ -28,15 +32,21 @@ export const useWorktreesStore = create<WorktreesState>((set, get) => ({
       set({ loading: false });
     }
   },
-  async create(workspaceId, name) {
+  async create(workspaceId, name, opts = {}) {
     set({ creating: true });
     try {
-      const wt = await ipc.createWorktree(workspaceId, name);
+      const result = await ipc.createWorktree(workspaceId, name, opts);
       set({
-        worktrees: [...get().worktrees, wt],
+        worktrees: [...get().worktrees, result.worktree],
         creating: false,
       });
-      return wt;
+      // Backend returns a non-fatal warning (e.g. submodule init failed) the
+      // user should know about — surface as an info toast since the worktree
+      // itself is alive and usable.
+      if (result.warning) {
+        toastInfo(`${result.worktree.branch}: ${result.warning}`);
+      }
+      return result.worktree;
     } catch (e: unknown) {
       toastError(`Couldn't create "${name}"`, asMessage(e));
       set({ creating: false });

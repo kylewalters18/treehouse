@@ -18,4 +18,10 @@ mergeBackStrategy: MergeBackStrategy,
  * on the frontend. 1.0 = default. Clamped to [0.5, 2.0] on the
  * frontend; we persist whatever the user lands on.
  */
-zoom: number, };
+zoom: number, 
+/**
+ * When true, run `git submodule update --init --recursive` on the
+ * new worktree after creation. Off by default — most repos don't have
+ * submodules and the extra git invocation just slows create down.
+ */
+initSubmodules: boolean, };

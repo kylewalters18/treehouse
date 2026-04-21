@@ -4,6 +4,7 @@
 export type { Workspace } from "./bindings/Workspace";
 export type { WorkspaceId } from "./bindings/WorkspaceId";
 export type { Worktree } from "./bindings/Worktree";
+export type { CreateWorktreeResult } from "./bindings/CreateWorktreeResult";
 export type { WorktreeId } from "./bindings/WorktreeId";
 export type { AgentSessionId } from "./bindings/AgentSessionId";
 export type { TerminalId } from "./bindings/TerminalId";

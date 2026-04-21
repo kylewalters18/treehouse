@@ -314,6 +314,19 @@ pub async fn add_existing(
     .map(|_| ())
 }
 
+/// `git submodule update --init --recursive` in the given workdir. No-op
+/// for repos without `.gitmodules`. Returns the git error if it fails so the
+/// caller can decide whether to surface it (we keep the worktree alive
+/// either way).
+pub async fn update_submodules(workdir: &Path) -> AppResult<()> {
+    git(
+        workdir,
+        ["submodule", "update", "--init", "--recursive"],
+    )
+    .await
+    .map(|_| ())
+}
+
 /// Add a worktree creating a local branch that tracks `<remote>/<branch>`.
 /// Used when only a remote ref exists and we want a proper local counterpart.
 pub async fn add_tracking(

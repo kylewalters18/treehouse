@@ -15,7 +15,8 @@ use crate::util::errors::{AppError, AppResult};
 use crate::util::ids::{AgentSessionId, TerminalId, WorkspaceId, WorktreeId};
 use crate::workspace::{self, Workspace};
 use crate::worktree::{
-    self, MergeBackStrategy, MergeResult, SyncResult, SyncStrategy, Worktree,
+    self, CreateOptions, CreateWorktreeResult, MergeBackStrategy, MergeResult, SyncResult,
+    SyncStrategy, Worktree,
 };
 
 #[tauri::command]
@@ -104,13 +105,20 @@ pub async fn list_worktrees(
 pub async fn create_worktree(
     workspace_id: WorkspaceId,
     name: String,
+    init_submodules: bool,
     app: AppHandle,
     state: State<'_, AppState>,
-) -> AppResult<Worktree> {
-    let wt = worktree::create(workspace_id, &name, &state).await?;
-    prime_worktree_watch(&app, &wt);
+) -> AppResult<CreateWorktreeResult> {
+    let result = worktree::create(
+        workspace_id,
+        &name,
+        CreateOptions { init_submodules },
+        &state,
+    )
+    .await?;
+    prime_worktree_watch(&app, &result.worktree);
     let _ = app.emit(&events::worktrees_changed(workspace_id), ());
-    Ok(wt)
+    Ok(result)
 }
 
 #[tauri::command]

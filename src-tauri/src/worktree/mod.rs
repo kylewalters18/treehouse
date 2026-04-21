@@ -27,5 +27,6 @@ pub struct Worktree {
 
 pub use manager::{
     create, list_for_workspace, merge, reconcile, register_main_clone, remove,
-    sync_with_default, MergeBackStrategy, MergeResult, SyncResult, SyncStrategy,
+    sync_with_default, CreateOptions, CreateWorktreeResult, MergeBackStrategy,
+    MergeResult, SyncResult, SyncStrategy,
 };
