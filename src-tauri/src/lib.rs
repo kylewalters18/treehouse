@@ -10,6 +10,9 @@ mod util;
 mod workspace;
 mod worktree;
 
+#[cfg(test)]
+mod test_support;
+
 use state::AppState;
 
 pub fn run() {

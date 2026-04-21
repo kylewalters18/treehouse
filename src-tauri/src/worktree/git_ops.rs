@@ -308,6 +308,9 @@ pub fn worktrees_root_for(repo_root: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::TempRepo;
+
+    // --- Pure ---
 
     #[test]
     fn test_slugify() {
@@ -332,5 +335,129 @@ mod tests {
         assert_eq!(parsed[0].path, PathBuf::from("/path/a"));
         assert_eq!(parsed[0].branch.as_deref(), Some("main"));
         assert!(parsed[1].detached);
+    }
+
+    // --- Integration against a real temp repo ---
+
+    #[tokio::test]
+    async fn rev_parse_resolves_head_symbol() {
+        let r = TempRepo::new();
+        let sha = rev_parse(&r.root, "HEAD").await.unwrap();
+        assert_eq!(sha, r.head());
+    }
+
+    #[tokio::test]
+    async fn current_branch_reads_main() {
+        let r = TempRepo::new();
+        assert_eq!(current_branch(&r.root).await.unwrap(), "main");
+    }
+
+    #[tokio::test]
+    async fn branch_exists_true_for_main_false_for_missing() {
+        let r = TempRepo::new();
+        assert!(branch_exists(&r.root, "main").await.unwrap());
+        assert!(!branch_exists(&r.root, "does-not-exist").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn has_changes_flips_after_edit() {
+        let r = TempRepo::new();
+        assert!(!has_changes(&r.root).await.unwrap());
+        std::fs::write(r.root.join("README.md"), "changed\n").unwrap();
+        assert!(has_changes(&r.root).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn commits_ahead_and_ahead_behind_match() {
+        let r = TempRepo::new();
+        // Branch off main, add a commit on it.
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&r.root)
+            .args(["checkout", "-q", "-b", "feature"])
+            .status()
+            .unwrap();
+        assert!(out.success());
+        r.commit_file("new.txt", "hello\n", "feature: add new.txt");
+
+        let ahead = commits_ahead(&r.root, "main", "feature").await.unwrap();
+        assert_eq!(ahead, 1);
+        let (a, b) = ahead_behind(&r.root, "main", "feature").await.unwrap();
+        assert_eq!((a, b), (1, 0));
+        // Back to main: feature is now 1 ahead of main, main is 0 ahead of feature.
+    }
+
+    #[tokio::test]
+    async fn merge_no_ff_creates_merge_commit() {
+        let r = TempRepo::new();
+        let base = r.head();
+        let _ = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&r.root)
+            .args(["checkout", "-q", "-b", "feature"])
+            .status();
+        r.commit_file("f.txt", "f\n", "feat");
+        let _ = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&r.root)
+            .args(["checkout", "-q", "main"])
+            .status();
+        merge_no_ff(&r.root, "feature").await.unwrap();
+        // main should now have 2 commits beyond the pre-merge base: the
+        // feature commit + the merge commit.
+        let after = commits_ahead(&r.root, &base, "main").await.unwrap();
+        assert_eq!(after, 2);
+    }
+
+    #[tokio::test]
+    async fn merge_squash_and_commit_yields_single_commit() {
+        let r = TempRepo::new();
+        let base = r.head();
+        let _ = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&r.root)
+            .args(["checkout", "-q", "-b", "feature"])
+            .status();
+        r.commit_file("a.txt", "a\n", "a");
+        r.commit_file("b.txt", "b\n", "b");
+        let _ = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&r.root)
+            .args(["checkout", "-q", "main"])
+            .status();
+        merge_squash_and_commit(&r.root, "feature", "squashed").await.unwrap();
+        let after = commits_ahead(&r.root, &base, "main").await.unwrap();
+        // Exactly one new commit on main (the squash) even though feature
+        // had two.
+        assert_eq!(after, 1);
+    }
+
+    #[tokio::test]
+    async fn rebase_auto_aborts_on_conflict() {
+        let r = TempRepo::new();
+        // Divergent edits to the same file → conflict on rebase.
+        let _ = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&r.root)
+            .args(["checkout", "-q", "-b", "feature"])
+            .status();
+        r.commit_file("README.md", "feature\n", "feature edit");
+        let _ = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&r.root)
+            .args(["checkout", "-q", "main"])
+            .status();
+        r.commit_file("README.md", "main\n", "main edit");
+        let _ = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&r.root)
+            .args(["checkout", "-q", "feature"])
+            .status();
+
+        let err = rebase_onto(&r.root, "main").await.unwrap_err();
+        assert!(matches!(err, AppError::GitError(_)));
+        // Auto-abort: no residual rebase state left behind.
+        assert!(!r.root.join(".git/rebase-apply").exists());
+        assert!(!r.root.join(".git/rebase-merge").exists());
     }
 }

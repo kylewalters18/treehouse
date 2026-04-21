@@ -378,6 +378,9 @@ pub async fn reconcile(workspace_id: WorkspaceId, state: &AppState) -> AppResult
     let _ = git_ops::prune(&ws.root).await;
 
     let root = git_ops::worktrees_root_for(&ws.root);
+    // Canonicalize so platforms that symlink temp dirs (macOS /tmp →
+    // /private/tmp) don't cause `starts_with` to miss legitimate entries.
+    let canon_root = dunce::canonicalize(&root).unwrap_or_else(|_| root.clone());
     let entries = git_ops::list(&ws.root).await?;
 
     let existing_paths: std::collections::HashSet<PathBuf> = state
@@ -388,7 +391,9 @@ pub async fn reconcile(workspace_id: WorkspaceId, state: &AppState) -> AppResult
         .collect();
 
     for entry in entries {
-        if !entry.path.starts_with(&root) {
+        let canon_entry =
+            dunce::canonicalize(&entry.path).unwrap_or_else(|_| entry.path.clone());
+        if !canon_entry.starts_with(&canon_root) {
             continue; // user-managed worktree outside our convention
         }
         if existing_paths.contains(&entry.path) {
@@ -458,4 +463,292 @@ pub async fn register_main_clone(
     state.worktrees.insert(worktree.id, worktree.clone());
     tracing::info!(id = %worktree.id, path = %worktree.path.display(), "registered main clone");
     Ok(worktree)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::AppState;
+    use crate::test_support::{workspace_fixture, TempRepo};
+
+    /// Helper: make an AppState + workspace rooted at `repo.root`.
+    fn setup(repo: &TempRepo) -> (AppState, WorkspaceId) {
+        let state = AppState::new();
+        let ws = workspace_fixture(&state, &repo.root);
+        (state, ws.id)
+    }
+
+    #[tokio::test]
+    async fn create_produces_worktree_on_disk_and_in_state() {
+        let repo = TempRepo::new();
+        let (state, ws_id) = setup(&repo);
+        let wt = create(ws_id, "first", &state).await.unwrap();
+
+        assert_eq!(wt.branch, "agent/first");
+        assert!(wt.path.exists(), "worktree dir should exist on disk");
+        assert!(
+            wt.path.join(".git").exists(),
+            "worktree should be a git workdir"
+        );
+        assert_eq!(state.worktrees.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn create_is_rejected_when_branch_already_exists() {
+        let repo = TempRepo::new();
+        let (state, ws_id) = setup(&repo);
+        create(ws_id, "same", &state).await.unwrap();
+        let err = create(ws_id, "same", &state).await.unwrap_err();
+        assert!(matches!(err, AppError::AlreadyOpen(_)));
+    }
+
+    #[tokio::test]
+    async fn remove_deletes_directory_and_state() {
+        let repo = TempRepo::new();
+        let (state, ws_id) = setup(&repo);
+        let wt = create(ws_id, "doomed", &state).await.unwrap();
+        let path = wt.path.clone();
+        remove(wt.id, true, &state).await.unwrap();
+        assert!(!path.exists());
+        assert_eq!(state.worktrees.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn remove_refuses_main_clone() {
+        let repo = TempRepo::new();
+        let (state, ws_id) = setup(&repo);
+        let main = register_main_clone(ws_id, &state).await.unwrap();
+        let err = remove(main.id, false, &state).await.unwrap_err();
+        assert!(matches!(err, AppError::Unknown(msg) if msg.contains("main clone")));
+    }
+
+    #[tokio::test]
+    async fn register_main_clone_is_idempotent() {
+        let repo = TempRepo::new();
+        let (state, ws_id) = setup(&repo);
+        let a = register_main_clone(ws_id, &state).await.unwrap();
+        let b = register_main_clone(ws_id, &state).await.unwrap();
+        assert_eq!(a.id, b.id);
+        assert_eq!(
+            state
+                .worktrees
+                .iter()
+                .filter(|e| e.value().is_main_clone)
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn merge_reports_nothing_when_branch_has_no_extra_commits() {
+        let repo = TempRepo::new();
+        let (state, ws_id) = setup(&repo);
+        let wt = create(ws_id, "empty", &state).await.unwrap();
+        let r = merge(wt.id, MergeBackStrategy::MergeNoFf, None, &state)
+            .await
+            .unwrap();
+        match r {
+            MergeResult::NothingToMerge { uncommitted_changes } => {
+                assert!(!uncommitted_changes);
+            }
+            other => panic!("expected NothingToMerge, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn merge_reports_wrong_branch_when_main_not_on_default() {
+        let repo = TempRepo::new();
+        let (state, ws_id) = setup(&repo);
+        let wt = create(ws_id, "feature", &state).await.unwrap();
+
+        // Give the worktree a commit so it's ahead of default.
+        std::fs::write(wt.path.join("a.txt"), "a\n").unwrap();
+        run_in(&wt.path, &["add", "a.txt"]);
+        run_in(&wt.path, &["commit", "-q", "-m", "a"]);
+
+        // Move the main repo onto a side branch so WrongBranch triggers.
+        run_in(&repo.root, &["checkout", "-q", "-b", "sidebar"]);
+
+        let r = merge(wt.id, MergeBackStrategy::MergeNoFf, None, &state)
+            .await
+            .unwrap();
+        assert!(matches!(r, MergeResult::WrongBranch { .. }));
+    }
+
+    #[tokio::test]
+    async fn merge_mergenoff_lands_one_commit_on_default() {
+        let repo = TempRepo::new();
+        let base = repo.head();
+        let (state, ws_id) = setup(&repo);
+        let wt = create(ws_id, "work", &state).await.unwrap();
+
+        std::fs::write(wt.path.join("x.txt"), "x\n").unwrap();
+        run_in(&wt.path, &["add", "x.txt"]);
+        run_in(&wt.path, &["commit", "-q", "-m", "x"]);
+
+        let r = merge(wt.id, MergeBackStrategy::MergeNoFf, None, &state)
+            .await
+            .unwrap();
+        assert!(matches!(r, MergeResult::Clean));
+
+        let ahead = super::git_ops::commits_ahead(&repo.root, &base, "main")
+            .await
+            .unwrap();
+        assert_eq!(ahead, 2, "merge commit + feature commit on main");
+    }
+
+    #[tokio::test]
+    async fn merge_squash_collapses_feature_history() {
+        let repo = TempRepo::new();
+        let base = repo.head();
+        let (state, ws_id) = setup(&repo);
+        let wt = create(ws_id, "squashy", &state).await.unwrap();
+
+        for (name, body) in [("a.txt", "a\n"), ("b.txt", "b\n"), ("c.txt", "c\n")] {
+            std::fs::write(wt.path.join(name), body).unwrap();
+            run_in(&wt.path, &["add", name]);
+            run_in(&wt.path, &["commit", "-q", "-m", name]);
+        }
+
+        let r = merge(
+            wt.id,
+            MergeBackStrategy::Squash,
+            Some("squashed three".into()),
+            &state,
+        )
+        .await
+        .unwrap();
+        assert!(matches!(r, MergeResult::Clean));
+
+        let ahead = super::git_ops::commits_ahead(&repo.root, &base, "main")
+            .await
+            .unwrap();
+        assert_eq!(ahead, 1);
+    }
+
+    #[tokio::test]
+    async fn merge_rebase_ff_yields_linear_history() {
+        let repo = TempRepo::new();
+        let base = repo.head();
+        let (state, ws_id) = setup(&repo);
+        let wt = create(ws_id, "linear", &state).await.unwrap();
+
+        for (name, body) in [("a.txt", "a\n"), ("b.txt", "b\n")] {
+            std::fs::write(wt.path.join(name), body).unwrap();
+            run_in(&wt.path, &["add", name]);
+            run_in(&wt.path, &["commit", "-q", "-m", name]);
+        }
+
+        let r = merge(wt.id, MergeBackStrategy::RebaseFf, None, &state)
+            .await
+            .unwrap();
+        assert!(matches!(r, MergeResult::Clean));
+
+        // No merge commit; main is exactly 2 ahead.
+        let ahead = super::git_ops::commits_ahead(&repo.root, &base, "main")
+            .await
+            .unwrap();
+        assert_eq!(ahead, 2);
+        // And no `Merge:` parent lines on HEAD.
+        let log = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo.root)
+            .args(["log", "-1", "--pretty=%P"])
+            .output()
+            .unwrap();
+        let parents = String::from_utf8(log.stdout).unwrap();
+        assert_eq!(
+            parents.split_whitespace().count(),
+            1,
+            "ff-only merge should leave HEAD with a single parent"
+        );
+    }
+
+    #[tokio::test]
+    async fn sync_reports_already_up_to_date_when_nothing_behind() {
+        let repo = TempRepo::new();
+        let (state, ws_id) = setup(&repo);
+        let wt = create(ws_id, "fresh", &state).await.unwrap();
+        let r = sync_with_default(wt.id, SyncStrategy::Rebase, &state)
+            .await
+            .unwrap();
+        assert!(matches!(r, SyncResult::AlreadyUpToDate));
+    }
+
+    #[tokio::test]
+    async fn sync_dirty_refuses_to_merge_over_uncommitted() {
+        let repo = TempRepo::new();
+        let (state, ws_id) = setup(&repo);
+        let wt = create(ws_id, "dirty", &state).await.unwrap();
+        // Advance main so worktree is behind by one commit.
+        repo.commit_file("fromain.txt", "main advance\n", "main +1");
+        // Leave uncommitted dirt in the worktree.
+        std::fs::write(wt.path.join("scratch.txt"), "local noise\n").unwrap();
+
+        let r = sync_with_default(wt.id, SyncStrategy::Merge, &state)
+            .await
+            .unwrap();
+        assert!(matches!(r, SyncResult::Dirty));
+    }
+
+    #[tokio::test]
+    async fn sync_rebase_advances_base_ref_to_default_head() {
+        let repo = TempRepo::new();
+        let (state, ws_id) = setup(&repo);
+        let wt = create(ws_id, "sync-rb", &state).await.unwrap();
+        let old_base = wt.base_ref.clone();
+
+        // main advances.
+        let new_main_head = repo.commit_file("u.txt", "u\n", "main advance");
+
+        let r = sync_with_default(wt.id, SyncStrategy::Rebase, &state)
+            .await
+            .unwrap();
+        assert!(matches!(r, SyncResult::Clean { .. }));
+
+        // State updated.
+        let after = state.worktrees.get(&wt.id).unwrap().clone();
+        assert_ne!(after.base_ref, old_base);
+        assert_eq!(after.base_ref, new_main_head);
+    }
+
+    #[tokio::test]
+    async fn reconcile_adopts_orphan_worktree_under_convention_path() {
+        let repo = TempRepo::new();
+        let (state, ws_id) = setup(&repo);
+        // Create a worktree through git directly, without going through
+        // manager::create — simulate "already on disk from a previous run".
+        let orphan_dir = super::git_ops::worktrees_root_for(&repo.root).join("orphan");
+        std::fs::create_dir_all(orphan_dir.parent().unwrap()).unwrap();
+        run_in(
+            &repo.root,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "agent/orphan",
+                orphan_dir.to_str().unwrap(),
+                "main",
+            ],
+        );
+
+        reconcile(ws_id, &state).await.unwrap();
+
+        let adopted = state
+            .worktrees
+            .iter()
+            .find(|e| e.value().branch == "agent/orphan")
+            .map(|e| e.value().clone());
+        assert!(adopted.is_some(), "orphan worktree should be adopted");
+    }
+
+    fn run_in(root: &std::path::Path, args: &[&str]) {
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(args)
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {args:?} failed");
+    }
 }

@@ -190,3 +190,90 @@ fn now_millis() -> u64 {
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::TempRepo;
+    use crate::util::ids::WorktreeId;
+
+    #[test]
+    fn empty_repo_no_diff() {
+        let r = TempRepo::new();
+        let d = compute(WorktreeId::new(), &r.root, &r.head()).unwrap();
+        assert_eq!(d.files.len(), 0);
+        assert_eq!(d.stats.files_changed, 0);
+    }
+
+    #[test]
+    fn modified_tracked_file_shows_as_modified() {
+        let r = TempRepo::new();
+        let base = r.head();
+        r.write("README.md", "# edited\nline two\n");
+        let d = compute(WorktreeId::new(), &r.root, &base).unwrap();
+        assert_eq!(d.files.len(), 1);
+        assert_eq!(d.files[0].path.to_string_lossy(), "README.md");
+        assert!(matches!(d.files[0].status, FileStatus::Modified));
+        assert!(d.files[0].insertions > 0);
+    }
+
+    #[test]
+    fn untracked_file_appears_as_untracked_with_content() {
+        let r = TempRepo::new();
+        let base = r.head();
+        r.write("new.txt", "hello\nworld\n");
+        let d = compute(WorktreeId::new(), &r.root, &base).unwrap();
+        let f = d
+            .files
+            .iter()
+            .find(|f| f.path.to_string_lossy() == "new.txt")
+            .expect("new.txt in diff");
+        // Either Added or Untracked depending on git2's classification; both
+        // are valid for a never-staged new file. We care that the content
+        // shows up.
+        assert!(matches!(
+            f.status,
+            FileStatus::Untracked | FileStatus::Added
+        ));
+        assert!(f.insertions >= 2);
+        assert!(
+            !f.hunks.is_empty(),
+            "expected hunk content for untracked file (show_untracked_content)"
+        );
+    }
+
+    #[test]
+    fn deleted_tracked_file_shows_as_deleted() {
+        let r = TempRepo::new();
+        let base = r.head();
+        std::fs::remove_file(r.root.join("README.md")).unwrap();
+        let d = compute(WorktreeId::new(), &r.root, &base).unwrap();
+        let f = d
+            .files
+            .iter()
+            .find(|f| f.path.to_string_lossy() == "README.md")
+            .expect("README.md marked deleted");
+        assert!(matches!(f.status, FileStatus::Deleted));
+    }
+
+    #[test]
+    fn binary_file_flagged_binary_with_no_hunks() {
+        let r = TempRepo::new();
+        let base = r.head();
+        // Null bytes + non-UTF-8 → git treats as binary.
+        let bin: Vec<u8> = (0..256).map(|b| b as u8).collect();
+        std::fs::write(r.root.join("blob.bin"), &bin).unwrap();
+        let d = compute(WorktreeId::new(), &r.root, &base).unwrap();
+        let f = d
+            .files
+            .iter()
+            .find(|f| f.path.to_string_lossy() == "blob.bin");
+        if let Some(f) = f {
+            assert!(f.binary);
+            assert!(f.hunks.is_empty());
+        }
+        // Some git2 configurations omit binary files entirely from the diff
+        // when show_untracked_content is on — that's also acceptable for the
+        // caller; the important contract is "no corrupt text hunks."
+    }
+}
