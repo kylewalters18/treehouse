@@ -9,14 +9,13 @@ import {
   agentResize,
   agentWrite,
   attachAgent,
-  getAgentForWorktree,
   killAgent,
   launchAgent,
+  listAgentsForWorktree,
 } from "@/ipc/client";
 import type {
   AgentBackendKind,
   AgentEvent,
-  AgentSession,
   AgentSessionId,
   WorktreeId,
 } from "@/ipc/types";
@@ -28,6 +27,13 @@ const BACKENDS: { label: string; value: AgentBackendKind }[] = [
   { label: "Aider", value: "aider" },
   { label: "Generic CLI", value: "genericCli" },
 ];
+
+const BACKEND_LABELS: Record<AgentBackendKind, string> = {
+  claudeCode: "Claude",
+  codex: "Codex",
+  aider: "Aider",
+  genericCli: "CLI",
+};
 
 export function AgentPane() {
   const worktreeId = useUiStore((s) => s.selectedWorktreeId);
@@ -42,49 +48,198 @@ export function AgentPane() {
       </div>
     );
   }
-  // Main-clone case is handled at the Workspace layout level — the entire
-  // agent panel is omitted, so we never render here with a main-clone target.
-  return <AgentInstance key={worktreeId} worktreeId={worktreeId} />;
+  // Main-clone case: Workspace.tsx omits this pane entirely.
+  return <AgentTabs key={worktreeId} worktreeId={worktreeId} />;
 }
 
-function AgentInstance({ worktreeId }: { worktreeId: WorktreeId }) {
-  const [session, setSession] = useState<AgentSession | null>(null);
-  const [launching, setLaunching] = useState(false);
-  const [exited, setExited] = useState(false);
+type Tab = {
+  localId: string;
+  mode: Mode;
+  backend: AgentBackendKind;
+  label: string;
+};
+
+type Mode =
+  | { kind: "launch"; backend: AgentBackendKind }
+  | { kind: "attach"; agentId: AgentSessionId };
+
+function AgentTabs({ worktreeId }: { worktreeId: WorktreeId }) {
+  const [tabs, setTabs] = useState<Tab[]>([]);
+  const [activeId, setActiveId] = useState<string | null>(null);
   const [backend, setBackend] = useState<AgentBackendKind>("claudeCode");
-  const [error, setError] = useState<string | null>(null);
+  const [initLoading, setInitLoading] = useState(true);
+  const sessionIds = useRef<Map<string, AgentSessionId>>(new Map());
+  const counters = useRef<Record<AgentBackendKind, number>>({
+    claudeCode: 0,
+    codex: 0,
+    aider: 0,
+    genericCli: 0,
+  });
+
+  // On worktree switch: discover already-running agents and adopt them as
+  // attach-mode tabs so the user doesn't lose live sessions.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const existing = await listAgentsForWorktree(worktreeId);
+        if (cancelled) return;
+        const adopted: Tab[] = existing.map((s) => {
+          counters.current[s.backend] =
+            (counters.current[s.backend] ?? 0) + 1;
+          const localId = crypto.randomUUID();
+          sessionIds.current.set(localId, s.id);
+          return {
+            localId,
+            mode: { kind: "attach", agentId: s.id },
+            backend: s.backend,
+            label: `${BACKEND_LABELS[s.backend]} ${counters.current[s.backend]}`,
+          };
+        });
+        setTabs(adopted);
+        setActiveId(adopted[adopted.length - 1]?.localId ?? null);
+      } catch {
+        // ignore
+      } finally {
+        if (!cancelled) setInitLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [worktreeId]);
+
+  function onLaunch() {
+    counters.current[backend] = (counters.current[backend] ?? 0) + 1;
+    const next: Tab = {
+      localId: crypto.randomUUID(),
+      mode: { kind: "launch", backend },
+      backend,
+      label: `${BACKEND_LABELS[backend]} ${counters.current[backend]}`,
+    };
+    setTabs((prev) => [...prev, next]);
+    setActiveId(next.localId);
+  }
+
+  async function closeTab(localId: string) {
+    const agentId = sessionIds.current.get(localId);
+    if (agentId) {
+      await killAgent(agentId).catch(() => {});
+    }
+    sessionIds.current.delete(localId);
+    setTabs((prev) => {
+      const next = prev.filter((t) => t.localId !== localId);
+      setActiveId((cur) => {
+        if (cur !== localId) return cur;
+        return next.length > 0 ? next[next.length - 1].localId : null;
+      });
+      return next;
+    });
+  }
+
+  const hasTabs = tabs.length > 0;
+
+  return (
+    <div className="flex h-full flex-col border-l border-neutral-800 bg-neutral-950">
+      <div className="flex shrink-0 items-center gap-1 overflow-x-auto border-b border-neutral-800 px-1 py-0.5">
+        {tabs.map((tab) => (
+          <div
+            key={tab.localId}
+            onClick={() => setActiveId(tab.localId)}
+            className={cn(
+              "group flex shrink-0 cursor-pointer items-center gap-1 rounded px-2 py-0.5 text-[11px]",
+              tab.localId === activeId
+                ? "bg-neutral-800 text-neutral-100"
+                : "text-neutral-400 hover:bg-neutral-900",
+            )}
+          >
+            <span className="font-mono">{tab.label}</span>
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                closeTab(tab.localId);
+              }}
+              className="opacity-0 transition group-hover:opacity-100 text-neutral-500 hover:text-red-400"
+              title="Kill agent"
+            >
+              ✕
+            </button>
+          </div>
+        ))}
+        <div className="ml-auto flex shrink-0 items-center gap-1">
+          <select
+            value={backend}
+            onChange={(e) => setBackend(e.target.value as AgentBackendKind)}
+            className="rounded border border-neutral-800 bg-neutral-900 px-1 py-0.5 text-[11px] focus:outline-none"
+          >
+            {BACKENDS.map((b) => (
+              <option key={b.value} value={b.value}>
+                {b.label}
+              </option>
+            ))}
+          </select>
+          <button
+            onClick={onLaunch}
+            title="Launch new agent"
+            className="rounded bg-blue-600 px-2 py-0.5 text-[11px] font-medium text-white hover:bg-blue-500"
+          >
+            + Launch
+          </button>
+        </div>
+      </div>
+
+      <div className="relative flex-1">
+        {!hasTabs && (
+          <div className="absolute inset-0 flex items-center justify-center text-xs text-neutral-600">
+            {initLoading
+              ? "Checking for running agents…"
+              : "Pick a backend and click + Launch"}
+          </div>
+        )}
+        {tabs.map((tab) => (
+          <div
+            key={tab.localId}
+            className={cn(
+              "absolute inset-0",
+              tab.localId !== activeId && "pointer-events-none",
+            )}
+            style={{
+              visibility: tab.localId === activeId ? "visible" : "hidden",
+            }}
+          >
+            <AgentInstance
+              worktreeId={worktreeId}
+              mode={tab.mode}
+              visible={tab.localId === activeId}
+              onSession={(id) => {
+                sessionIds.current.set(tab.localId, id);
+              }}
+            />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function AgentInstance({
+  worktreeId,
+  mode,
+  visible,
+  onSession,
+}: {
+  worktreeId: WorktreeId;
+  mode: Mode;
+  visible: boolean;
+  onSession: (id: AgentSessionId) => void;
+}) {
   const hostRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
-  const idRef = useRef<AgentSessionId | null>(null);
+  const agentIdRef = useRef<AgentSessionId | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
-  // On mount: if an agent is already running for this worktree, auto-attach
-  // and replay its output. Otherwise wait for the user to click Launch.
   useEffect(() => {
-    let cancelled = false;
-    getAgentForWorktree(worktreeId)
-      .then(async (existing) => {
-        if (cancelled || !existing) return;
-        await mountTerminal({ reattach: existing.id });
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-      termRef.current?.dispose();
-      termRef.current = null;
-      fitRef.current = null;
-      idRef.current = null;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [worktreeId]);
-
-  async function mountTerminal({
-    launch,
-    reattach,
-  }: {
-    launch?: AgentBackendKind;
-    reattach?: AgentSessionId;
-  }) {
     const host = hostRef.current;
     if (!host) return;
 
@@ -114,7 +269,6 @@ function AgentInstance({ worktreeId }: { worktreeId: WorktreeId }) {
         term.write(new Uint8Array(ev.bytes));
       } else if (ev.kind === "status") {
         if (ev.status.kind === "exited" || ev.status.kind === "crashed") {
-          setExited(true);
           const suffix =
             ev.status.kind === "exited"
               ? ev.status.code !== null
@@ -128,150 +282,88 @@ function AgentInstance({ worktreeId }: { worktreeId: WorktreeId }) {
       }
     };
 
-    try {
-      const s = reattach
-        ? await attachAgent(reattach, onEvent)
-        : await launchAgent(
+    let ro: ResizeObserver | null = null;
+    let disposed = false;
+
+    (async () => {
+      try {
+        let id: AgentSessionId;
+        if (mode.kind === "launch") {
+          const s = await launchAgent(
             worktreeId,
-            launch ?? "claudeCode",
+            mode.backend,
             term.cols,
             term.rows,
             onEvent,
           );
-      idRef.current = s.id;
-      setSession(s);
+          id = s.id;
+        } else {
+          const s = await attachAgent(mode.agentId, onEvent);
+          id = s.id;
+        }
+        if (disposed) return;
+        agentIdRef.current = id;
+        onSession(id);
 
-      term.onData((data) => {
-        if (idRef.current) {
-          agentWrite(idRef.current, encoder.encode(data)).catch(() => {});
-        }
-      });
-      term.onResize(({ cols, rows }) => {
-        if (idRef.current) {
-          agentResize(idRef.current, cols, rows).catch(() => {});
-        }
-      });
-      const ro = new ResizeObserver(() => {
-        try {
-          fit.fit();
-        } catch {}
-      });
-      ro.observe(host);
-    } catch (e: unknown) {
+        term.onData((data) => {
+          if (agentIdRef.current) {
+            agentWrite(agentIdRef.current, encoder.encode(data)).catch(() => {});
+          }
+        });
+        term.onResize(({ cols, rows }) => {
+          if (agentIdRef.current) {
+            agentResize(agentIdRef.current, cols, rows).catch(() => {});
+          }
+        });
+        ro = new ResizeObserver(() => {
+          try {
+            fit.fit();
+          } catch {}
+        });
+        ro.observe(host);
+      } catch (e: unknown) {
+        const msg =
+          e && typeof e === "object" && "message" in e
+            ? String((e as { message: unknown }).message)
+            : String(e);
+        setError(msg);
+      }
+    })();
+
+    return () => {
+      disposed = true;
+      ro?.disconnect();
       term.dispose();
       termRef.current = null;
-      setError(asMessage(e));
+      fitRef.current = null;
+      agentIdRef.current = null;
+      // NOTE: we do NOT killAgent on unmount. Worktree switches should keep
+      // agents running; only explicit tab-close kills. The parent handles
+      // that via closeTab → killAgent before removing the tab.
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [worktreeId]);
+
+  useEffect(() => {
+    if (!visible) return;
+    const fit = fitRef.current;
+    const term = termRef.current;
+    if (fit) {
+      try {
+        fit.fit();
+      } catch {}
     }
-  }
-
-  async function onLaunchClick() {
-    if (launching) return;
-    setLaunching(true);
-    setError(null);
-    setExited(false);
-    await mountTerminal({ launch: backend });
-    setLaunching(false);
-  }
-
-  async function onKillClick() {
-    if (session) {
-      await killAgent(session.id).catch(() => {});
-    }
-    termRef.current?.dispose();
-    termRef.current = null;
-    fitRef.current = null;
-    idRef.current = null;
-    setSession(null);
-    setExited(false);
-  }
-
-  const statusLabel = !session
-    ? "not running"
-    : exited
-      ? "exited"
-      : "running";
+    if (term) term.focus();
+  }, [visible]);
 
   return (
-    <div className="flex h-full flex-col border-l border-neutral-800 bg-neutral-950">
-      <div className="flex items-center justify-between border-b border-neutral-800 px-3 py-2 text-xs">
-        <div className="flex items-center gap-2">
-          <span className="font-semibold text-neutral-200">Agent</span>
-          <span className="text-neutral-500">·</span>
-          <span
-            className={cn(
-              "rounded px-1.5 py-0.5 text-[10px] font-mono",
-              session && !exited
-                ? "bg-emerald-900/40 text-emerald-300"
-                : exited
-                  ? "bg-amber-900/40 text-amber-300"
-                  : "bg-neutral-800 text-neutral-400",
-            )}
-          >
-            {statusLabel}
-          </span>
-        </div>
-        <div className="flex items-center gap-2">
-          {!session && (
-            <>
-              <select
-                value={backend}
-                onChange={(e) => setBackend(e.target.value as AgentBackendKind)}
-                className="rounded border border-neutral-800 bg-neutral-900 px-2 py-0.5 text-[11px] focus:outline-none"
-                disabled={launching}
-              >
-                {BACKENDS.map((b) => (
-                  <option key={b.value} value={b.value}>
-                    {b.label}
-                  </option>
-                ))}
-              </select>
-              <button
-                onClick={onLaunchClick}
-                disabled={launching}
-                className="rounded bg-blue-600 px-2 py-0.5 text-[11px] font-medium text-white hover:bg-blue-500 disabled:opacity-50"
-              >
-                {launching ? "Launching…" : "Launch"}
-              </button>
-            </>
-          )}
-          {session && (
-            <button
-              onClick={onKillClick}
-              className="rounded border border-neutral-800 px-2 py-0.5 text-[11px] text-neutral-300 hover:border-red-800 hover:text-red-400"
-            >
-              Kill
-            </button>
-          )}
-        </div>
-      </div>
-
+    <div className="relative h-full w-full">
       {error && (
         <div className="m-3 rounded border border-red-900/60 bg-red-950/40 px-3 py-2 text-xs text-red-300">
           {error}
         </div>
       )}
-
-      <div className="relative flex-1">
-        {!session && !launching && (
-          <div className="absolute inset-0 flex items-center justify-center text-xs text-neutral-600">
-            Pick a backend and click Launch
-          </div>
-        )}
-        <div
-          ref={hostRef}
-          className={cn(
-            "absolute inset-0 p-2",
-            !session && "pointer-events-none opacity-0",
-          )}
-        />
-      </div>
+      <div ref={hostRef} className="absolute inset-0 p-2" />
     </div>
   );
-}
-
-function asMessage(e: unknown): string {
-  if (e && typeof e === "object" && "message" in e) {
-    return String((e as { message: unknown }).message);
-  }
-  return e instanceof Error ? e.message : String(e);
 }

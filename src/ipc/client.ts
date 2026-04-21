@@ -183,10 +183,10 @@ export function killAgent(agentId: AgentSessionId): Promise<void> {
   return invoke<void>("kill_agent", { agentId });
 }
 
-export function getAgentForWorktree(
+export function listAgentsForWorktree(
   worktreeId: WorktreeId,
-): Promise<AgentSession | null> {
-  return invoke<AgentSession | null>("get_agent_for_worktree", { worktreeId });
+): Promise<AgentSession[]> {
+  return invoke<AgentSession[]>("list_agents_for_worktree", { worktreeId });
 }
 
 export function attachAgent(

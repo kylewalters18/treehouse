@@ -52,8 +52,6 @@ pub struct AgentHandle {
 #[derive(Default)]
 pub struct AgentRegistry {
     inner: DashMap<AgentSessionId, AgentHandle>,
-    /// Index of the *single* active agent per worktree, for quick lookup.
-    by_worktree: DashMap<WorktreeId, AgentSessionId>,
 }
 
 impl AgentRegistry {
@@ -61,9 +59,15 @@ impl AgentRegistry {
         Self::default()
     }
 
-    pub fn get_for_worktree(&self, worktree_id: WorktreeId) -> Option<AgentSession> {
-        let id = *self.by_worktree.get(&worktree_id)?.value();
-        self.inner.get(&id).map(|h| h.session.clone())
+    pub fn list_for_worktree(&self, worktree_id: WorktreeId) -> Vec<AgentSession> {
+        let mut sessions: Vec<AgentSession> = self
+            .inner
+            .iter()
+            .filter(|e| e.value().session.worktree_id == worktree_id)
+            .map(|e| e.value().session.clone())
+            .collect();
+        sessions.sort_by_key(|s| s.started_at);
+        sessions
     }
 
     pub fn status_snapshot(&self, id: AgentSessionId) -> Option<AgentStatus> {
@@ -81,34 +85,31 @@ impl AgentRegistry {
             .collect()
     }
 
-    /// Coarse activity classification for a worktree's agent (if any).
-    ///
-    /// - `Working`: a newline arrived within [`WORKING_WINDOW`] — real output.
-    /// - `Idle`: no newline recently, but *any* bytes within
-    ///   [`SPINNER_ACTIVITY_WINDOW`] (spinner animating, model thinking).
-    /// - `NeedsAttention`: nothing happening; almost certainly waiting on stdin.
+    /// Activity classification for a worktree, aggregated across **all** of
+    /// its agents. Returns the most-alerting state: NeedsAttention > Working
+    /// > Idle > Inactive. No running agents → Inactive.
     pub fn activity_for_worktree(&self, worktree_id: WorktreeId) -> AgentActivity {
-        let Some(id_ref) = self.by_worktree.get(&worktree_id) else {
-            return AgentActivity::Inactive;
-        };
-        let id = *id_ref.value();
-        let Some(handle) = self.inner.get(&id) else {
-            return AgentActivity::Inactive;
-        };
-        let sh = handle.shared.lock();
-        if !matches!(sh.status, AgentStatus::Running | AgentStatus::Starting) {
-            return AgentActivity::Inactive;
+        let mut best = AgentActivity::Inactive;
+        for e in self.inner.iter() {
+            if e.value().session.worktree_id != worktree_id {
+                continue;
+            }
+            let sh = e.value().shared.lock();
+            if !matches!(sh.status, AgentStatus::Running | AgentStatus::Starting) {
+                continue;
+            }
+            let since_newline = sh.last_newline.elapsed();
+            let since_any = sh.last_any_output.elapsed();
+            let a = if since_newline < WORKING_WINDOW {
+                AgentActivity::Working
+            } else if since_newline < IDLE_WINDOW && since_any < SPINNER_ACTIVITY_WINDOW {
+                AgentActivity::Idle
+            } else {
+                AgentActivity::NeedsAttention
+            };
+            best = max_severity(best, a);
         }
-        let since_newline = sh.last_newline.elapsed();
-        let since_any = sh.last_any_output.elapsed();
-
-        if since_newline < WORKING_WINDOW {
-            AgentActivity::Working
-        } else if since_newline < IDLE_WINDOW && since_any < SPINNER_ACTIVITY_WINDOW {
-            AgentActivity::Idle
-        } else {
-            AgentActivity::NeedsAttention
-        }
+        best
     }
 
     /// Kill every agent. Called from graceful shutdown.
@@ -119,7 +120,22 @@ impl AgentRegistry {
                 let _ = h.child.lock().kill();
             }
         }
-        self.by_worktree.clear();
+    }
+}
+
+fn max_severity(a: AgentActivity, b: AgentActivity) -> AgentActivity {
+    fn rank(a: AgentActivity) -> u8 {
+        match a {
+            AgentActivity::NeedsAttention => 3,
+            AgentActivity::Working => 2,
+            AgentActivity::Idle => 1,
+            AgentActivity::Inactive => 0,
+        }
+    }
+    if rank(a) >= rank(b) {
+        a
+    } else {
+        b
     }
 }
 
@@ -140,11 +156,6 @@ pub fn launch(
         return Err(AppError::Unknown(
             "agents run in worktrees, not the main clone".into(),
         ));
-    }
-    if registry.by_worktree.contains_key(&worktree_id) {
-        return Err(AppError::AlreadyOpen(format!(
-            "agent already running for worktree {worktree_id}"
-        )));
     }
 
     let argv = argv_override
@@ -279,7 +290,6 @@ pub fn launch(
             shared,
         },
     );
-    registry.by_worktree.insert(worktree_id, session_id);
     tracing::info!(%session_id, %worktree_id, ?argv, "launched agent");
 
     Ok(session)
@@ -354,16 +364,19 @@ pub fn resize(
 
 pub fn kill(registry: &AgentRegistry, id: AgentSessionId) {
     if let Some((_, handle)) = registry.inner.remove(&id) {
-        registry
-            .by_worktree
-            .remove_if(&handle.session.worktree_id, |_, v| *v == id);
         let _ = handle.child.lock().kill();
         tracing::info!(%id, "killed agent");
     }
 }
 
 pub fn kill_for_worktree(registry: &AgentRegistry, worktree_id: WorktreeId) {
-    if let Some((_, id)) = registry.by_worktree.remove(&worktree_id) {
+    let ids: Vec<_> = registry
+        .inner
+        .iter()
+        .filter(|e| e.value().session.worktree_id == worktree_id)
+        .map(|e| *e.key())
+        .collect();
+    for id in ids {
         if let Some((_, handle)) = registry.inner.remove(&id) {
             let _ = handle.child.lock().kill();
             tracing::info!(%id, %worktree_id, "killed agent for removed worktree");

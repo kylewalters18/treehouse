@@ -202,11 +202,11 @@ pub async fn kill_agent(
 }
 
 #[tauri::command]
-pub async fn get_agent_for_worktree(
+pub async fn list_agents_for_worktree(
     worktree_id: WorktreeId,
     state: State<'_, AppState>,
-) -> AppResult<Option<AgentSession>> {
-    Ok(state.agents.get_for_worktree(worktree_id))
+) -> AppResult<Vec<AgentSession>> {
+    Ok(state.agents.list_for_worktree(worktree_id))
 }
 
 #[tauri::command]
