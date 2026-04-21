@@ -166,7 +166,7 @@ export function EditorPane({ worktreeId, path }: Props) {
   );
 }
 
-function inferLanguage(path: string): string {
+export function inferLanguage(path: string): string {
   const lower = path.toLowerCase();
   if (lower.endsWith(".d.ts")) return "typescript";
   const ext = lower.split(".").pop() ?? "";

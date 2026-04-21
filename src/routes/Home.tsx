@@ -98,17 +98,17 @@ export function Home() {
   );
 }
 
-function basename(p: string): string {
+export function basename(p: string): string {
   const trimmed = p.replace(/\/+$/, "");
   const idx = trimmed.lastIndexOf("/");
   return idx === -1 ? trimmed : trimmed.slice(idx + 1);
 }
 
-function shortHome(p: string): string {
+export function shortHome(p: string): string {
   return p.replace(/^\/Users\/[^/]+/, "~");
 }
 
-function formatWhen(ms: number): string {
+export function formatWhen(ms: number): string {
   const now = Date.now();
   const diff = Math.max(0, now - ms);
   const mins = Math.floor(diff / 60_000);
