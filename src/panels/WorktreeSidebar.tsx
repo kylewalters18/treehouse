@@ -252,7 +252,7 @@ export function WorktreeSidebar() {
               <li
                 key={w.id}
                 className={cn(
-                  "group flex cursor-pointer items-start justify-between gap-2 px-3 py-2 hover:bg-neutral-900/50",
+                  "group relative flex cursor-pointer items-start px-3 py-2 hover:bg-neutral-900/50",
                   selectedId === w.id && "bg-neutral-900",
                 )}
                 onClick={() => selectWorktree(w.id)}
@@ -260,11 +260,11 @@ export function WorktreeSidebar() {
                 <div className="flex min-w-0 flex-1 items-start gap-2">
                   <StatusDot
                     activity={activity[w.id]?.activity ?? "inactive"}
-                    className="mt-1"
+                    className="mt-1.5"
                   />
                   <div className="min-w-0 flex-1">
                     <div className="flex items-baseline gap-2">
-                      <span className="truncate font-mono text-xs text-neutral-200">
+                      <span className="truncate font-mono text-sm text-neutral-100">
                         {w.branch}
                       </span>
                       <AheadBehind
@@ -273,14 +273,14 @@ export function WorktreeSidebar() {
                       />
                     </div>
                     <div
-                      className="truncate font-mono text-[10px] text-neutral-500"
+                      className="truncate font-mono text-[11px] text-neutral-500"
                       title={w.path}
                     >
                       {shortenPath(w.path)}
                     </div>
                   </div>
                 </div>
-                <span className="flex items-center gap-1 opacity-0 transition group-hover:opacity-100">
+                <span className="pointer-events-none absolute right-2 top-1.5 flex items-center gap-1 rounded bg-neutral-900/95 px-1 opacity-0 shadow-sm transition group-hover:pointer-events-auto group-hover:opacity-100">
                   {(activity[w.id]?.behind ?? 0) > 0 && (
                     <SyncButton
                       behind={activity[w.id]?.behind ?? 0}
