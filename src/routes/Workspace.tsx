@@ -15,6 +15,8 @@ export function Workspace() {
   const resetWorktrees = useWorktreesStore((s) => s.reset);
   const resetDiffs = useDiffsStore((s) => s.reset);
   const resetUi = useUiStore((s) => s.reset);
+  const focusMode = useUiStore((s) => s.focusMode);
+  const toggleFocusMode = useUiStore((s) => s.toggleFocusMode);
 
   useEffect(() => {
     return () => {
@@ -23,6 +25,18 @@ export function Workspace() {
       resetUi();
     };
   }, [workspace, resetWorktrees, resetDiffs, resetUi]);
+
+  // Cmd+\ (Ctrl+\ on Linux/Win) toggles focus mode.
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if ((e.metaKey || e.ctrlKey) && e.key === "\\") {
+        e.preventDefault();
+        toggleFocusMode();
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [toggleFocusMode]);
 
   if (!workspace) return null;
 
@@ -35,6 +49,11 @@ export function Workspace() {
           <span className="rounded bg-neutral-800 px-2 py-0.5 font-mono text-[11px] text-neutral-300">
             {workspace.defaultBranch}
           </span>
+          {focusMode && (
+            <span className="rounded bg-blue-900/40 px-2 py-0.5 font-mono text-[10px] text-blue-300">
+              focus · ⌘\ to exit
+            </span>
+          )}
         </div>
         <button
           onClick={closeWorkspace}
@@ -44,27 +63,49 @@ export function Workspace() {
         </button>
       </header>
 
-      <PanelGroup direction="horizontal" className="flex-1">
-        <Panel defaultSize={18} minSize={14}>
-          <WorktreeSidebar />
-        </Panel>
-        <PanelResizeHandle className="w-px bg-neutral-800 hover:bg-neutral-700" />
-        <Panel defaultSize={48}>
-          <PanelGroup direction="vertical">
-            <Panel defaultSize={60}>
-              <DiffPane />
-            </Panel>
-            <PanelResizeHandle className="h-px bg-neutral-800 hover:bg-neutral-700" />
-            <Panel defaultSize={40}>
-              <TerminalPane />
-            </Panel>
-          </PanelGroup>
-        </Panel>
-        <PanelResizeHandle className="w-px bg-neutral-800 hover:bg-neutral-700" />
-        <Panel defaultSize={34} minSize={20}>
-          <AgentPane />
-        </Panel>
-      </PanelGroup>
+      {focusMode ? (
+        <PanelGroup
+          key="focus"
+          direction="horizontal"
+          className="flex-1"
+          autoSaveId="layout-focus"
+        >
+          <Panel defaultSize={14} minSize={10}>
+            <WorktreeSidebar />
+          </Panel>
+          <PanelResizeHandle className="w-px bg-neutral-800 hover:bg-neutral-700" />
+          <Panel defaultSize={86}>
+            <DiffPane />
+          </Panel>
+        </PanelGroup>
+      ) : (
+        <PanelGroup
+          key="normal"
+          direction="horizontal"
+          className="flex-1"
+          autoSaveId="layout-normal"
+        >
+          <Panel defaultSize={18} minSize={14}>
+            <WorktreeSidebar />
+          </Panel>
+          <PanelResizeHandle className="w-px bg-neutral-800 hover:bg-neutral-700" />
+          <Panel defaultSize={48}>
+            <PanelGroup direction="vertical" autoSaveId="center-normal">
+              <Panel defaultSize={60}>
+                <DiffPane />
+              </Panel>
+              <PanelResizeHandle className="h-px bg-neutral-800 hover:bg-neutral-700" />
+              <Panel defaultSize={40}>
+                <TerminalPane />
+              </Panel>
+            </PanelGroup>
+          </Panel>
+          <PanelResizeHandle className="w-px bg-neutral-800 hover:bg-neutral-700" />
+          <Panel defaultSize={34} minSize={20}>
+            <AgentPane />
+          </Panel>
+        </PanelGroup>
+      )}
     </div>
   );
 }

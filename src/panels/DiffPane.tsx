@@ -162,10 +162,11 @@ function DiffView({ worktreeId }: { worktreeId: WorktreeId }) {
             File
           </TabButton>
           {selectedFile && (
-            <span className="ml-2 truncate font-mono text-[11px] text-neutral-500">
+            <span className="ml-2 min-w-0 flex-1 truncate font-mono text-[11px] text-neutral-500">
               {selectedFile}
             </span>
           )}
+          <FocusToggle />
         </div>
         <div className="flex-1 overflow-auto">
           {!selectedFile ? (
@@ -184,6 +185,25 @@ function DiffView({ worktreeId }: { worktreeId: WorktreeId }) {
         </div>
       </section>
     </div>
+  );
+}
+
+function FocusToggle() {
+  const focusMode = useUiStore((s) => s.focusMode);
+  const toggle = useUiStore((s) => s.toggleFocusMode);
+  return (
+    <button
+      onClick={toggle}
+      title={focusMode ? "Exit focus mode (⌘\\)" : "Focus mode (⌘\\)"}
+      className={cn(
+        "ml-auto shrink-0 rounded px-1.5 py-0.5 text-[11px] font-medium",
+        focusMode
+          ? "bg-blue-900/50 text-blue-200 hover:bg-blue-900/70"
+          : "text-neutral-400 hover:bg-neutral-900 hover:text-neutral-200",
+      )}
+    >
+      {focusMode ? "⤡" : "⤢"}
+    </button>
   );
 }
 
