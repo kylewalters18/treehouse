@@ -9,31 +9,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
-name = "agent-ide"
-version = "0.1.0"
-dependencies = [
- "bytes",
- "dashmap",
- "dunce",
- "git2",
- "ignore",
- "notify-debouncer-full",
- "parking_lot",
- "portable-pty",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "ts-rs",
- "ulid",
-]
-
-[[package]]
 name = "aho-corasick"
 version = "1.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4467,6 +4442,31 @@ dependencies = [
  "serde",
  "thiserror 2.0.18",
  "windows-sys 0.60.2",
+]
+
+[[package]]
+name = "treehouse"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "dashmap",
+ "dunce",
+ "git2",
+ "ignore",
+ "notify-debouncer-full",
+ "parking_lot",
+ "portable-pty",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "ts-rs",
+ "ulid",
 ]
 
 [[package]]

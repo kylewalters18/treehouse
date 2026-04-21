@@ -1,4 +1,4 @@
-# agent-ide
+# treehouse
 
 Desktop IDE centered on **parallel AI-agent development in git worktrees**. The unit of work is a worktree; agents (Claude Code by default) run as long-lived subprocesses inside each worktree, and the primary review surface is a live-updating diff of that worktree against a base ref. An embedded `xterm.js` terminal sits alongside, and merge-back into the main repo is one click.
 
@@ -78,7 +78,7 @@ npm run gen-types         # after changing any Rust #[derive(TS)] type
 npx tsc -b                # TypeScript project-reference build (use this, not `tsc --noEmit`)
 ```
 
-The tauri-dev log is the place to look for runtime signals. Default log level is `agent_ide_lib=debug`. Tracing messages like `watching worktree`, `launched agent`, `emitted diff_updated` are informative breadcrumbs for troubleshooting.
+The tauri-dev log is the place to look for runtime signals. Default log level is `treehouse_lib=debug`. Tracing messages like `watching worktree`, `launched agent`, `emitted diff_updated` are informative breadcrumbs for troubleshooting.
 
 ## Conventions and gotchas
 
@@ -106,7 +106,7 @@ The tauri-dev log is the place to look for runtime signals. Default log level is
 - Agent reattach via ring buffer
 - Linux / Windows
 - Sandboxing (macOS `sandbox-exec`)
-- Settings persistence beyond gitignored `~/.config/agent-ide/`
+- Settings persistence beyond gitignored `~/.config/treehouse/`
 - Cross-worktree search / command palette
 
 See `/Users/kylewalters/.claude/plans/i-want-to-make-delightful-mccarthy.md` for the full design doc this codebase is built against.

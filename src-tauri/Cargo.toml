@@ -1,5 +1,5 @@
 [package]
-name = "agent-ide"
+name = "treehouse"
 version = "0.1.0"
 description = "Agent-centric IDE with parallel worktree agents"
 authors = ["Kyle Walters"]
@@ -7,7 +7,7 @@ edition = "2021"
 rust-version = "1.77"
 
 [lib]
-name = "agent_ide_lib"
+name = "treehouse_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

@@ -7,9 +7,9 @@ import type { FileContent, WorktreeId } from "@/ipc/types";
 /// backgrounds, gutters, selection, and scrollbars to match the app's neutral
 /// palette (neutral-950/900/800) so the editor doesn't feel like a foreign
 /// iframe.
-const THEME_NAME = "agent-ide-dark";
+const THEME_NAME = "treehouse-dark";
 
-function defineAgentIdeTheme(monaco: Monaco) {
+function defineTreehouseTheme(monaco: Monaco) {
   monaco.editor.defineTheme(THEME_NAME, {
     base: "vs-dark",
     inherit: true,
@@ -135,7 +135,7 @@ export function EditorPane({ worktreeId, path }: Props) {
         language={language}
         value={content.text}
         theme={THEME_NAME}
-        beforeMount={defineAgentIdeTheme}
+        beforeMount={defineTreehouseTheme}
         path={path}
         options={{
           readOnly: true,
