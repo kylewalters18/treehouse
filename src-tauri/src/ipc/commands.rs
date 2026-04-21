@@ -50,6 +50,33 @@ pub async fn list_recent_workspaces(app: AppHandle) -> AppResult<Vec<RecentWorks
 }
 
 #[tauri::command]
+pub async fn close_workspace(
+    workspace_id: WorkspaceId,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> AppResult<()> {
+    // Tear down everything tied to this workspace: agents, terminals,
+    // watchers, cached diffs, then the worktrees and the workspace itself.
+    // On-disk worktree dirs and their branches are left intact.
+    let wt_ids: Vec<WorktreeId> = state
+        .worktrees
+        .iter()
+        .filter(|e| e.value().workspace_id == workspace_id)
+        .map(|e| *e.key())
+        .collect();
+    for id in &wt_ids {
+        fs_watch::stop(&app, id);
+        pty::manager::close_for_worktree(&state.terminals, *id);
+        agent::supervisor::kill_for_worktree(&state.agents, *id);
+        state.diffs.remove(id);
+        state.worktrees.remove(id);
+    }
+    state.workspaces.remove(&workspace_id);
+    tracing::info!(id = %workspace_id, worktrees = wt_ids.len(), "closed workspace");
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn list_worktrees(
     workspace_id: WorkspaceId,
     state: State<'_, AppState>,

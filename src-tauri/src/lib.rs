@@ -35,6 +35,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             ipc::commands::open_workspace,
+            ipc::commands::close_workspace,
             ipc::commands::list_recent_workspaces,
             ipc::commands::list_worktrees,
             ipc::commands::create_worktree,
