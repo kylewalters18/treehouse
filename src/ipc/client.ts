@@ -9,6 +9,7 @@ import type {
   FileContent,
   MergeResult,
   PtyEvent,
+  RecentWorkspace,
   TerminalId,
   TerminalSession,
   TreeEntry,
@@ -23,6 +24,10 @@ import type {
 
 export function openWorkspace(path: string): Promise<Workspace> {
   return invoke<Workspace>("open_workspace", { path });
+}
+
+export function listRecentWorkspaces(): Promise<RecentWorkspace[]> {
+  return invoke<RecentWorkspace[]>("list_recent_workspaces");
 }
 
 // --- Worktrees ---

@@ -5,6 +5,7 @@ mod fs_watch;
 mod ipc;
 mod pty;
 mod state;
+mod storage;
 mod util;
 mod workspace;
 mod worktree;
@@ -15,7 +16,7 @@ pub fn run() {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "agent_ide_lib=debug".into()),
+                .unwrap_or_else(|_| "treehouse_lib=debug".into()),
         )
         .init();
 
@@ -34,6 +35,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             ipc::commands::open_workspace,
+            ipc::commands::list_recent_workspaces,
             ipc::commands::list_worktrees,
             ipc::commands::create_worktree,
             ipc::commands::remove_worktree,
@@ -54,9 +56,9 @@ pub fn run() {
             ipc::commands::list_agent_activity,
         ])
         .setup(|_app| {
-            tracing::info!("agent-ide started");
+            tracing::info!("treehouse started");
             Ok(())
         })
         .run(tauri::generate_context!())
-        .expect("error while running agent-ide");
+        .expect("error while running treehouse");
 }

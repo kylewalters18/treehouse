@@ -12,6 +12,7 @@ export type { AppErrorPayload } from "./bindings/AppErrorPayload";
 
 export type { FileContent } from "./bindings/FileContent";
 export type { TreeEntry } from "./bindings/TreeEntry";
+export type { RecentWorkspace } from "./bindings/RecentWorkspace";
 export type { DiffSet } from "./bindings/DiffSet";
 export type { DiffStats } from "./bindings/DiffStats";
 export type { FileDiff } from "./bindings/FileDiff";

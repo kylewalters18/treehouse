@@ -6,6 +6,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use crate::agent::{self, AgentBackendKind, AgentEvent, AgentSession, WorktreeActivity};
 use crate::diff::{self, DiffSet};
 use crate::fs_api::{self, FileContent, TreeEntry};
+use crate::storage::{self, RecentWorkspace};
 use crate::fs_watch;
 use crate::ipc::events;
 use crate::pty::{self, PtyEvent, TerminalSession};
@@ -22,6 +23,11 @@ pub async fn open_workspace(
     state: State<'_, AppState>,
 ) -> AppResult<Workspace> {
     let ws = workspace::open(&path, &state).await?;
+    // Record it in the recent-workspaces list so Home can one-click back.
+    // Best-effort: log and continue if it fails.
+    if let Err(e) = storage::push_recent(&app, &ws.root).await {
+        tracing::warn!(?e, "push_recent failed");
+    }
     // Reconcile any pre-existing worktrees under <repo>__worktrees/.
     worktree::reconcile(ws.id, &state).await?;
     // Start watchers + compute initial diffs for every adopted worktree.
@@ -33,6 +39,11 @@ pub async fn open_workspace(
         prime_worktree_watch(&app, &wt);
     }
     Ok(ws)
+}
+
+#[tauri::command]
+pub async fn list_recent_workspaces(app: AppHandle) -> AppResult<Vec<RecentWorkspace>> {
+    storage::list_recent(&app).await
 }
 
 #[tauri::command]
