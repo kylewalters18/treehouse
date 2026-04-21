@@ -8,11 +8,23 @@ type SettingsState = {
   load: () => Promise<void>;
   setSyncStrategy: (s: SyncStrategy) => Promise<void>;
   setMergeBackStrategy: (s: MergeBackStrategy) => Promise<void>;
+  setZoom: (zoom: number) => Promise<void>;
+  adjustZoom: (delta: number) => Promise<void>;
+  resetZoom: () => Promise<void>;
 };
+
+export const ZOOM_MIN = 0.5;
+export const ZOOM_MAX = 2.0;
+export const ZOOM_STEP = 0.1;
+
+function clampZoom(z: number): number {
+  return Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, Math.round(z * 100) / 100));
+}
 
 const DEFAULT_SETTINGS: Settings = {
   syncStrategy: "rebase",
   mergeBackStrategy: "rebaseFf",
+  zoom: 1.0,
 };
 
 export const useSettingsStore = create<SettingsState>((set, get) => ({
@@ -41,5 +53,18 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     try {
       await ipc.updateSettings(next);
     } catch {}
+  },
+  async setZoom(zoom) {
+    const next: Settings = { ...get().settings, zoom: clampZoom(zoom) };
+    set({ settings: next });
+    try {
+      await ipc.updateSettings(next);
+    } catch {}
+  },
+  async adjustZoom(delta) {
+    await get().setZoom(get().settings.zoom + delta);
+  },
+  async resetZoom() {
+    await get().setZoom(1.0);
   },
 }));

@@ -103,7 +103,7 @@ fn now_millis() -> u64 {
 
 // --- Settings ---
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, TS, Default)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase", default)]
 #[ts(export)]
 pub struct Settings {
@@ -113,6 +113,20 @@ pub struct Settings {
     /// Default strategy preselected in the Merge dialog. Defaults to
     /// RebaseFf (rebase agent branch + ff-only merge — linear history).
     pub merge_back_strategy: MergeBackStrategy,
+    /// UI zoom factor applied via `document.documentElement.style.zoom`
+    /// on the frontend. 1.0 = default. Clamped to [0.5, 2.0] on the
+    /// frontend; we persist whatever the user lands on.
+    pub zoom: f32,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            sync_strategy: SyncStrategy::default(),
+            merge_back_strategy: MergeBackStrategy::default(),
+            zoom: 1.0,
+        }
+    }
 }
 
 fn settings_path(app: &AppHandle) -> AppResult<PathBuf> {

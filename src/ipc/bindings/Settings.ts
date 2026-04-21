@@ -12,4 +12,10 @@ syncStrategy: SyncStrategy,
  * Default strategy preselected in the Merge dialog. Defaults to
  * RebaseFf (rebase agent branch + ff-only merge — linear history).
  */
-mergeBackStrategy: MergeBackStrategy, };
+mergeBackStrategy: MergeBackStrategy, 
+/**
+ * UI zoom factor applied via `document.documentElement.style.zoom`
+ * on the frontend. 1.0 = default. Clamped to [0.5, 2.0] on the
+ * frontend; we persist whatever the user lands on.
+ */
+zoom: number, };
