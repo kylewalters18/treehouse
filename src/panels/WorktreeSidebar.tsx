@@ -24,7 +24,6 @@ export function WorktreeSidebar() {
   const workspace = useWorkspaceStore((s) => s.workspace);
   const worktrees = useWorktreesStore((s) => s.worktrees);
   const creating = useWorktreesStore((s) => s.creating);
-  const error = useWorktreesStore((s) => s.error);
   const refresh = useWorktreesStore((s) => s.refresh);
   const createWt = useWorktreesStore((s) => s.create);
   const removeWt = useWorktreesStore((s) => s.remove);
@@ -265,12 +264,6 @@ export function WorktreeSidebar() {
           {creating ? "…" : "+"}
         </button>
       </form>
-
-      {error && (
-        <div className="m-3 rounded border border-red-900/60 bg-red-950/40 px-2 py-1 text-[11px] text-red-300">
-          {error}
-        </div>
-      )}
 
       <div className="flex-1 overflow-y-auto">
         {mainClone && (
