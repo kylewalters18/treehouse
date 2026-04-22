@@ -94,7 +94,7 @@ export function Workspace() {
             {workspace.defaultBranch}
           </span>
           {focusMode && (
-            <span className="rounded bg-blue-900/40 px-2 py-0.5 font-mono text-[10px] text-blue-300">
+            <span className="rounded bg-blue-900/40 px-2 py-0.5 font-mono text-[11px] text-blue-300">
               focus · ⌘\ to exit
             </span>
           )}

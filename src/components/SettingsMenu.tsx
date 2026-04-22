@@ -80,7 +80,7 @@ export function SettingsMenu() {
                 <div className="font-medium text-neutral-100">
                   Initialize submodules on create
                 </div>
-                <div className="font-mono text-[10px] text-neutral-500">
+                <div className="font-mono text-[11px] text-neutral-500">
                   git submodule update --init --recursive
                 </div>
               </span>
@@ -105,7 +105,7 @@ function Section<T extends string>({
 }) {
   return (
     <div>
-      <div className="mb-1 text-[10px] uppercase tracking-wider text-neutral-500">
+      <div className="mb-1 text-[11px] uppercase tracking-wider text-neutral-500">
         {label}
       </div>
       <div className="flex flex-col gap-1">
@@ -127,7 +127,7 @@ function Section<T extends string>({
             />
             <span className="flex-1">
               <div className="font-medium text-neutral-100">{opt.label}</div>
-              <div className="font-mono text-[10px] text-neutral-500">
+              <div className="font-mono text-[11px] text-neutral-500">
                 {opt.sub}
               </div>
             </span>

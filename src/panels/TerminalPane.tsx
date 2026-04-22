@@ -137,7 +137,7 @@ function TabBar({
       <button
         onClick={onNew}
         title="New terminal"
-        className="ml-0.5 shrink-0 rounded px-1.5 py-0.5 text-[12px] text-neutral-500 hover:bg-neutral-900 hover:text-neutral-200"
+        className="ml-0.5 shrink-0 rounded px-1.5 py-0.5 text-xs text-neutral-500 hover:bg-neutral-900 hover:text-neutral-200"
       >
         +
       </button>

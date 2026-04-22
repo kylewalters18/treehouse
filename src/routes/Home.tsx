@@ -80,11 +80,11 @@ export function Home() {
                       <div className="truncate text-sm text-neutral-200">
                         {basename(r.path)}
                       </div>
-                      <div className="truncate font-mono text-[10px] text-neutral-500">
+                      <div className="truncate font-mono text-[11px] text-neutral-500">
                         {shortHome(r.path)}
                       </div>
                     </span>
-                    <span className="shrink-0 text-[10px] text-neutral-600">
+                    <span className="shrink-0 text-[11px] text-neutral-600">
                       {formatWhen(Number(r.lastOpenedAt))}
                     </span>
                   </button>

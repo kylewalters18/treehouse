@@ -504,7 +504,7 @@ function CommentOverlay({
       <button
         onClick={() => setShowResolved((v) => !v)}
         className={cn(
-          "pointer-events-auto absolute right-3 top-2 z-20 rounded border border-neutral-800 bg-neutral-900/80 px-2 py-0.5 text-[10px] text-neutral-400 hover:bg-neutral-800",
+          "pointer-events-auto absolute right-3 top-2 z-20 rounded border border-neutral-800 bg-neutral-900/80 px-2 py-0.5 text-[11px] text-neutral-400 hover:bg-neutral-800",
           showResolved && "text-neutral-200",
         )}
         title={
@@ -607,7 +607,7 @@ function CommentWidget({
   return (
     <div
       className={cn(
-        "rounded border bg-neutral-950 text-[13px]",
+        "rounded border bg-neutral-950 text-xs",
         resolved ? "border-neutral-900 opacity-60" : "border-neutral-800",
       )}
     >
@@ -615,12 +615,12 @@ function CommentWidget({
         <span className="font-mono">
           {comment.filePath}:{comment.line}
           {resolved && (
-            <span className="ml-2 rounded bg-neutral-800 px-1.5 py-0.5 text-[10px] text-neutral-400">
+            <span className="ml-2 rounded bg-neutral-800 px-1.5 py-0.5 text-[11px] text-neutral-400">
               resolved
             </span>
           )}
           {queued && !resolved && (
-            <span className="ml-2 rounded bg-blue-900/50 px-1.5 py-0.5 text-[10px] text-blue-300">
+            <span className="ml-2 rounded bg-blue-900/50 px-1.5 py-0.5 text-[11px] text-blue-300">
               queued
             </span>
           )}
@@ -691,7 +691,7 @@ function CommentWidget({
               }
             }}
             rows={3}
-            className="w-full resize-none rounded border border-neutral-800 bg-neutral-950 px-2 py-1 font-mono text-[12px] text-neutral-200 focus:border-neutral-700 focus:outline-none"
+            className="w-full resize-none rounded border border-neutral-800 bg-neutral-950 px-2 py-1 font-mono text-xs text-neutral-200 focus:border-neutral-700 focus:outline-none"
           />
         ) : (
           <div className="whitespace-pre-wrap text-neutral-200">
@@ -734,7 +734,7 @@ function CommentComposer({
           }}
           rows={3}
           placeholder="Leave a review comment for the agent…"
-          className="w-full resize-none rounded border border-neutral-800 bg-neutral-950 px-2 py-1 font-mono text-[12px] text-neutral-200 placeholder:text-neutral-600 focus:border-neutral-700 focus:outline-none"
+          className="w-full resize-none rounded border border-neutral-800 bg-neutral-950 px-2 py-1 font-mono text-xs text-neutral-200 placeholder:text-neutral-600 focus:border-neutral-700 focus:outline-none"
         />
       </div>
     </div>

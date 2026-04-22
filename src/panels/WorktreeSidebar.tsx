@@ -281,12 +281,12 @@ export function WorktreeSidebar() {
             title={`${mainClone.path} — main clone (merges land here; agents don't run here)`}
           >
             <div className="flex min-w-0 flex-1 items-start gap-2">
-              <span className="mt-0.5 shrink-0 text-[10px] text-blue-400">◆</span>
+              <span className="mt-0.5 shrink-0 text-[11px] text-blue-400">◆</span>
               <div className="min-w-0 flex-1">
                 <div className="truncate font-mono text-xs text-neutral-100">
                   {mainClone.branch}
                 </div>
-                <div className="truncate text-[10px] uppercase tracking-wider text-neutral-500">
+                <div className="truncate text-[11px] uppercase tracking-wider text-neutral-500">
                   main clone
                 </div>
               </div>
@@ -358,7 +358,7 @@ export function WorktreeSidebar() {
                 )}
                 {inactive.length > 0 && (
                   <>
-                    <div className="border-t border-neutral-800 px-3 py-1.5 text-[10px] uppercase tracking-wider text-neutral-600">
+                    <div className="border-t border-neutral-800 px-3 py-1.5 text-[11px] uppercase tracking-wider text-neutral-600">
                       Inactive ({inactive.length})
                     </div>
                     <ul className="divide-y divide-neutral-900">
@@ -581,7 +581,7 @@ function RailButton({
         onMouseLeave={onLeave}
         className={cn(
           "flex h-7 w-7 items-center justify-center rounded hover:bg-neutral-900",
-          variant === "main" && "text-[13px] text-blue-400",
+          variant === "main" && "text-xs text-blue-400",
           selected &&
             (variant === "main"
               ? "bg-neutral-900"
@@ -776,7 +776,7 @@ function RowMenu({
           setOpen((v) => !v);
         }}
         className={cn(
-          "rounded px-1.5 py-0.5 text-[13px] leading-none text-neutral-400 transition hover:bg-neutral-800 hover:text-neutral-200",
+          "rounded px-1.5 py-0.5 text-xs leading-none text-neutral-400 transition hover:bg-neutral-800 hover:text-neutral-200",
           open
             ? "bg-neutral-800 text-neutral-100 opacity-100"
             : "opacity-0 group-hover:opacity-100",
@@ -838,7 +838,7 @@ function AheadBehind({ ahead, behind }: { ahead: number; behind: number }) {
   const fmt = (n: number) => (n > 99 ? "99+" : String(n));
   return (
     <span
-      className="shrink-0 font-mono text-[10px] text-neutral-500"
+      className="shrink-0 font-mono text-[11px] text-neutral-500"
       title={`${ahead} ahead of / ${behind} behind default branch`}
     >
       {ahead > 0 && (

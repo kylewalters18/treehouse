@@ -188,7 +188,7 @@ function TreeNode({
       )}
       {isExpanded && dirContents.length === 0 && expanded.has(entry.path) && (
         <div
-          className="px-2 py-0.5 text-[10px] italic text-neutral-700"
+          className="px-2 py-0.5 text-[11px] italic text-neutral-700"
           style={{ paddingLeft: `${24 + depth * 12}px` }}
         >
           empty

@@ -84,7 +84,7 @@ function DiffView({ worktreeId }: { worktreeId: WorktreeId }) {
         <div className="flex shrink-0 items-center justify-between border-b border-neutral-900 px-3 py-2 text-[11px] uppercase tracking-wider text-neutral-500">
           <span>Changes ({diff?.stats.filesChanged ?? 0})</span>
           {diff && (
-            <span className="font-mono text-[10px]">
+            <span className="font-mono text-[11px]">
               <span className="text-emerald-400">+{diff.stats.insertions}</span>{" "}
               <span className="text-rose-400">-{diff.stats.deletions}</span>
             </span>
@@ -118,7 +118,7 @@ function DiffView({ worktreeId }: { worktreeId: WorktreeId }) {
                         {f.path}
                       </span>
                     </span>
-                    <span className="shrink-0 font-mono text-[10px]">
+                    <span className="shrink-0 font-mono text-[11px]">
                       <span className="text-emerald-400">+{f.insertions}</span>{" "}
                       <span className="text-rose-400">-{f.deletions}</span>
                     </span>
@@ -248,7 +248,7 @@ function StatusBadge({ status }: { status: FileStatus }) {
   return (
     <span
       className={cn(
-        "inline-flex h-4 w-4 shrink-0 items-center justify-center rounded font-mono text-[10px] font-bold",
+        "inline-flex h-4 w-4 shrink-0 items-center justify-center rounded font-mono text-[11px] font-bold",
         m.cls,
       )}
     >
