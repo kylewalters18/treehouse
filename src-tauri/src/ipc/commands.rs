@@ -218,6 +218,7 @@ pub async fn merge_worktree(
 
 #[tauri::command]
 pub async fn launch_agent(
+    app: AppHandle,
     worktree_id: WorktreeId,
     backend: AgentBackendKind,
     argv: Option<Vec<String>>,
@@ -232,6 +233,7 @@ pub async fn launch_agent(
         .ok_or_else(|| AppError::Unknown(format!("unknown worktree: {worktree_id}")))?
         .clone();
     agent::supervisor::launch(
+        &app,
         &state.agents,
         worktree_id,
         wt.path,

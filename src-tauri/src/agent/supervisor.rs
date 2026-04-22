@@ -8,10 +8,12 @@ use dashmap::DashMap;
 use parking_lot::Mutex;
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use tauri::ipc::Channel;
+use tauri::AppHandle;
 
 use crate::util::errors::{AppError, AppResult};
 use crate::util::ids::{AgentSessionId, WorktreeId};
 
+use super::hooks::{self, HookActivityMap};
 use super::{AgentActivity, AgentBackendKind, AgentEvent, AgentSession, AgentStatus};
 
 /// Newlines are the universal "real output" signal across TUI agents — all of
@@ -49,14 +51,39 @@ pub struct AgentHandle {
     shared: Arc<Mutex<AgentShared>>,
 }
 
-#[derive(Default)]
 pub struct AgentRegistry {
     inner: DashMap<AgentSessionId, AgentHandle>,
+    /// Hook-driven activity per worktree — populated by the file watcher
+    /// on writes to `<app_config>/hook-state/<worktree_id>.state`.
+    hook_activity: HookActivityMap,
+    /// Keeps the hook file watcher alive for the lifetime of the registry.
+    #[allow(dead_code)]
+    hook_watcher: Mutex<Option<Box<dyn std::any::Any + Send + Sync>>>,
 }
 
 impl AgentRegistry {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            inner: DashMap::new(),
+            hook_activity: std::sync::Arc::new(DashMap::new()),
+            hook_watcher: Mutex::new(None),
+        }
+    }
+
+    /// Start the hook-state watcher. Safe to call more than once; subsequent
+    /// calls are no-ops. Called once at app startup from `setup()`.
+    pub fn start_hook_watcher(&self, app: &AppHandle) -> AppResult<()> {
+        let mut guard = self.hook_watcher.lock();
+        if guard.is_some() {
+            return Ok(());
+        }
+        let w = hooks::start_watcher(app, self.hook_activity.clone())?;
+        *guard = Some(w);
+        Ok(())
+    }
+
+    pub fn hook_activity(&self) -> &HookActivityMap {
+        &self.hook_activity
     }
 
     pub fn list_for_worktree(&self, worktree_id: WorktreeId) -> Vec<AgentSession> {
@@ -88,7 +115,40 @@ impl AgentRegistry {
     /// Activity classification for a worktree, aggregated across **all** of
     /// its agents. Returns the most-alerting state: NeedsAttention > Working
     /// > Idle > Inactive. No running agents → Inactive.
+    ///
+    /// Preferred signal is Claude's hook events (see `agent::hooks`), which
+    /// are authoritative. We fall back to the byte-timing heuristic when no
+    /// hook has reported for this worktree yet (e.g. agent just launched
+    /// and hasn't triggered its first event).
     pub fn activity_for_worktree(&self, worktree_id: WorktreeId) -> AgentActivity {
+        let any_running = self.inner.iter().any(|e| {
+            e.value().session.worktree_id == worktree_id
+                && matches!(
+                    e.value().shared.lock().status,
+                    AgentStatus::Running | AgentStatus::Starting
+                )
+        });
+        if !any_running {
+            return AgentActivity::Inactive;
+        }
+
+        if let Some(entry) = self.hook_activity.get(&worktree_id) {
+            let (act, set_at) = *entry.value();
+            // Claude occasionally doesn't fire `Stop` after the user
+            // rejects a permission prompt — the `needs-attention` signal
+            // then never gets overwritten. Expire it to `idle` after a
+            // grace period so the dot recovers. Other states don't need
+            // this: `working` gets replaced by the next tool boundary,
+            // and `idle` is already the recovered state.
+            const NEEDS_ATTENTION_TTL: Duration = Duration::from_secs(45);
+            if matches!(act, AgentActivity::NeedsAttention)
+                && set_at.elapsed() > NEEDS_ATTENTION_TTL
+            {
+                return AgentActivity::Idle;
+            }
+            return act;
+        }
+
         let mut best = AgentActivity::Inactive;
         for e in self.inner.iter() {
             if e.value().session.worktree_id != worktree_id {
@@ -142,6 +202,7 @@ fn max_severity(a: AgentActivity, b: AgentActivity) -> AgentActivity {
 /// Launch an agent in `cwd` and stream its PTY output over `channel`.
 /// At most one agent per worktree — launching a second returns `AlreadyOpen`.
 pub fn launch(
+    app: &AppHandle,
     registry: &AgentRegistry,
     worktree_id: WorktreeId,
     cwd: PathBuf,
@@ -156,6 +217,14 @@ pub fn launch(
         return Err(AppError::Unknown(
             "agents run in worktrees, not the main clone".into(),
         ));
+    }
+
+    // Install Claude Code hooks in the worktree *before* spawning the
+    // child, so the config is on disk when Claude reads settings.
+    if matches!(backend, AgentBackendKind::ClaudeCode) {
+        if let Err(e) = hooks::install(app, &cwd, worktree_id) {
+            tracing::warn!(?e, %worktree_id, "failed to install Claude hooks");
+        }
     }
 
     let argv = argv_override

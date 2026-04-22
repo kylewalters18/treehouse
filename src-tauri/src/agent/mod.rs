@@ -1,3 +1,4 @@
+pub mod hooks;
 pub mod supervisor;
 
 use serde::{Deserialize, Serialize};

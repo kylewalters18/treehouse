@@ -882,10 +882,10 @@ function activityStyle(activity: AgentActivity): {
     case "working":
       return { color: "bg-emerald-500", pulse: true, title: "agent: working" };
     case "idle":
-      return { color: "bg-amber-500", pulse: false, title: "agent: idle" };
+      return { color: "bg-sky-500", pulse: false, title: "agent: idle" };
     case "needsAttention":
       return {
-        color: "bg-orange-500",
+        color: "bg-red-500",
         pulse: true,
         title: "agent: needs attention",
       };

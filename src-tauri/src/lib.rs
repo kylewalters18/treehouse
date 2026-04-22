@@ -64,8 +64,14 @@ pub fn run() {
             ipc::commands::attach_agent,
             ipc::commands::list_agent_activity,
         ])
-        .setup(|_app| {
+        .setup(|app| {
+            use tauri::Manager;
             tracing::info!("treehouse started");
+            let handle = app.handle().clone();
+            let state: tauri::State<AppState> = handle.state();
+            if let Err(e) = state.agents.start_hook_watcher(&handle) {
+                tracing::warn!(?e, "failed to start Claude hook watcher");
+            }
             Ok(())
         })
         .run(tauri::generate_context!())

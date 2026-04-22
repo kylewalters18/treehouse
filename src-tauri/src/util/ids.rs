@@ -27,6 +27,13 @@ macro_rules! typed_id {
                 Self::new()
             }
         }
+
+        impl std::str::FromStr for $name {
+            type Err = ulid::DecodeError;
+            fn from_str(s: &str) -> Result<Self, Self::Err> {
+                Ulid::from_string(s).map(Self)
+            }
+        }
     };
 }
 
