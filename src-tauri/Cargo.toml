@@ -5,6 +5,7 @@ description = "Agent-centric IDE with parallel worktree agents"
 authors = ["Kyle Walters"]
 edition = "2021"
 rust-version = "1.77"
+license = "MIT"
 
 [lib]
 name = "treehouse_lib"
