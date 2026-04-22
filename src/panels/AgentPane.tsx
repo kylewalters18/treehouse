@@ -222,6 +222,13 @@ function AgentTabs({ worktreeId }: { worktreeId: WorktreeId }) {
               visible={tab.localId === activeId}
               onSession={(id) => {
                 sessionIds.current.set(tab.localId, id);
+                // The mirror-to-store effect above only re-runs when
+                // `activeId` changes, not when the session id arrives —
+                // push it directly so other parts of the app (send-queue,
+                // per-comment Send) see the agent immediately.
+                if (tab.localId === activeId) {
+                  setActiveAgent(worktreeId, id);
+                }
               }}
             />
           </div>

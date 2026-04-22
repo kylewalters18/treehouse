@@ -2,7 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import Editor, { type Monaco, type OnMount } from "@monaco-editor/react";
 import type { editor as MonacoEditor } from "monaco-editor";
-import { agentWrite, readFile } from "@/ipc/client";
+import { readFile } from "@/ipc/client";
+import { pasteAndSubmit } from "@/lib/agent";
 import type { Comment, FileContent, WorktreeId } from "@/ipc/types";
 import {
   formatCommentForAgent,
@@ -561,8 +562,7 @@ async function sendOne(c: Comment, agentId: string | null) {
     return;
   }
   try {
-    const enc = new TextEncoder();
-    await agentWrite(agentId, enc.encode(formatCommentForAgent(c)));
+    await pasteAndSubmit(agentId, formatCommentForAgent(c));
     toastSuccess("Sent to agent", `${c.filePath}:${c.line}`);
     void useCommentsStore.getState().resolve(c.id);
   } catch (e) {

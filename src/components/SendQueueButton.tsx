@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { agentWrite } from "@/ipc/client";
+import { pasteAndSubmit } from "@/lib/agent";
 import { useCommentsStore, formatBatchForAgent } from "@/stores/comments";
 import { useUiStore } from "@/stores/ui";
 import { useWorktreesStore } from "@/stores/worktrees";
@@ -44,8 +44,7 @@ export function SendQueueButton() {
       return;
     }
     try {
-      const enc = new TextEncoder();
-      await agentWrite(activeAgentId, enc.encode(formatBatchForAgent(queued)));
+      await pasteAndSubmit(activeAgentId, formatBatchForAgent(queued));
       toastSuccess(
         `Sent ${queued.length} comment${queued.length === 1 ? "" : "s"}`,
         "Marking as resolved.",
