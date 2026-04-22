@@ -14,6 +14,7 @@ import { DiffPane } from "@/panels/DiffPane";
 import { TerminalPane } from "@/panels/TerminalPane";
 import { AgentPane } from "@/panels/AgentPane";
 import { SettingsMenu } from "@/components/SettingsMenu";
+import { SendQueueButton } from "@/components/SendQueueButton";
 
 export function Workspace() {
   const workspace = useWorkspaceStore((s) => s.workspace);
@@ -99,6 +100,7 @@ export function Workspace() {
           )}
         </div>
         <div className="flex items-center gap-2">
+          <SendQueueButton />
           <SettingsMenu />
           <button
             onClick={closeWorkspace}

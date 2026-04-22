@@ -16,6 +16,7 @@ use crate::worktree::{MergeBackStrategy, SyncStrategy};
 const RECENT_MAX: usize = 20;
 const RECENT_FILE: &str = "recent.json";
 const SETTINGS_FILE: &str = "settings.json";
+const COMMENTS_FILE: &str = "comments.json";
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -157,6 +158,67 @@ pub async fn save_settings(app: &AppHandle, settings: &Settings) -> AppResult<()
     let path = settings_path(app)?;
     let bytes = serde_json::to_vec_pretty(settings)
         .map_err(|e| AppError::Unknown(format!("serialize settings: {e}")))?;
+    tokio::fs::write(&path, bytes)
+        .await
+        .map_err(|e| AppError::Io(format!("write {}: {e}", path.display())))?;
+    Ok(())
+}
+
+// --- Review comments ---
+
+/// One reviewer comment anchored to a (workspace_root, branch, file, line).
+/// Stored as a flat list across all workspaces; frontend filters by the
+/// pair `(workspace_root, branch)` since worktree IDs are ephemeral
+/// across app restarts.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct Comment {
+    pub id: String,
+    pub workspace_root: String,
+    pub branch: String,
+    pub file_path: String,
+    pub line: u32,
+    pub text: String,
+    /// Epoch milliseconds. Fits in `Number.MAX_SAFE_INTEGER` for the next
+    /// ~285k years, so ts-rs is overridden to surface it as `number` rather
+    /// than `bigint` — BigInt args can't be sent over Tauri's IPC (which
+    /// `JSON.stringify`s arguments).
+    #[ts(type = "number")]
+    pub created_at: u64,
+    #[ts(type = "number | null")]
+    pub resolved_at: Option<u64>,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct CommentsFile {
+    items: Vec<Comment>,
+}
+
+fn comments_path(app: &AppHandle) -> AppResult<PathBuf> {
+    Ok(config_dir(app)?.join(COMMENTS_FILE))
+}
+
+pub async fn load_comments(app: &AppHandle) -> AppResult<Vec<Comment>> {
+    let path = comments_path(app)?;
+    let bytes = match tokio::fs::read(&path).await {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(AppError::Io(format!("read {}: {e}", path.display()))),
+    };
+    let file: CommentsFile = serde_json::from_slice(&bytes).unwrap_or_default();
+    Ok(file.items)
+}
+
+pub async fn save_comments(app: &AppHandle, items: &[Comment]) -> AppResult<()> {
+    let dir = config_dir(app)?;
+    let _ = tokio::fs::create_dir_all(&dir).await;
+    let path = comments_path(app)?;
+    let file = CommentsFile {
+        items: items.to_vec(),
+    };
+    let bytes = serde_json::to_vec_pretty(&file)
+        .map_err(|e| AppError::Unknown(format!("serialize comments: {e}")))?;
     tokio::fs::write(&path, bytes)
         .await
         .map_err(|e| AppError::Io(format!("write {}: {e}", path.display())))?;

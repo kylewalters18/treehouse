@@ -5,6 +5,7 @@ import type {
   AgentEvent,
   AgentSession,
   AgentSessionId,
+  Comment,
   CreateWorktreeResult,
   DiffSet,
   FileContent,
@@ -45,6 +46,14 @@ export function getSettings(): Promise<Settings> {
 
 export function updateSettings(settings: Settings): Promise<Settings> {
   return invoke<Settings>("update_settings", { settings });
+}
+
+export function listComments(): Promise<Comment[]> {
+  return invoke<Comment[]>("list_comments");
+}
+
+export function saveComments(comments: Comment[]): Promise<Comment[]> {
+  return invoke<Comment[]>("save_comments", { comments });
 }
 
 // --- Worktrees ---

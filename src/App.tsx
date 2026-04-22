@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { useWorkspaceStore } from "./stores/workspace";
 import { useSettingsStore, ZOOM_STEP } from "./stores/settings";
+import { useCommentsStore } from "./stores/comments";
 import { Home } from "./routes/Home";
 import { Workspace } from "./routes/Workspace";
 import { Toaster } from "./components/Toaster";
@@ -8,13 +9,15 @@ import { Toaster } from "./components/Toaster";
 export function App() {
   const workspace = useWorkspaceStore((s) => s.workspace);
   const loadSettings = useSettingsStore((s) => s.load);
+  const loadComments = useCommentsStore((s) => s.load);
   const zoom = useSettingsStore((s) => s.settings.zoom);
   const adjustZoom = useSettingsStore((s) => s.adjustZoom);
   const resetZoom = useSettingsStore((s) => s.resetZoom);
 
   useEffect(() => {
     void loadSettings();
-  }, [loadSettings]);
+    void loadComments();
+  }, [loadSettings, loadComments]);
 
   // Apply zoom to the root element. `zoom` is a non-standard CSS property but
   // is supported by WebKit (Tauri's webview) and is the only way to scale both

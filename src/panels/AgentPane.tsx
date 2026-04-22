@@ -69,6 +69,15 @@ function AgentTabs({ worktreeId }: { worktreeId: WorktreeId }) {
   const [backend, setBackend] = useState<AgentBackendKind>("claudeCode");
   const [initLoading, setInitLoading] = useState(true);
   const sessionIds = useRef<Map<string, AgentSessionId>>(new Map());
+  const setActiveAgent = useUiStore((s) => s.setActiveAgent);
+
+  // Mirror the active tab's session id into the UI store so other parts of
+  // the app (notably the inline-comment send button) know which agent
+  // receives messages for this worktree.
+  useEffect(() => {
+    const id = activeId ? sessionIds.current.get(activeId) ?? null : null;
+    setActiveAgent(worktreeId, id);
+  }, [activeId, worktreeId, setActiveAgent]);
   const counters = useRef<Record<AgentBackendKind, number>>({
     claudeCode: 0,
     codex: 0,

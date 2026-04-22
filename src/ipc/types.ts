@@ -15,6 +15,7 @@ export type { FileContent } from "./bindings/FileContent";
 export type { TreeEntry } from "./bindings/TreeEntry";
 export type { RecentWorkspace } from "./bindings/RecentWorkspace";
 export type { Settings } from "./bindings/Settings";
+export type { Comment } from "./bindings/Comment";
 export type { DiffSet } from "./bindings/DiffSet";
 export type { DiffStats } from "./bindings/DiffStats";
 export type { FileDiff } from "./bindings/FileDiff";

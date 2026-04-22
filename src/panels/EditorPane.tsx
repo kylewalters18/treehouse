@@ -1,7 +1,19 @@
-import { useEffect, useMemo, useState } from "react";
-import Editor, { type Monaco } from "@monaco-editor/react";
-import { readFile } from "@/ipc/client";
-import type { FileContent, WorktreeId } from "@/ipc/types";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import Editor, { type Monaco, type OnMount } from "@monaco-editor/react";
+import type { editor as MonacoEditor } from "monaco-editor";
+import { agentWrite, readFile } from "@/ipc/client";
+import type { Comment, FileContent, WorktreeId } from "@/ipc/types";
+import {
+  formatCommentForAgent,
+  useCommentsStore,
+} from "@/stores/comments";
+import { useUiStore } from "@/stores/ui";
+import { useWorkspaceStore } from "@/stores/workspace";
+import { useWorktreesStore } from "@/stores/worktrees";
+import { toastError, toastInfo, toastSuccess } from "@/stores/toasts";
+import { asMessage } from "@/lib/errors";
+import { cn } from "@/lib/cn";
 
 /// Custom Monaco theme: inherits `vs-dark`'s syntax token colors but overrides
 /// backgrounds, gutters, selection, and scrollbars to match the app's neutral
@@ -129,13 +141,44 @@ export function EditorPane({ worktreeId, path }: Props) {
   }
 
   return (
-    <div className="h-full w-full bg-neutral-950">
+    <div className="relative h-full w-full bg-neutral-950">
+      <EditorWithComments
+        worktreeId={worktreeId}
+        path={path}
+        content={content.text}
+        language={language}
+      />
+    </div>
+  );
+}
+
+// --- Inline review comments (view zone spacer + overlay widget) ---
+
+function EditorWithComments({
+  worktreeId,
+  path,
+  content,
+  language,
+}: {
+  worktreeId: WorktreeId;
+  path: string;
+  content: string;
+  language: string;
+}) {
+  const [editor, setEditor] = useState<MonacoEditor.IStandaloneCodeEditor | null>(
+    null,
+  );
+  const onMount: OnMount = (e) => setEditor(e);
+
+  return (
+    <>
       <Editor
         height="100%"
         language={language}
-        value={content.text}
+        value={content}
         theme={THEME_NAME}
         beforeMount={defineTreehouseTheme}
+        onMount={onMount}
         path={path}
         options={{
           readOnly: true,
@@ -144,6 +187,7 @@ export function EditorPane({ worktreeId, path }: Props) {
             'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace',
           fontSize: 12,
           lineHeight: 18,
+          glyphMargin: true,
           scrollBeyondLastLine: false,
           smoothScrolling: true,
           renderWhitespace: "none",
@@ -162,6 +206,516 @@ export function EditorPane({ worktreeId, path }: Props) {
           },
         }}
       />
+      {editor && (
+        <CommentOverlay
+          editor={editor}
+          worktreeId={worktreeId}
+          filePath={path}
+        />
+      )}
+    </>
+  );
+}
+
+type ZoneDesc =
+  | { key: string; kind: "widget"; line: number; heightLines: number; comment: Comment }
+  | { key: string; kind: "composer"; line: number; heightLines: number };
+
+type ZoneEntry = {
+  desc: ZoneDesc;
+  viewZoneId: string;
+  widget: MonacoEditor.IOverlayWidget;
+  domNode: HTMLDivElement;
+};
+
+const LINE_HEIGHT = 18;
+const WIDGET_HEIGHT_LINES = 5;
+const COMPOSER_HEIGHT_LINES = 6;
+
+/// Renders review comments inline using the ZoneWidget pattern VSCode uses
+/// internally: a Monaco view zone reserves vertical space (pushing code down)
+/// while an `IOverlayWidget` carries the interactive DOM. Overlay widgets
+/// render in Monaco's overlay layer, where input events don't hit the
+/// read-only editor's keybinding dispatcher — so the composer textarea works
+/// without the "Cannot edit in read-only editor" toast firing.
+///
+/// Each comment (and the transient composer) is a pair: view zone + overlay
+/// widget, kept in sync via the view zone's `onDomNodeTop`/`onComputedHeight`
+/// callbacks. Widget content is rendered with React `createPortal` into the
+/// overlay's DOM node.
+function CommentOverlay({
+  editor,
+  worktreeId,
+  filePath,
+}: {
+  editor: MonacoEditor.IStandaloneCodeEditor;
+  worktreeId: WorktreeId;
+  filePath: string;
+}) {
+  const workspace = useWorkspaceStore((s) => s.workspace);
+  const worktrees = useWorktreesStore((s) => s.worktrees);
+  const wt = worktrees.find((w) => w.id === worktreeId) ?? null;
+  const workspaceRoot = workspace?.root ?? "";
+  const branch = wt?.branch ?? "";
+
+  const allComments = useCommentsStore((s) => s.items);
+  const queue = useCommentsStore((s) => s.queue);
+  const addComment = useCommentsStore((s) => s.add);
+  const updateText = useCommentsStore((s) => s.updateText);
+  const removeComment = useCommentsStore((s) => s.remove);
+  const resolveComment = useCommentsStore((s) => s.resolve);
+  const toggleQueue = useCommentsStore((s) => s.toggleQueue);
+
+  const activeAgentId = useUiStore(
+    (s) => s.activeAgentByWorktree[worktreeId] ?? null,
+  );
+
+  const [showResolved, setShowResolved] = useState(false);
+  const [composerLine, setComposerLine] = useState<number | null>(null);
+  const [hoveredLine, setHoveredLine] = useState<number | null>(null);
+  const [gutter, setGutter] = useState<{ left: number; width: number } | null>(
+    null,
+  );
+  const [entries, setEntries] = useState<ZoneEntry[]>([]);
+  const [plusDom, setPlusDom] = useState<HTMLDivElement | null>(null);
+  const hoveredLineRef = useRef<number | null>(null);
+  hoveredLineRef.current = hoveredLine;
+
+  const visible = useMemo(() => {
+    return allComments.filter(
+      (c) =>
+        c.workspaceRoot === workspaceRoot &&
+        c.branch === branch &&
+        c.filePath === filePath &&
+        (showResolved || c.resolvedAt === null),
+    );
+  }, [allComments, workspaceRoot, branch, filePath, showResolved]);
+
+  // Track editor layout so overlay widgets span the content area and the
+  // gutter "+" lines up with the glyph margin.
+  const [layout, setLayout] = useState<{
+    contentLeft: number;
+    contentWidth: number;
+  } | null>(null);
+  useEffect(() => {
+    const update = () => {
+      const info = editor.getLayoutInfo();
+      setGutter({ left: info.glyphMarginLeft, width: info.glyphMarginWidth });
+      setLayout({
+        contentLeft: info.contentLeft,
+        contentWidth:
+          info.width - info.contentLeft - info.verticalScrollbarWidth,
+      });
+    };
+    update();
+    const dispose = editor.onDidLayoutChange(update);
+    return () => dispose.dispose();
+  }, [editor]);
+
+  // Hover detection. Because the "+" button is a Monaco overlay widget
+  // (DOM lives inside the editor's root), moving the cursor onto the "+"
+  // does NOT trigger `onMouseLeave` — the cursor is still within Monaco's
+  // subtree. So we can clear `hoveredLine` immediately on real leave, and
+  // let `onMouseMove` keep `hoveredLine` fresh while the mouse is in code.
+  useEffect(() => {
+    const move = editor.onMouseMove((e) => {
+      const line = e.target.position?.lineNumber;
+      if (typeof line === "number") {
+        setHoveredLine((cur) => (cur === line ? cur : line));
+      }
+    });
+    const leave = editor.onMouseLeave(() => setHoveredLine(null));
+    return () => {
+      move.dispose();
+      leave.dispose();
+    };
+  }, [editor]);
+
+  // Create the "+" overlay widget once per editor mount. Content is rendered
+  // into it via `createPortal` further down.
+  useEffect(() => {
+    const dom = document.createElement("div");
+    dom.style.position = "absolute";
+    dom.style.zIndex = "30";
+    dom.style.display = "none";
+    const widget: MonacoEditor.IOverlayWidget = {
+      getId: () => "treehouse.gutter-plus",
+      getDomNode: () => dom,
+      getPosition: () => null,
+    };
+    editor.addOverlayWidget(widget);
+    setPlusDom(dom);
+    return () => {
+      editor.removeOverlayWidget(widget);
+      setPlusDom(null);
+    };
+  }, [editor]);
+
+  // Position the "+" overlay based on the hovered line + glyph margin rect.
+  useEffect(() => {
+    if (!plusDom) return;
+    const update = () => {
+      if (hoveredLine === null || !gutter) {
+        plusDom.style.display = "none";
+        return;
+      }
+      const top =
+        editor.getTopForLineNumber(hoveredLine) - editor.getScrollTop();
+      plusDom.style.top = `${top}px`;
+      plusDom.style.left = `${gutter.left}px`;
+      plusDom.style.width = `${Math.max(gutter.width, 16)}px`;
+      plusDom.style.height = `${LINE_HEIGHT}px`;
+      plusDom.style.display = "flex";
+    };
+    update();
+    const dispose = editor.onDidScrollChange(update);
+    return () => dispose.dispose();
+  }, [editor, plusDom, hoveredLine, gutter]);
+
+  // Build the set of zones (view zone + overlay widget pairs) that should
+  // exist right now, and reconcile against what's already there. The full
+  // rebuild is cheap because the set is small.
+  useEffect(() => {
+    const prev = entries;
+    for (const e of prev) {
+      editor.changeViewZones((acc) => acc.removeZone(e.viewZoneId));
+      editor.removeOverlayWidget(e.widget);
+    }
+
+    const want: ZoneDesc[] = [];
+    for (const c of visible) {
+      want.push({
+        key: `c:${c.id}`,
+        kind: "widget",
+        line: c.line,
+        heightLines: WIDGET_HEIGHT_LINES,
+        comment: c,
+      });
+    }
+    if (composerLine !== null) {
+      want.push({
+        key: "composer",
+        kind: "composer",
+        line: composerLine,
+        heightLines: COMPOSER_HEIGHT_LINES,
+      });
+    }
+
+    const next: ZoneEntry[] = [];
+    editor.changeViewZones((acc) => {
+      for (const desc of want) {
+        const domNode = document.createElement("div");
+        domNode.style.position = "absolute";
+        domNode.style.zIndex = "5";
+        domNode.style.background = "#0f0f0f";
+        domNode.style.borderTop = "1px solid #262626";
+        domNode.style.borderBottom = "1px solid #262626";
+        domNode.style.boxSizing = "border-box";
+        domNode.style.overflow = "auto";
+        domNode.style.padding = "6px 12px";
+
+        const widget: MonacoEditor.IOverlayWidget = {
+          getId: () => `treehouse.zone.${desc.key}`,
+          getDomNode: () => domNode,
+          getPosition: () => null,
+        };
+        editor.addOverlayWidget(widget);
+
+        const spacer = document.createElement("div");
+        const viewZoneId = acc.addZone({
+          afterLineNumber: desc.line,
+          heightInLines: desc.heightLines,
+          domNode: spacer,
+          suppressMouseDown: true,
+          onDomNodeTop: (top: number) => {
+            domNode.style.top = `${top}px`;
+          },
+          onComputedHeight: (height: number) => {
+            domNode.style.height = `${height}px`;
+          },
+        });
+
+        next.push({ desc, viewZoneId, widget, domNode });
+      }
+    });
+
+    setEntries(next);
+
+    return () => {
+      for (const e of next) {
+        editor.changeViewZones((acc) => acc.removeZone(e.viewZoneId));
+        editor.removeOverlayWidget(e.widget);
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editor, visible, composerLine]);
+
+  // Keep the overlay widgets' horizontal position/width in sync with the
+  // editor's content area as the layout changes (resizes, wrapping toggle,
+  // scrollbar appearance, etc).
+  useEffect(() => {
+    if (!layout) return;
+    for (const e of entries) {
+      e.domNode.style.left = `${layout.contentLeft}px`;
+      e.domNode.style.width = `${layout.contentWidth}px`;
+    }
+  }, [entries, layout]);
+
+  return (
+    <>
+      <button
+        onClick={() => setShowResolved((v) => !v)}
+        className={cn(
+          "pointer-events-auto absolute right-3 top-2 z-20 rounded border border-neutral-800 bg-neutral-900/80 px-2 py-0.5 text-[10px] text-neutral-400 hover:bg-neutral-800",
+          showResolved && "text-neutral-200",
+        )}
+        title={
+          showResolved
+            ? "Hide resolved comments"
+            : "Show resolved comments in this file"
+        }
+      >
+        {showResolved ? "Hide resolved" : "Show resolved"}
+      </button>
+      {plusDom &&
+        createPortal(
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              const line = hoveredLineRef.current;
+              if (line !== null) setComposerLine(line);
+            }}
+            title="Add review comment on this line"
+            className="flex h-full w-full items-center justify-center rounded-sm bg-blue-600 text-[12px] font-bold leading-none text-white shadow hover:bg-blue-500"
+          >
+            +
+          </button>,
+          plusDom,
+        )}
+      {entries.map((e) => {
+        const desc = e.desc;
+        if (desc.kind === "widget") {
+          const c = desc.comment;
+          return createPortal(
+            <CommentWidget
+              comment={c}
+              queued={queue.has(c.id)}
+              canSend={!!activeAgentId}
+              onToggleQueue={() => toggleQueue(c.id)}
+              onResolve={() => void resolveComment(c.id)}
+              onDelete={() => void removeComment(c.id)}
+              onUpdateText={(text) => void updateText(c.id, text)}
+              onSend={() => sendOne(c, activeAgentId)}
+            />,
+            e.domNode,
+            desc.key,
+          );
+        }
+        return createPortal(
+          <CommentComposer
+            onSave={async (text) => {
+              setComposerLine(null);
+              await addComment({
+                workspaceRoot,
+                branch,
+                filePath,
+                line: desc.line,
+                text,
+              });
+            }}
+            onCancel={() => setComposerLine(null)}
+          />,
+          e.domNode,
+          desc.key,
+        );
+      })}
+    </>
+  );
+}
+
+async function sendOne(c: Comment, agentId: string | null) {
+  if (!agentId) {
+    toastInfo("No active agent in this worktree");
+    return;
+  }
+  try {
+    const enc = new TextEncoder();
+    await agentWrite(agentId, enc.encode(formatCommentForAgent(c)));
+    toastSuccess("Sent to agent", `${c.filePath}:${c.line}`);
+    void useCommentsStore.getState().resolve(c.id);
+  } catch (e) {
+    toastError("Couldn't send", asMessage(e));
+  }
+}
+
+function CommentWidget({
+  comment,
+  queued,
+  canSend,
+  onToggleQueue,
+  onResolve,
+  onDelete,
+  onUpdateText,
+  onSend,
+}: {
+  comment: Comment;
+  queued: boolean;
+  canSend: boolean;
+  onToggleQueue: () => void;
+  onResolve: () => void;
+  onDelete: () => void;
+  onUpdateText: (text: string) => void;
+  onSend: () => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(comment.text);
+  const resolved = comment.resolvedAt !== null;
+
+  function save() {
+    const t = draft.trim();
+    if (!t) return;
+    onUpdateText(t);
+    setEditing(false);
+  }
+  function cancelEdit() {
+    setDraft(comment.text);
+    setEditing(false);
+  }
+
+  return (
+    <div
+      className={cn(
+        "rounded border bg-neutral-950 text-[13px]",
+        resolved ? "border-neutral-900 opacity-60" : "border-neutral-800",
+      )}
+    >
+      <div className="flex items-center justify-between gap-2 border-b border-neutral-900 px-2 py-1 text-[11px] text-neutral-500">
+        <span className="font-mono">
+          {comment.filePath}:{comment.line}
+          {resolved && (
+            <span className="ml-2 rounded bg-neutral-800 px-1.5 py-0.5 text-[10px] text-neutral-400">
+              resolved
+            </span>
+          )}
+          {queued && !resolved && (
+            <span className="ml-2 rounded bg-blue-900/50 px-1.5 py-0.5 text-[10px] text-blue-300">
+              queued
+            </span>
+          )}
+        </span>
+        <span className="flex items-center gap-1">
+          {!resolved && (
+            <button
+              onClick={onSend}
+              disabled={!canSend}
+              title={canSend ? "Send to active agent" : "No active agent"}
+              className="rounded border border-neutral-800 px-1.5 py-0.5 text-[11px] text-neutral-300 hover:border-emerald-800 hover:text-emerald-300 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              Send
+            </button>
+          )}
+          {!resolved && (
+            <button
+              onClick={onToggleQueue}
+              className={cn(
+                "rounded border px-1.5 py-0.5 text-[11px]",
+                queued
+                  ? "border-blue-700 bg-blue-950/40 text-blue-200 hover:bg-blue-950/60"
+                  : "border-neutral-800 text-neutral-400 hover:border-blue-800 hover:text-blue-300",
+              )}
+              title={queued ? "Remove from queue" : "Add to batch"}
+            >
+              {queued ? "Queued" : "Queue"}
+            </button>
+          )}
+          {!resolved && (
+            <button
+              onClick={() => (editing ? save() : setEditing(true))}
+              className="rounded border border-neutral-800 px-1.5 py-0.5 text-[11px] text-neutral-400 hover:text-neutral-200"
+            >
+              {editing ? "Save" : "Edit"}
+            </button>
+          )}
+          {!resolved && (
+            <button
+              onClick={onResolve}
+              className="rounded border border-neutral-800 px-1.5 py-0.5 text-[11px] text-neutral-400 hover:border-neutral-600 hover:text-neutral-200"
+            >
+              Resolve
+            </button>
+          )}
+          <button
+            onClick={onDelete}
+            className="text-[11px] text-neutral-500 hover:text-red-400"
+            title="Delete"
+          >
+            ✕
+          </button>
+        </span>
+      </div>
+      <div className="px-2 py-1">
+        {editing ? (
+          <textarea
+            autoFocus
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                e.preventDefault();
+                save();
+              } else if (e.key === "Escape") {
+                e.preventDefault();
+                cancelEdit();
+              }
+            }}
+            rows={3}
+            className="w-full resize-none rounded border border-neutral-800 bg-neutral-950 px-2 py-1 font-mono text-[12px] text-neutral-200 focus:border-neutral-700 focus:outline-none"
+          />
+        ) : (
+          <div className="whitespace-pre-wrap text-neutral-200">
+            {comment.text}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function CommentComposer({
+  onSave,
+  onCancel,
+}: {
+  onSave: (text: string) => void;
+  onCancel: () => void;
+}) {
+  const [text, setText] = useState("");
+  return (
+    <div className="rounded border border-blue-800 bg-neutral-950">
+      <div className="border-b border-neutral-900 px-2 py-1 text-[11px] text-neutral-500">
+        New comment · ⌘↵ to save · Esc to cancel
+      </div>
+      <div className="px-2 py-1">
+        <textarea
+          autoFocus
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+              e.preventDefault();
+              const t = text.trim();
+              if (t) onSave(t);
+              else onCancel();
+            } else if (e.key === "Escape") {
+              e.preventDefault();
+              onCancel();
+            }
+          }}
+          rows={3}
+          placeholder="Leave a review comment for the agent…"
+          className="w-full resize-none rounded border border-neutral-800 bg-neutral-950 px-2 py-1 font-mono text-[12px] text-neutral-200 placeholder:text-neutral-600 focus:border-neutral-700 focus:outline-none"
+        />
+      </div>
     </div>
   );
 }
@@ -209,11 +763,4 @@ export function inferLanguage(path: string): string {
     svelte: "html",
   };
   return map[ext] ?? "plaintext";
-}
-
-function asMessage(e: unknown): string {
-  if (e && typeof e === "object" && "message" in e) {
-    return String((e as { message: unknown }).message);
-  }
-  return e instanceof Error ? e.message : String(e);
 }

@@ -42,6 +42,8 @@ pub fn run() {
             ipc::commands::list_recent_workspaces,
             ipc::commands::get_settings,
             ipc::commands::update_settings,
+            ipc::commands::list_comments,
+            ipc::commands::save_comments,
             ipc::commands::list_worktrees,
             ipc::commands::create_worktree,
             ipc::commands::remove_worktree,

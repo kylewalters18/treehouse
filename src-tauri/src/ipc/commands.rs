@@ -6,7 +6,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use crate::agent::{self, AgentBackendKind, AgentEvent, AgentSession, WorktreeActivity};
 use crate::diff::{self, DiffSet};
 use crate::fs_api::{self, FileContent, TreeEntry};
-use crate::storage::{self, RecentWorkspace, Settings};
+use crate::storage::{self, Comment, RecentWorkspace, Settings};
 use crate::fs_watch;
 use crate::ipc::events;
 use crate::pty::{self, PtyEvent, TerminalSession};
@@ -64,6 +64,23 @@ pub async fn update_settings(
 ) -> AppResult<Settings> {
     storage::save_settings(&app, &settings).await?;
     Ok(settings)
+}
+
+#[tauri::command]
+pub async fn list_comments(app: AppHandle) -> AppResult<Vec<Comment>> {
+    storage::load_comments(&app).await
+}
+
+/// Replace the whole comments file. Frontend manages mutations and writes
+/// the resulting list back; the file is small enough that whole-file
+/// rewrites are simpler than diff-based commands.
+#[tauri::command]
+pub async fn save_comments(
+    comments: Vec<Comment>,
+    app: AppHandle,
+) -> AppResult<Vec<Comment>> {
+    storage::save_comments(&app, &comments).await?;
+    Ok(comments)
 }
 
 #[tauri::command]
