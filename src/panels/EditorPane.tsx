@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import Editor, { type Monaco, type OnMount } from "@monaco-editor/react";
 import type { editor as MonacoEditor } from "monaco-editor";
@@ -228,7 +228,6 @@ type ZoneEntry = {
   domNode: HTMLDivElement;
 };
 
-const LINE_HEIGHT = 18;
 const WIDGET_HEIGHT_LINES = 5;
 const COMPOSER_HEIGHT_LINES = 6;
 
@@ -272,14 +271,7 @@ function CommentOverlay({
 
   const [showResolved, setShowResolved] = useState(false);
   const [composerLine, setComposerLine] = useState<number | null>(null);
-  const [hoveredLine, setHoveredLine] = useState<number | null>(null);
-  const [gutter, setGutter] = useState<{ left: number; width: number } | null>(
-    null,
-  );
   const [entries, setEntries] = useState<ZoneEntry[]>([]);
-  const [plusDom, setPlusDom] = useState<HTMLDivElement | null>(null);
-  const hoveredLineRef = useRef<number | null>(null);
-  hoveredLineRef.current = hoveredLine;
 
   const visible = useMemo(() => {
     return allComments.filter(
@@ -291,8 +283,7 @@ function CommentOverlay({
     );
   }, [allComments, workspaceRoot, branch, filePath, showResolved]);
 
-  // Track editor layout so overlay widgets span the content area and the
-  // gutter "+" lines up with the glyph margin.
+  // Track the editor content area (for overlay-widget left/width sync).
   const [layout, setLayout] = useState<{
     contentLeft: number;
     contentWidth: number;
@@ -300,7 +291,6 @@ function CommentOverlay({
   useEffect(() => {
     const update = () => {
       const info = editor.getLayoutInfo();
-      setGutter({ left: info.glyphMarginLeft, width: info.glyphMarginWidth });
       setLayout({
         contentLeft: info.contentLeft,
         contentWidth:
@@ -312,65 +302,101 @@ function CommentOverlay({
     return () => dispose.dispose();
   }, [editor]);
 
-  // Hover detection. Because the "+" button is a Monaco overlay widget
-  // (DOM lives inside the editor's root), moving the cursor onto the "+"
-  // does NOT trigger `onMouseLeave` — the cursor is still within Monaco's
-  // subtree. So we can clear `hoveredLine` immediately on real leave, and
-  // let `onMouseMove` keep `hoveredLine` fresh while the mouse is in code.
+  // A glyph-margin decoration on every line paints a subtle "+". `filePath`
+  // is included in the deps so the decorations are rebuilt against the new
+  // model when the user switches files (Monaco reuses the editor instance,
+  // but swaps the model — decorations are per-model and would otherwise be
+  // lost). `onDidChangeModel` catches any other model swaps.
   useEffect(() => {
-    const move = editor.onMouseMove((e) => {
-      const line = e.target.position?.lineNumber;
-      if (typeof line === "number") {
-        setHoveredLine((cur) => (cur === line ? cur : line));
+    const apply = () => {
+      const model = editor.getModel();
+      if (!model) return [] as string[];
+      const n = model.getLineCount();
+      const decorations: MonacoEditor.IModelDeltaDecoration[] = [];
+      for (let line = 1; line <= n; line++) {
+        decorations.push({
+          range: {
+            startLineNumber: line,
+            startColumn: 1,
+            endLineNumber: line,
+            endColumn: 1,
+          },
+          options: {
+            glyphMarginClassName: "treehouse-comment-plus",
+            stickiness: 1 /* NeverGrowsWhenTypingAtEdges */,
+          },
+        });
       }
+      return editor.deltaDecorations([], decorations);
+    };
+
+    let ids = apply();
+
+    const model = editor.getModel();
+    const onContent = model?.onDidChangeContent(() => {
+      ids = editor.deltaDecorations(ids, []);
+      ids = apply();
     });
-    const leave = editor.onMouseLeave(() => setHoveredLine(null));
-    return () => {
-      move.dispose();
-      leave.dispose();
-    };
-  }, [editor]);
+    const onModel = editor.onDidChangeModel(() => {
+      ids = editor.deltaDecorations(ids, []);
+      ids = apply();
+    });
 
-  // Create the "+" overlay widget once per editor mount. Content is rendered
-  // into it via `createPortal` further down.
-  useEffect(() => {
-    const dom = document.createElement("div");
-    dom.style.position = "absolute";
-    dom.style.zIndex = "30";
-    dom.style.display = "none";
-    const widget: MonacoEditor.IOverlayWidget = {
-      getId: () => "treehouse.gutter-plus",
-      getDomNode: () => dom,
-      getPosition: () => null,
-    };
-    editor.addOverlayWidget(widget);
-    setPlusDom(dom);
     return () => {
-      editor.removeOverlayWidget(widget);
-      setPlusDom(null);
+      onContent?.dispose();
+      onModel.dispose();
+      editor.deltaDecorations(ids, []);
     };
-  }, [editor]);
+  }, [editor, filePath]);
 
-  // Position the "+" overlay based on the hovered line + glyph margin rect.
+  // Click on a "+" decoration opens the composer. Resolve the line number
+  // by reading `.line-numbers` text from the same DOM row as the clicked
+  // `.cgmr` element — Monaco's `getTargetAtClientPoint` kept returning
+  // UNKNOWN for this environment, but the line number is already painted
+  // in the gutter as plain text next to every glyph.
+  // Click on a "+" decoration opens the composer. Monaco renders glyph
+  // decorations in `.glyph-margin-widgets` (a flat container where each
+  // `.cgmr` is positioned absolutely via `style.top`). The line numbers
+  // live in a parallel container `.margin-view-overlays` whose per-line
+  // rows use the same `style.top` values. We match the click's `.cgmr`
+  // top to the corresponding `.line-numbers` row and read the number.
   useEffect(() => {
-    if (!plusDom) return;
-    const update = () => {
-      if (hoveredLine === null || !gutter) {
-        plusDom.style.display = "none";
-        return;
+    const handle = (ev: MouseEvent) => {
+      const target = ev.target as Element | null;
+      let el = target as HTMLElement | null;
+      while (el) {
+        if (el.classList?.contains("treehouse-comment-plus")) break;
+        el = el.parentElement;
       }
-      const top =
-        editor.getTopForLineNumber(hoveredLine) - editor.getScrollTop();
-      plusDom.style.top = `${top}px`;
-      plusDom.style.left = `${gutter.left}px`;
-      plusDom.style.width = `${Math.max(gutter.width, 16)}px`;
-      plusDom.style.height = `${LINE_HEIGHT}px`;
-      plusDom.style.display = "flex";
+      if (!el) return;
+
+      const monacoRoot = el.closest(".monaco-editor") as HTMLElement | null;
+      if (!monacoRoot) return;
+
+      const cgmrTop = el.style.top; // e.g. "36px"
+      const marginOverlays = monacoRoot.querySelector(
+        ".margin-view-overlays",
+      ) as HTMLElement | null;
+      if (!marginOverlays) return;
+
+      let match: HTMLElement | null = null;
+      for (const child of Array.from(marginOverlays.children) as HTMLElement[]) {
+        if (child.style.top === cgmrTop) {
+          match = child;
+          break;
+        }
+      }
+      const lineEl = match?.querySelector(".line-numbers");
+      const line = parseInt((lineEl?.textContent ?? "").trim(), 10);
+      if (!Number.isFinite(line) || line < 1) return;
+
+      ev.preventDefault();
+      ev.stopPropagation();
+      setComposerLine(line);
     };
-    update();
-    const dispose = editor.onDidScrollChange(update);
-    return () => dispose.dispose();
-  }, [editor, plusDom, hoveredLine, gutter]);
+    document.addEventListener("click", handle, true);
+    return () => document.removeEventListener("click", handle, true);
+  }, [editor]);
 
   // Build the set of zones (view zone + overlay widget pairs) that should
   // exist right now, and reconcile against what's already there. The full
@@ -402,11 +428,22 @@ function CommentOverlay({
     }
 
     const next: ZoneEntry[] = [];
+    const info0 = editor.getLayoutInfo();
+    const initLeft = info0.contentLeft;
+    const initWidth =
+      info0.width - info0.contentLeft - info0.verticalScrollbarWidth;
     editor.changeViewZones((acc) => {
       for (const desc of want) {
         const domNode = document.createElement("div");
         domNode.style.position = "absolute";
         domNode.style.zIndex = "5";
+        // Set initial dimensions up-front — Monaco's onDomNodeTop /
+        // onComputedHeight callbacks only fire on layout changes and may
+        // not run on initial mount, leaving the widget at 0×0 and invisible.
+        domNode.style.left = `${initLeft}px`;
+        domNode.style.width = `${initWidth}px`;
+        domNode.style.top = "0px";
+        domNode.style.height = `${desc.heightLines * 18}px`;
         domNode.style.background = "#0f0f0f";
         domNode.style.borderTop = "1px solid #262626";
         domNode.style.borderBottom = "1px solid #262626";
@@ -477,22 +514,6 @@ function CommentOverlay({
       >
         {showResolved ? "Hide resolved" : "Show resolved"}
       </button>
-      {plusDom &&
-        createPortal(
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              const line = hoveredLineRef.current;
-              if (line !== null) setComposerLine(line);
-            }}
-            title="Add review comment on this line"
-            className="flex h-full w-full items-center justify-center rounded-sm bg-blue-600 text-[12px] font-bold leading-none text-white shadow hover:bg-blue-500"
-          >
-            +
-          </button>,
-          plusDom,
-        )}
       {entries.map((e) => {
         const desc = e.desc;
         if (desc.kind === "widget") {

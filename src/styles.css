@@ -19,3 +19,22 @@ body {
 :root {
   color-scheme: dark;
 }
+
+/* A subtle "+" painted on every line's glyph margin — click to add a review
+   comment on that line. Dims by default; brightens on row hover. */
+.treehouse-comment-plus {
+  cursor: pointer;
+  pointer-events: auto !important;
+  color: #525252;
+  font-weight: 700;
+  font-size: 12px;
+  text-align: center;
+  line-height: 18px;
+}
+.treehouse-comment-plus::before {
+  content: "+";
+  pointer-events: auto;
+}
+.treehouse-comment-plus:hover {
+  color: #3b82f6;
+}
