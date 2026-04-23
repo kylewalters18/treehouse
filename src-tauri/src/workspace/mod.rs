@@ -26,13 +26,17 @@ pub async fn open(path: &str, state: &AppState) -> AppResult<Workspace> {
 
     let root = repo::discover_root(&path)?;
 
-    // Prevent re-opening the same repo twice.
+    // Webview reloads (⌘R) don't restart the Rust process, so the workspace
+    // may already be registered from a previous page load. Rather than
+    // erroring with AlreadyOpen, hand back the existing entry — downstream
+    // reconcile/register/prime steps are all idempotent, so re-running them
+    // on the same workspace is a no-op.
     if let Some(existing) = state
         .workspaces
         .iter()
         .find(|entry| entry.value().root == root)
     {
-        return Err(AppError::AlreadyOpen(existing.value().root.display().to_string()));
+        return Ok(existing.value().clone());
     }
 
     let default_branch = repo::detect_default_branch(&root)?;
