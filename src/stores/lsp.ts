@@ -3,6 +3,15 @@ import * as ipc from "@/ipc/client";
 import type { LspConfig } from "@/ipc/types";
 import { asMessage } from "@/lib/errors";
 
+/// Single-line summary of whatever a language server is currently doing
+/// (indexing, type-checking, loading crates, etc.). Surfaced from the
+/// LSP `$/progress` stream by `session.ts`.
+export type SessionProgress = {
+  title: string;
+  message?: string;
+  percentage?: number;
+};
+
 type LspState = {
   configs: LspConfig[];
   /// Resolved command paths — `null` means we checked and it's not on PATH.
@@ -14,12 +23,20 @@ type LspState = {
   /// we've already nagged about a missing binary, so re-opening files in
   /// the same worktree doesn't spam toasts.
   notFoundNotified: Set<string>;
+  /// Active progress per `${worktreeId}::${languageId}`. Nulled out when
+  /// the server reports `end` for its last token or the session disposes.
+  progress: Record<string, SessionProgress | null>;
 
   load: () => Promise<void>;
   save: (config: LspConfig) => Promise<void>;
   refreshResolution: () => Promise<void>;
   markNotFoundNotified: (worktreeId: string, languageId: string) => void;
   hasNotifiedNotFound: (worktreeId: string, languageId: string) => boolean;
+  setProgress: (
+    worktreeId: string,
+    languageId: string,
+    progress: SessionProgress | null,
+  ) => void;
 };
 
 export const useLspStore = create<LspState>((set, get) => ({
@@ -28,6 +45,7 @@ export const useLspStore = create<LspState>((set, get) => ({
   loading: false,
   error: null,
   notFoundNotified: new Set(),
+  progress: {},
 
   async load() {
     set({ loading: true, error: null });
@@ -74,5 +92,10 @@ export const useLspStore = create<LspState>((set, get) => ({
 
   hasNotifiedNotFound(worktreeId, languageId) {
     return get().notFoundNotified.has(`${worktreeId}::${languageId}`);
+  },
+
+  setProgress(worktreeId, languageId, progress) {
+    const key = `${worktreeId}::${languageId}`;
+    set((s) => ({ progress: { ...s.progress, [key]: progress } }));
   },
 }));

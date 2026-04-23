@@ -32,6 +32,7 @@ import {
   type LspSession,
   type SessionKey,
 } from "./session";
+import { useLspStore } from "@/stores/lsp";
 import {
   completionItemToMonaco,
   hoverToMonaco,
@@ -172,6 +173,11 @@ export async function ensureSession(
       serverId: session.id,
       rootUri: session.rootUri,
       connection,
+      onProgress: (progress) => {
+        useLspStore
+          .getState()
+          .setProgress(worktreeId, languageId, progress);
+      },
     });
     sessions.set(key, ready);
     return ready;

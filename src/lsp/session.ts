@@ -15,10 +15,16 @@ import {
   PublishDiagnosticsNotification,
   ShutdownRequest,
   SignatureHelpRequest,
+  WorkDoneProgressCreateRequest,
   type ClientCapabilities,
   type InitializeResult,
+  type ProgressToken,
   type PublishDiagnosticsParams,
   type ServerCapabilities,
+  type WorkDoneProgressBegin,
+  type WorkDoneProgressCreateParams,
+  type WorkDoneProgressEnd,
+  type WorkDoneProgressReport,
 } from "vscode-languageserver-protocol";
 import { editor as MonacoEditor, Uri } from "monaco-editor";
 import type { LspServerId, WorktreeId } from "@/ipc/types";
@@ -87,6 +93,20 @@ const CLIENT_CAPABILITIES: ClientCapabilities = {
     workspaceFolders: true,
     configuration: false,
   },
+  // Opt into server-initiated progress reporting. Servers (notably
+  // rust-analyzer and pyright) use this to announce indexing / cargo
+  // check / etc.; without advertising support, they stay silent and
+  // the UI has no cue that work is in-flight.
+  window: { workDoneProgress: true },
+};
+
+/// Progress state surfaced to the store for a single session. `null`
+/// means no active progress; a non-null value means the server is
+/// doing something (typically indexing) and the UI should indicate it.
+export type SessionProgress = {
+  title: string;
+  message?: string;
+  percentage?: number;
 };
 
 /// Boot an already-spawned LSP server. The connection is fully initialized
@@ -101,8 +121,75 @@ export async function initializeSession(opts: {
   rootUri: string;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   connection: any;
+  /// Called whenever the session's aggregate progress state changes.
+  /// `null` means no active progress; a value is the most recent
+  /// begin/report across all of the server's tokens. Keeping only one
+  /// summary is fine for the simple "indexing…" indicator we show.
+  onProgress?: (progress: SessionProgress | null) => void;
 }): Promise<LspSession> {
   const { connection } = opts;
+
+  // Per-token progress state — servers can run multiple concurrent
+  // operations, each with its own token. We summarize by showing the
+  // most recent begin/report. Cleared when the matching token ends.
+  const progressTokens = new Map<string, SessionProgress>();
+
+  const emitProgress = () => {
+    if (!opts.onProgress) return;
+    // Pick an arbitrary active token's state; most servers only run
+    // one at a time anyway. If we later want stacked progress, this
+    // is the place to extend.
+    const first = progressTokens.values().next();
+    opts.onProgress(first.done ? null : first.value);
+  };
+
+  // Respond success to `window/workDoneProgress/create` so the server
+  // knows we accept its tokens. We have to register the handler before
+  // `listen()` — otherwise early progress requests get rejected with
+  // "method not found" and the server silently skips progress reporting.
+  connection.onRequest(
+    WorkDoneProgressCreateRequest.type,
+    (_: WorkDoneProgressCreateParams) => {
+      // Empty response = success per the spec.
+      return null;
+    },
+  );
+
+  // `$/progress` is a bare notification with `{ token, value }`, where
+  // `value` is one of begin/report/end. vscode-jsonrpc doesn't ship a
+  // typed request for this — register by string.
+  connection.onNotification(
+    "$/progress",
+    (params: {
+      token: ProgressToken;
+      value:
+        | WorkDoneProgressBegin
+        | WorkDoneProgressReport
+        | WorkDoneProgressEnd;
+    }) => {
+      const key = String(params.token);
+      const v = params.value;
+      if (v.kind === "begin") {
+        progressTokens.set(key, {
+          title: v.title,
+          message: v.message,
+          percentage: v.percentage,
+        });
+      } else if (v.kind === "report") {
+        const prev = progressTokens.get(key);
+        if (!prev) return;
+        progressTokens.set(key, {
+          title: prev.title,
+          message: v.message ?? prev.message,
+          percentage: v.percentage ?? prev.percentage,
+        });
+      } else if (v.kind === "end") {
+        progressTokens.delete(key);
+      }
+      emitProgress();
+    },
+  );
+
   connection.listen();
 
   const result = (await connection.sendRequest(InitializeRequest.type, {
@@ -132,6 +219,9 @@ export async function initializeSession(opts: {
         // Server may already be dead — best-effort.
       }
       connection.dispose();
+      // Surface a cleared progress state on disposal so the UI doesn't
+      // leave "indexing…" hanging after the server exits.
+      opts.onProgress?.(null);
     },
   };
 

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useUiStore } from "@/stores/ui";
 import { useWorktreesStore } from "@/stores/worktrees";
 import { useDiffsStore } from "@/stores/diffs";
+import { useLspStore } from "@/stores/lsp";
 import { onDiffUpdated } from "@/ipc/client";
 import type { DiffLine, FileDiff, FileStatus, WorktreeId } from "@/ipc/types";
 import { cn } from "@/lib/cn";
@@ -166,6 +167,7 @@ function DiffView({ worktreeId }: { worktreeId: WorktreeId }) {
               {selectedFile}
             </span>
           )}
+          <LspProgressIndicator worktreeId={worktreeId} />
           <FocusToggle />
         </div>
         <div className="flex-1 overflow-auto">
@@ -185,6 +187,43 @@ function DiffView({ worktreeId }: { worktreeId: WorktreeId }) {
         </div>
       </section>
     </div>
+  );
+}
+
+/// Shows the most-recent in-flight LSP progress for the current worktree,
+/// aggregated across all enabled languages. Servers use `$/progress` to
+/// announce indexing / cargo check / type-checking; without a cue the
+/// editor feels broken for 10–60s on first open, especially with
+/// rust-analyzer on a cold cache.
+function LspProgressIndicator({ worktreeId }: { worktreeId: WorktreeId }) {
+  const progress = useLspStore((s) => s.progress);
+  const active = useMemo(() => {
+    const prefix = `${worktreeId}::`;
+    for (const [key, p] of Object.entries(progress)) {
+      if (!key.startsWith(prefix) || !p) continue;
+      return { languageId: key.slice(prefix.length), ...p };
+    }
+    return null;
+  }, [progress, worktreeId]);
+
+  if (!active) return null;
+
+  const tail =
+    typeof active.percentage === "number"
+      ? `${Math.round(active.percentage)}%`
+      : (active.message ?? "");
+
+  return (
+    <span
+      className="ml-2 flex shrink-0 items-center gap-1 rounded bg-neutral-900 px-1.5 py-0.5 font-mono text-[11px] text-neutral-400"
+      title={`${active.languageId}: ${active.title}${active.message ? " — " + active.message : ""}`}
+    >
+      <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-amber-400" />
+      <span className="max-w-[160px] truncate">
+        {active.title}
+        {tail ? ` · ${tail}` : ""}
+      </span>
+    </span>
   );
 }
 
