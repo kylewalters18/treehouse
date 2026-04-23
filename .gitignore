@@ -20,3 +20,8 @@ src-tauri/bindings/
 # TS project-reference build artifacts
 *.tsbuildinfo
 dist-tsc-node
+
+# Playwright
+test-results/
+playwright-report/
+.playwright/

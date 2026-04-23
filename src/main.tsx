@@ -5,6 +5,13 @@ import { loader } from "@monaco-editor/react";
 import { App } from "./App";
 import "./styles.css";
 
+// E2E harness: stub the Tauri IPC layer before any app code imports it,
+// gated on a Vite env flag so production bundles never ship the hook.
+if (import.meta.env.VITE_E2E) {
+  const { installE2EMocks } = await import("./test/e2e-bootstrap");
+  installE2EMocks();
+}
+
 // Pin `@monaco-editor/react` to the Monaco instance we bundle ourselves.
 // Without this, the React wrapper fetches Monaco from a CDN via its AMD
 // loader — that instance is separate from the one `monaco-editor` imports
