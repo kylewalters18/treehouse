@@ -8,6 +8,7 @@ import type { DiffLine, FileDiff, FileStatus, WorktreeId } from "@/ipc/types";
 import { cn } from "@/lib/cn";
 import { EditorPane } from "./EditorPane";
 import { FileTree } from "./FileTree";
+import { MarkdownPreview, isMarkdownPath } from "./MarkdownPreview";
 
 export function DiffPane() {
   const worktreeId = useUiStore((s) => s.selectedWorktreeId);
@@ -63,12 +64,15 @@ function DiffView({ worktreeId }: { worktreeId: WorktreeId }) {
     return diff.files.find((f) => f.path === selectedFile) ?? null;
   }, [diff, selectedFile]);
 
-  // If the user picks a file from the tree that isn't in the diff, force the
-  // File tab since there's no diff to show.
+  // If the user picks a file from the tree that isn't in the diff, force
+  // a non-diff view since there's no diff to show. "file" and "preview"
+  // are both valid non-diff views — only force when the current view is
+  // actually "diff", otherwise a freshly-selected Preview tab gets
+  // clobbered back to File on the next render.
   useEffect(() => {
     if (!selectedFile) return;
     const inDiff = diff?.files.some((f) => f.path === selectedFile) ?? false;
-    if (!inDiff && view !== "file") setView(worktreeId, "file");
+    if (!inDiff && view === "diff") setView(worktreeId, "file");
   }, [selectedFile, diff, view, worktreeId, setView]);
 
   if (error) {
@@ -162,6 +166,13 @@ function DiffView({ worktreeId }: { worktreeId: WorktreeId }) {
           >
             File
           </TabButton>
+          <TabButton
+            active={view === "preview"}
+            onClick={() => setView(worktreeId, "preview")}
+            disabled={!selectedFile || !isMarkdownPath(selectedFile)}
+          >
+            Preview
+          </TabButton>
           {selectedFile && (
             <span className="ml-2 min-w-0 flex-1 truncate font-mono text-[11px] text-neutral-500">
               {selectedFile}
@@ -177,6 +188,8 @@ function DiffView({ worktreeId }: { worktreeId: WorktreeId }) {
             </div>
           ) : view === "file" ? (
             <EditorPane worktreeId={worktreeId} path={selectedFile} />
+          ) : view === "preview" && isMarkdownPath(selectedFile) ? (
+            <MarkdownPreview worktreeId={worktreeId} path={selectedFile} />
           ) : selected ? (
             <HunksView file={selected} />
           ) : (

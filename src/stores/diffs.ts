@@ -2,7 +2,7 @@ import { create } from "zustand";
 import * as ipc from "@/ipc/client";
 import type { DiffSet, WorktreeId } from "@/ipc/types";
 
-type DiffView = "diff" | "file";
+type DiffView = "diff" | "file" | "preview";
 
 /// `(line, column)` to reveal once a freshly-selected file finishes
 /// loading in the editor. 1-indexed to match Monaco. Populated by the
