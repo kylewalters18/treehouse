@@ -74,27 +74,36 @@ if (typeof window !== "undefined") {
     /// Fire a raw hover request against the first session for a language.
     /// `line` and `character` are 0-indexed (LSP convention).
     hoverAt: async (languageId: string, line: number, character: number) => {
-      for (const s of sessions.values()) {
-        if (s.languageId !== languageId) continue;
-        const uri = Array.from(s.openedUris)[0];
-        if (!uri) return { error: "no open docs" };
-        try {
-          const result = await s.connection.sendRequest(
-            "textDocument/hover",
-            {
-              textDocument: { uri },
-              position: { line, character },
-            },
-          );
-          return { uri, result };
-        } catch (e) {
-          return { error: String(e) };
-        }
-      }
-      return { error: `no session for ${languageId}` };
+      return rawRequest(languageId, "textDocument/hover", line, character);
+    },
+    defAt: async (languageId: string, line: number, character: number) => {
+      return rawRequest(languageId, "textDocument/definition", line, character);
     },
     providers: () => Array.from(providersRegisteredFor),
   };
+
+  async function rawRequest(
+    languageId: string,
+    method: string,
+    line: number,
+    character: number,
+  ) {
+    for (const s of sessions.values()) {
+      if (s.languageId !== languageId) continue;
+      const uri = Array.from(s.openedUris)[0];
+      if (!uri) return { error: "no open docs" };
+      try {
+        const result = await s.connection.sendRequest(method, {
+          textDocument: { uri },
+          position: { line, character },
+        });
+        return { uri, result };
+      } catch (e) {
+        return { error: String(e) };
+      }
+    }
+    return { error: `no session for ${languageId}` };
+  }
 }
 
 /// Inflight session spawns — prevents a double-spawn when two files in the
@@ -229,13 +238,36 @@ export async function disposeSessionsForWorktree(
 function findSessionForModelUri(
   monacoUri: string,
   languageId: string,
-): { session: LspSession; lspUri: string } | null {
+): { session: LspSession; lspUri: string; monacoToLsp: Map<string, string> } | null {
   for (const s of sessions.values()) {
     if (s.languageId !== languageId) continue;
     const lspUri = s.monacoToLspUri.get(monacoUri);
-    if (lspUri) return { session: s, lspUri };
+    if (lspUri) {
+      return { session: s, lspUri, monacoToLsp: s.monacoToLspUri };
+    }
   }
   return null;
+}
+
+/// Flip an LSP-URI-bearing location to a Monaco-URI-bearing one. Returns
+/// null for URIs we don't have a model for (post-MVP: open the file and
+/// retry). `Location` and `LocationLink` both get their URI fields
+/// rewritten in place on a shallow copy.
+function rewriteLocationUri(
+  loc: Location | LocationLink,
+  monacoToLsp: Map<string, string>,
+): Location | LocationLink | null {
+  const reverse = new Map<string, string>();
+  for (const [muri, luri] of monacoToLsp) reverse.set(luri, muri);
+
+  if ("targetUri" in loc) {
+    const monacoUri = reverse.get(loc.targetUri);
+    if (!monacoUri) return null;
+    return { ...loc, targetUri: monacoUri };
+  }
+  const monacoUri = reverse.get(loc.uri);
+  if (!monacoUri) return null;
+  return { ...loc, uri: monacoUri };
 }
 
 /// Register Monaco providers for a language on first use. Providers look
@@ -274,7 +306,16 @@ export function ensureLanguageProviders(languageId: string): void {
       )) as Location | Location[] | LocationLink[] | null;
       if (!result) return null;
       const arr = Array.isArray(result) ? result : [result];
-      return arr.map(lspLocationToMonaco);
+      // Translate LSP URIs (absolute `file://` paths) back to the Monaco
+      // model URIs we registered under. Monaco's goto-definition fails with
+      // "Model not found" if the Location URI doesn't exactly match an
+      // existing model — same-file jumps would otherwise silently no-op
+      // because the server returns our absolute path and the model was
+      // opened under a relative one.
+      const rewritten = arr
+        .map((loc) => rewriteLocationUri(loc, found.monacoToLsp))
+        .filter((loc): loc is NonNullable<typeof loc> => loc !== null);
+      return rewritten.map(lspLocationToMonaco);
     },
   });
 
