@@ -37,3 +37,9 @@ export type { MergeResult } from "./bindings/MergeResult";
 export type { MergeBackStrategy } from "./bindings/MergeBackStrategy";
 export type { SyncResult } from "./bindings/SyncResult";
 export type { SyncStrategy } from "./bindings/SyncStrategy";
+
+export type { LspConfig } from "./bindings/LspConfig";
+export type { LspEvent } from "./bindings/LspEvent";
+export type { LspServerId } from "./bindings/LspServerId";
+export type { LspServerSession } from "./bindings/LspServerSession";
+export type { LspServerStatus } from "./bindings/LspServerStatus";

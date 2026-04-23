@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { inferLanguage } from "./EditorPane";
+import { inferLanguage } from "./editor-language";
 
 describe("inferLanguage", () => {
   it("resolves common extensions", () => {

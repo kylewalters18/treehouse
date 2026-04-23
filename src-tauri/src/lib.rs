@@ -3,6 +3,7 @@ mod diff;
 mod fs_api;
 mod fs_watch;
 mod ipc;
+mod lsp;
 mod pty;
 mod state;
 mod storage;
@@ -33,7 +34,8 @@ pub fn run() {
                 let state = app.state::<AppState>();
                 state.agents.kill_all();
                 state.terminals.kill_all();
-                tracing::info!("graceful shutdown: killed agents + terminals");
+                state.lsp.kill_all();
+                tracing::info!("graceful shutdown: killed agents + terminals + lsp");
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -63,6 +65,13 @@ pub fn run() {
             ipc::commands::list_agents_for_worktree,
             ipc::commands::attach_agent,
             ipc::commands::list_agent_activity,
+            ipc::commands::lsp_ensure,
+            ipc::commands::lsp_write,
+            ipc::commands::lsp_kill,
+            ipc::commands::lsp_list,
+            ipc::commands::lsp_list_configs,
+            ipc::commands::lsp_save_config,
+            ipc::commands::lsp_resolve_command,
         ])
         .setup(|app| {
             use tauri::Manager;

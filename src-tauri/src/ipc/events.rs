@@ -13,3 +13,7 @@ pub fn worktrees_changed(workspace_id: WorkspaceId) -> String {
 pub fn diff_updated(worktree_id: WorktreeId) -> String {
     format!("diff://{worktree_id}/updated")
 }
+
+pub fn lsp_servers_changed(workspace_id: WorkspaceId) -> String {
+    format!("workspace://{workspace_id}/lsp-servers-changed")
+}

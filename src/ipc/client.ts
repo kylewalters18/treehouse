@@ -9,6 +9,10 @@ import type {
   CreateWorktreeResult,
   DiffSet,
   FileContent,
+  LspConfig,
+  LspEvent,
+  LspServerId,
+  LspServerSession,
   MergeResult,
   MergeBackStrategy,
   SyncResult,
@@ -237,4 +241,65 @@ export function listAgentActivity(
   workspaceId: WorkspaceId,
 ): Promise<WorktreeActivity[]> {
   return invoke<WorktreeActivity[]>("list_agent_activity", { workspaceId });
+}
+
+// --- LSP ---
+
+/**
+ * Spawn (or reattach to) an LSP server for `(worktreeId, languageId)`.
+ * `filePath` is the absolute path of the file being opened — used for
+ * workspace-root resolution via the language's `rootMarkers`.
+ */
+export function lspEnsure(
+  worktreeId: WorktreeId,
+  languageId: string,
+  filePath: string,
+  onEvent: (ev: LspEvent) => void,
+): Promise<LspServerSession> {
+  const channel = new Channel<LspEvent>();
+  channel.onmessage = onEvent;
+  return invoke<LspServerSession>("lsp_ensure", {
+    worktreeId,
+    languageId,
+    filePath,
+    channel,
+  });
+}
+
+export function lspWrite(
+  serverId: LspServerId,
+  data: Uint8Array,
+): Promise<void> {
+  return invoke<void>("lsp_write", { serverId, data: Array.from(data) });
+}
+
+export function lspKill(serverId: LspServerId): Promise<void> {
+  return invoke<void>("lsp_kill", { serverId });
+}
+
+export function lspList(
+  worktreeId?: WorktreeId,
+): Promise<LspServerSession[]> {
+  return invoke<LspServerSession[]>("lsp_list", {
+    worktreeId: worktreeId ?? null,
+  });
+}
+
+export function lspListConfigs(): Promise<LspConfig[]> {
+  return invoke<LspConfig[]>("lsp_list_configs");
+}
+
+export function lspSaveConfig(config: LspConfig): Promise<LspConfig[]> {
+  return invoke<LspConfig[]>("lsp_save_config", { config });
+}
+
+export function lspResolveCommand(command: string): Promise<string | null> {
+  return invoke<string | null>("lsp_resolve_command", { command });
+}
+
+export function onLspServersChanged(
+  workspaceId: WorkspaceId,
+  handler: () => void,
+): Promise<UnlistenFn> {
+  return listen(`workspace://${workspaceId}/lsp-servers-changed`, handler);
 }

@@ -41,3 +41,4 @@ typed_id!(WorkspaceId);
 typed_id!(WorktreeId);
 typed_id!(AgentSessionId);
 typed_id!(TerminalId);
+typed_id!(LspServerId);

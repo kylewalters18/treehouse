@@ -9,12 +9,23 @@ import {
   formatCommentForAgent,
   useCommentsStore,
 } from "@/stores/comments";
+import { useLspStore } from "@/stores/lsp";
 import { useUiStore } from "@/stores/ui";
 import { useWorkspaceStore } from "@/stores/workspace";
 import { useWorktreesStore } from "@/stores/worktrees";
 import { toastError, toastInfo, toastSuccess } from "@/stores/toasts";
 import { asMessage } from "@/lib/errors";
 import { cn } from "@/lib/cn";
+import { findConfigForLanguage } from "@/lsp/languages";
+import {
+  LspNotFoundError,
+  closeInSession,
+  ensureSession,
+  openInSession,
+} from "@/lsp/manager";
+import { inferLanguage } from "./editor-language";
+
+export { inferLanguage };
 
 /// Custom Monaco theme: inherits `vs-dark`'s syntax token colors but overrides
 /// backgrounds, gutters, selection, and scrollbars to match the app's neutral
@@ -170,6 +181,8 @@ function EditorWithComments({
     null,
   );
   const onMount: OnMount = (e) => setEditor(e);
+
+  useLspIntegration(editor, worktreeId, path, language);
 
   return (
     <>
@@ -741,47 +754,94 @@ function CommentComposer({
   );
 }
 
-export function inferLanguage(path: string): string {
-  const lower = path.toLowerCase();
-  if (lower.endsWith(".d.ts")) return "typescript";
-  const ext = lower.split(".").pop() ?? "";
-  const map: Record<string, string> = {
-    ts: "typescript",
-    tsx: "typescript",
-    js: "javascript",
-    jsx: "javascript",
-    mjs: "javascript",
-    cjs: "javascript",
-    rs: "rust",
-    py: "python",
-    go: "go",
-    java: "java",
-    kt: "kotlin",
-    rb: "ruby",
-    c: "c",
-    cpp: "cpp",
-    cc: "cpp",
-    h: "cpp",
-    hpp: "cpp",
-    cs: "csharp",
-    swift: "swift",
-    md: "markdown",
-    mdx: "markdown",
-    json: "json",
-    yml: "yaml",
-    yaml: "yaml",
-    toml: "plaintext",
-    sh: "shell",
-    zsh: "shell",
-    bash: "shell",
-    html: "html",
-    css: "css",
-    scss: "scss",
-    sql: "sql",
-    dockerfile: "dockerfile",
-    graphql: "graphql",
-    vue: "html",
-    svelte: "html",
-  };
-  return map[ext] ?? "plaintext";
+/// Opt-in LSP wiring. If an LSP config is enabled for this file's Monaco
+/// language, spawn (or reuse) a server rooted at the worktree, and tell
+/// it about the open document. On path change or unmount, send didClose
+/// so the server can drop its cache. Missing binaries toast once per
+/// (worktree, language) pair so repeated file opens don't spam.
+function useLspIntegration(
+  editor: MonacoEditor.IStandaloneCodeEditor | null,
+  worktreeId: WorktreeId,
+  path: string,
+  language: string,
+) {
+  const configs = useLspStore((s) => s.configs);
+  const hasNotifiedNotFound = useLspStore((s) => s.hasNotifiedNotFound);
+  const markNotFoundNotified = useLspStore((s) => s.markNotFoundNotified);
+  const worktrees = useWorktreesStore((s) => s.worktrees);
+  const worktree = useMemo(
+    () => worktrees.find((w) => w.id === worktreeId) ?? null,
+    [worktrees, worktreeId],
+  );
+
+  useEffect(() => {
+    if (!editor || !worktree) return;
+    const config = findConfigForLanguage(configs, language);
+    if (!config) return;
+
+    // Capture the Monaco model up-front — it may be replaced by the time
+    // the cleanup closure runs if the user switches files. The didClose
+    // must go out for the URI we actually opened.
+    const model = editor.getModel();
+    if (!model) return;
+    const monacoUriString = model.uri.toString();
+
+    const absolutePath = joinPath(worktree.path, path);
+    const lspUri = `file://${absolutePath}`;
+
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const session = await ensureSession(
+          worktreeId,
+          config.id,
+          lspUri,
+          config,
+          (text) => {
+            // Surface stderr to the devtools console; users rarely need
+            // this but it's invaluable when a server misbehaves.
+            console.debug(`[lsp ${config.id}]`, text.trimEnd());
+          },
+        );
+        if (cancelled) return;
+        await openInSession(session, model, lspUri);
+      } catch (err) {
+        if (cancelled) return;
+        if (err instanceof LspNotFoundError) {
+          if (!hasNotifiedNotFound(worktreeId, config.id)) {
+            markNotFoundNotified(worktreeId, config.id);
+            toastInfo(
+              `${config.displayName} not found`,
+              err.hint ?? `Install \`${err.command}\` to enable language features`,
+            );
+          }
+        } else {
+          console.warn("lsp ensure failed", err);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      void closeInSession(worktreeId, config.id, monacoUriString);
+    };
+  }, [
+    editor,
+    worktreeId,
+    path,
+    language,
+    configs,
+    worktree,
+    hasNotifiedNotFound,
+    markNotFoundNotified,
+  ]);
 }
+
+function joinPath(base: string, rel: string): string {
+  if (!rel) return base;
+  const b = base.endsWith("/") ? base.slice(0, -1) : base;
+  const r = rel.startsWith("/") ? rel.slice(1) : rel;
+  return `${b}/${r}`;
+}
+

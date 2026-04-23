@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useSettingsStore } from "@/stores/settings";
-import type { MergeBackStrategy, SyncStrategy } from "@/ipc/types";
+import { useLspStore } from "@/stores/lsp";
+import type { LspConfig, MergeBackStrategy, SyncStrategy } from "@/ipc/types";
 import { cn } from "@/lib/cn";
 
 const SYNC_OPTIONS: { value: SyncStrategy; label: string; sub: string }[] = [
@@ -86,9 +87,104 @@ export function SettingsMenu() {
               </span>
             </label>
           </div>
+          <div className="mt-3 border-t border-neutral-800 pt-3">
+            <LanguagesSection />
+          </div>
         </div>
       )}
     </div>
+  );
+}
+
+function LanguagesSection() {
+  const [open, setOpen] = useState(false);
+  const configs = useLspStore((s) => s.configs);
+  const resolved = useLspStore((s) => s.resolved);
+  const save = useLspStore((s) => s.save);
+  const load = useLspStore((s) => s.load);
+
+  useEffect(() => {
+    if (open && configs.length === 0) void load();
+  }, [open, configs.length, load]);
+
+  return (
+    <div>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center justify-between text-[11px] uppercase tracking-wider text-neutral-500 hover:text-neutral-300"
+      >
+        <span>Languages (LSP)</span>
+        <span>{open ? "−" : "+"}</span>
+      </button>
+      {open && (
+        <div className="mt-2 flex max-h-64 flex-col gap-1 overflow-auto">
+          {configs.length === 0 && (
+            <div className="px-2 py-1 text-[11px] text-neutral-500">
+              Loading…
+            </div>
+          )}
+          {configs.map((c) => (
+            <LanguageRow
+              key={c.id}
+              config={c}
+              resolvedPath={resolved[c.command]}
+              onToggle={(enabled) => void save({ ...c, enabled })}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function LanguageRow({
+  config,
+  resolvedPath,
+  onToggle,
+}: {
+  config: LspConfig;
+  resolvedPath: string | null | undefined;
+  onToggle: (enabled: boolean) => void;
+}) {
+  const found = resolvedPath !== null && resolvedPath !== undefined;
+  const checking = resolvedPath === undefined;
+  const statusColor = !config.enabled
+    ? "bg-neutral-700"
+    : checking
+      ? "bg-neutral-500"
+      : found
+        ? "bg-emerald-500"
+        : "bg-red-500";
+  const statusLabel = !config.enabled
+    ? "disabled"
+    : checking
+      ? "checking…"
+      : found
+        ? `found at ${resolvedPath}`
+        : config.installHint
+          ? `not found — ${config.installHint}`
+          : "not found on PATH";
+  return (
+    <label
+      className="flex cursor-pointer items-start gap-2 rounded border border-neutral-800 px-2 py-1.5 text-xs hover:bg-neutral-950"
+      title={statusLabel}
+    >
+      <input
+        type="checkbox"
+        checked={config.enabled}
+        onChange={(e) => onToggle(e.target.checked)}
+        className="mt-0.5 accent-blue-600"
+      />
+      <span className="flex-1">
+        <div className="flex items-center gap-1.5">
+          <span className={cn("h-2 w-2 rounded-full", statusColor)} />
+          <div className="font-medium text-neutral-100">{config.displayName}</div>
+        </div>
+        <div className="truncate font-mono text-[11px] text-neutral-500">
+          {config.enabled ? statusLabel : `${config.command} ${config.args.join(" ")}`.trim()}
+        </div>
+      </span>
+    </label>
   );
 }
 

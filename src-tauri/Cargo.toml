@@ -33,6 +33,7 @@ ignore = "0.4"
 portable-pty = "0.8"
 bytes = "1"
 dunce = "1"
+toml = "0.8"
 
 [dev-dependencies]
 tempfile = "3"

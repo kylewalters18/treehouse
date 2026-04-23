@@ -6,6 +6,7 @@ use tokio::sync::Mutex as AsyncMutex;
 use crate::agent::supervisor::AgentRegistry;
 use crate::diff::DiffSet;
 use crate::fs_watch::WatchRegistry;
+use crate::lsp::registry::LspRegistry;
 use crate::pty::manager::TerminalRegistry;
 use crate::util::ids::{WorkspaceId, WorktreeId};
 use crate::workspace::Workspace;
@@ -19,6 +20,7 @@ pub struct AppState {
     pub watchers: Arc<WatchRegistry>,
     pub terminals: Arc<TerminalRegistry>,
     pub agents: Arc<AgentRegistry>,
+    pub lsp: Arc<LspRegistry>,
     /// Serialized merge-back across worktrees (single-process scope is fine).
     pub merge_lock: Arc<AsyncMutex<()>>,
 }
@@ -32,6 +34,7 @@ impl AppState {
             watchers: Arc::new(WatchRegistry::new()),
             terminals: Arc::new(TerminalRegistry::new()),
             agents: Arc::new(AgentRegistry::new()),
+            lsp: Arc::new(LspRegistry::new()),
             merge_lock: Arc::new(AsyncMutex::new(())),
         }
     }

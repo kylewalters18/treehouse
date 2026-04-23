@@ -6,13 +6,14 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use crate::agent::{self, AgentBackendKind, AgentEvent, AgentSession, WorktreeActivity};
 use crate::diff::{self, DiffSet};
 use crate::fs_api::{self, FileContent, TreeEntry};
+use crate::lsp::{self, LspConfig, LspEvent, LspServerSession};
 use crate::storage::{self, Comment, RecentWorkspace, Settings};
 use crate::fs_watch;
 use crate::ipc::events;
 use crate::pty::{self, PtyEvent, TerminalSession};
 use crate::state::AppState;
 use crate::util::errors::{AppError, AppResult};
-use crate::util::ids::{AgentSessionId, TerminalId, WorkspaceId, WorktreeId};
+use crate::util::ids::{AgentSessionId, LspServerId, TerminalId, WorkspaceId, WorktreeId};
 use crate::workspace::{self, Workspace};
 use crate::worktree::{
     self, CreateOptions, CreateWorktreeResult, MergeBackStrategy, MergeResult, SyncResult,
@@ -102,9 +103,11 @@ pub async fn close_workspace(
         fs_watch::stop(&app, id);
         pty::manager::close_for_worktree(&state.terminals, *id);
         agent::supervisor::kill_for_worktree(&state.agents, *id);
+        lsp::supervisor::kill_for_worktree(&state.lsp, *id);
         state.diffs.remove(id);
         state.worktrees.remove(id);
     }
+    let _ = app.emit(&events::lsp_servers_changed(workspace_id), ());
     state.workspaces.remove(&workspace_id);
     tracing::info!(id = %workspace_id, worktrees = wt_ids.len(), "closed workspace");
     Ok(())
@@ -153,11 +156,13 @@ pub async fn remove_worktree(
     fs_watch::stop(&app, &worktree_id);
     pty::manager::close_for_worktree(&state.terminals, worktree_id);
     agent::supervisor::kill_for_worktree(&state.agents, worktree_id);
+    lsp::supervisor::kill_for_worktree(&state.lsp, worktree_id);
     state.diffs.remove(&worktree_id);
     worktree::remove(worktree_id, force, &state).await?;
 
     if let Some(ws_id) = workspace_id {
         let _ = app.emit(&events::worktrees_changed(ws_id), ());
+        let _ = app.emit(&events::lsp_servers_changed(ws_id), ());
     }
     Ok(())
 }
@@ -413,6 +418,109 @@ pub async fn get_diff(
     .map_err(|e| AppError::Unknown(format!("diff task join: {e}")))??;
     state.diffs.insert(worktree_id, computed.clone());
     Ok(computed)
+}
+
+// --- LSP ---
+
+#[tauri::command]
+pub async fn lsp_ensure(
+    worktree_id: WorktreeId,
+    language_id: String,
+    file_path: String,
+    channel: Channel<LspEvent>,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> AppResult<LspServerSession> {
+    let configs = lsp::config::list(&app).await?;
+    let config = configs
+        .into_iter()
+        .find(|c| c.id == language_id && c.enabled)
+        .ok_or_else(|| {
+            AppError::Unknown(format!("lsp language not enabled: {language_id}"))
+        })?;
+
+    let wt = state
+        .worktrees
+        .get(&worktree_id)
+        .ok_or_else(|| AppError::Unknown(format!("unknown worktree: {worktree_id}")))?
+        .clone();
+
+    let file_abs = std::path::PathBuf::from(&file_path);
+    let root = lsp::root::resolve(&file_abs, &wt.path, &config.root_markers);
+
+    let result = lsp::supervisor::ensure(&state.lsp, worktree_id, &config, root, channel)?;
+    let _ = app.emit(&events::lsp_servers_changed(wt.workspace_id), ());
+    Ok(result)
+}
+
+#[tauri::command]
+pub async fn lsp_write(
+    server_id: LspServerId,
+    data: Vec<u8>,
+    state: State<'_, AppState>,
+) -> AppResult<()> {
+    lsp::supervisor::write_stdin(&state.lsp, server_id, &data)
+}
+
+#[tauri::command]
+pub async fn lsp_kill(
+    server_id: LspServerId,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> AppResult<()> {
+    // Capture workspace for the fan-out event before we tear down state.
+    let workspace_id = state
+        .lsp
+        .list()
+        .into_iter()
+        .find(|s| s.id == server_id)
+        .and_then(|s| state.worktrees.get(&s.worktree_id).map(|w| w.value().workspace_id));
+    lsp::supervisor::kill(&state.lsp, server_id);
+    if let Some(ws_id) = workspace_id {
+        let _ = app.emit(&events::lsp_servers_changed(ws_id), ());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn lsp_list(
+    worktree_id: Option<WorktreeId>,
+    state: State<'_, AppState>,
+) -> AppResult<Vec<LspServerSession>> {
+    Ok(match worktree_id {
+        Some(id) => state.lsp.list_for_worktree(id),
+        None => state.lsp.list(),
+    })
+}
+
+#[tauri::command]
+pub async fn lsp_list_configs(app: AppHandle) -> AppResult<Vec<LspConfig>> {
+    lsp::config::list(&app).await
+}
+
+#[tauri::command]
+pub async fn lsp_save_config(
+    config: LspConfig,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> AppResult<Vec<LspConfig>> {
+    // Toggling a language off must tear down any running instances of it;
+    // otherwise Monaco would keep feeding a soon-to-be-orphaned server.
+    let prev = lsp::config::list(&app).await?;
+    let was_enabled = prev
+        .iter()
+        .find(|c| c.id == config.id)
+        .map(|c| c.enabled)
+        .unwrap_or(false);
+    if was_enabled && !config.enabled {
+        lsp::supervisor::kill_for_language(&state.lsp, &config.id);
+    }
+    lsp::config::upsert(&app, config).await
+}
+
+#[tauri::command]
+pub async fn lsp_resolve_command(command: String) -> AppResult<Option<String>> {
+    lsp::config::resolve_command(&command).await
 }
 
 /// Start the file watcher for a worktree and kick off an initial diff compute.

@@ -8,6 +8,7 @@ import {
 import { useWorkspaceStore } from "@/stores/workspace";
 import { useWorktreesStore } from "@/stores/worktrees";
 import { useDiffsStore } from "@/stores/diffs";
+import { useLspStore } from "@/stores/lsp";
 import { useUiStore } from "@/stores/ui";
 import { WorktreeSidebar } from "@/panels/WorktreeSidebar";
 import { DiffPane } from "@/panels/DiffPane";
@@ -22,6 +23,7 @@ export function Workspace() {
   const resetWorktrees = useWorktreesStore((s) => s.reset);
   const resetDiffs = useDiffsStore((s) => s.reset);
   const resetUi = useUiStore((s) => s.reset);
+  const loadLspConfigs = useLspStore((s) => s.load);
   const focusMode = useUiStore((s) => s.focusMode);
   const toggleFocusMode = useUiStore((s) => s.toggleFocusMode);
   const sidebarCollapsed = useUiStore((s) => s.worktreeSidebarCollapsed);
@@ -57,12 +59,13 @@ export function Workspace() {
   }, [sidebarCollapsed, focusMode, hideAgent]);
 
   useEffect(() => {
+    void loadLspConfigs();
     return () => {
       resetWorktrees();
       resetDiffs();
       resetUi();
     };
-  }, [workspace, resetWorktrees, resetDiffs, resetUi]);
+  }, [workspace, resetWorktrees, resetDiffs, resetUi, loadLspConfigs]);
 
   // Cmd+\ (Ctrl+\ on Linux/Win) toggles focus mode.
   // Cmd+B toggles the worktree sidebar (VS Code muscle memory).
