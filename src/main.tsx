@@ -7,9 +7,13 @@ import "./styles.css";
 
 // E2E harness: stub the Tauri IPC layer before any app code imports it,
 // gated on a Vite env flag so production bundles never ship the hook.
+// Also expose `window.__monaco` so Playwright can assert against editor
+// state (cursor position, open models, registered providers).
 if (import.meta.env.VITE_E2E) {
   const { installE2EMocks } = await import("./test/e2e-bootstrap");
   installE2EMocks();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (window as any).__monaco = monaco;
 }
 
 // Pin `@monaco-editor/react` to the Monaco instance we bundle ourselves.
