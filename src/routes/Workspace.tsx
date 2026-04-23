@@ -40,10 +40,12 @@ export function Workspace() {
   // store (not inside the Panel) lets the sidebar content + keyboard shortcut
   // both toggle from outside the Panel component.
   //
-  // `focusMode` and `hideAgent` are in the deps because each toggle swaps
-  // which PanelGroup (and therefore which Panel) is mounted — the ref points
-  // at a fresh Panel at its default size, so we need to re-assert the
-  // collapsed state so focus mode and sidebar collapse behave independently.
+  // `focusMode` is in the deps because toggling it swaps which PanelGroup
+  // (and therefore which Panel) is mounted — the ref points at a fresh
+  // Panel at its default size, so we need to re-assert the collapsed state.
+  // (main-clone vs. worktree switches previously did the same thing via
+  // `hideAgent`, but they now share a single PanelGroup — see the
+  // Panel ids below — so the ref stays stable across those.)
   //
   // The rAF defer is because react-resizable-panels' imperative API doesn't
   // take effect if called before the newly-mounted Panel has registered with
@@ -56,7 +58,7 @@ export function Workspace() {
       else panel.expand();
     });
     return () => cancelAnimationFrame(id);
-  }, [sidebarCollapsed, focusMode, hideAgent]);
+  }, [sidebarCollapsed, focusMode]);
 
   useEffect(() => {
     void loadLspConfigs();
@@ -136,13 +138,21 @@ export function Workspace() {
           </Panel>
         </PanelGroup>
       ) : (
+        // Single PanelGroup across main-clone and worktree selections so
+        // the sidebar keeps its user-dragged width when switching between
+        // them. Previously we swapped PanelGroups via `key`, which
+        // remounted the sidebar and reset its width to `defaultSize`
+        // every time the user clicked the main clone. react-resizable-
+        // panels v2 handles the conditionally-rendered Agent pane as
+        // long as each Panel carries a stable `id` + `order`.
         <PanelGroup
-          key={hideAgent ? "normal-no-agent" : "normal"}
           direction="horizontal"
           className="flex-1"
-          autoSaveId={hideAgent ? "layout-normal-no-agent" : "layout-normal"}
+          autoSaveId="layout-normal"
         >
           <Panel
+            id="sidebar"
+            order={1}
             ref={sidebarPanelRef}
             defaultSize={18}
             minSize={14}
@@ -152,7 +162,7 @@ export function Workspace() {
             <WorktreeSidebar />
           </Panel>
           <PanelResizeHandle className="w-px bg-neutral-800 hover:bg-neutral-700" />
-          <Panel defaultSize={hideAgent ? 82 : 48}>
+          <Panel id="center" order={2} defaultSize={hideAgent ? 82 : 48}>
             <PanelGroup direction="vertical" autoSaveId="center-normal">
               <Panel defaultSize={60}>
                 <DiffPane />
@@ -166,7 +176,7 @@ export function Workspace() {
           {!hideAgent && (
             <>
               <PanelResizeHandle className="w-px bg-neutral-800 hover:bg-neutral-700" />
-              <Panel defaultSize={34} minSize={20}>
+              <Panel id="agent" order={3} defaultSize={34} minSize={20}>
                 <AgentPane />
               </Panel>
             </>
