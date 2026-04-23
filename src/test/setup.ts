@@ -24,11 +24,3 @@ vi.mock("@tauri-apps/api/event", () => ({
 vi.mock("@tauri-apps/plugin-dialog", () => ({
   open: vi.fn(async () => null),
 }));
-
-// Silence the "zoom" CSS-property warning jsdom emits — we set it on the
-// root in App.tsx during the zoom feature.
-const origSetProperty = CSSStyleDeclaration.prototype.setProperty;
-CSSStyleDeclaration.prototype.setProperty = function (prop, value, priority) {
-  if (prop === "zoom") return;
-  return origSetProperty.call(this, prop, value ?? null, priority);
-};

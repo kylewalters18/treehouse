@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import * as ipc from "@/ipc/client";
-import { useSettingsStore, ZOOM_MAX, ZOOM_MIN } from "./settings";
+import { useSettingsStore } from "./settings";
 
 vi.mock("@/ipc/client");
 const ipcMocked = vi.mocked(ipc);
@@ -10,7 +10,6 @@ function freshState() {
     settings: {
       syncStrategy: "rebase",
       mergeBackStrategy: "rebaseFf",
-      zoom: 1.0,
       initSubmodules: false,
     },
     loaded: false,
@@ -27,14 +26,14 @@ describe("settings store", () => {
     ipcMocked.getSettings.mockResolvedValueOnce({
       syncStrategy: "merge",
       mergeBackStrategy: "squash",
-      zoom: 1.25,
       initSubmodules: true,
     });
     await useSettingsStore.getState().load();
     const s = useSettingsStore.getState();
     expect(s.loaded).toBe(true);
     expect(s.settings.syncStrategy).toBe("merge");
-    expect(s.settings.zoom).toBe(1.25);
+    expect(s.settings.mergeBackStrategy).toBe("squash");
+    expect(s.settings.initSubmodules).toBe(true);
   });
 
   it("load tolerates backend failure and keeps defaults", async () => {
@@ -42,14 +41,13 @@ describe("settings store", () => {
     await useSettingsStore.getState().load();
     expect(useSettingsStore.getState().loaded).toBe(true);
     // Pre-test defaults untouched.
-    expect(useSettingsStore.getState().settings.zoom).toBe(1.0);
+    expect(useSettingsStore.getState().settings.syncStrategy).toBe("rebase");
   });
 
   it("setSyncStrategy updates state and writes to backend", async () => {
     ipcMocked.updateSettings.mockResolvedValueOnce({
       syncStrategy: "merge",
       mergeBackStrategy: "rebaseFf",
-      zoom: 1.0,
       initSubmodules: false,
     });
     await useSettingsStore.getState().setSyncStrategy("merge");
@@ -59,44 +57,16 @@ describe("settings store", () => {
     );
   });
 
-  it("setZoom clamps out-of-range values", async () => {
-    ipcMocked.updateSettings.mockResolvedValue({
+  it("setInitSubmodules updates state and writes to backend", async () => {
+    ipcMocked.updateSettings.mockResolvedValueOnce({
       syncStrategy: "rebase",
       mergeBackStrategy: "rebaseFf",
-      zoom: 1.0,
-      initSubmodules: false,
+      initSubmodules: true,
     });
-    await useSettingsStore.getState().setZoom(10);
-    expect(useSettingsStore.getState().settings.zoom).toBe(ZOOM_MAX);
-    await useSettingsStore.getState().setZoom(0.1);
-    expect(useSettingsStore.getState().settings.zoom).toBe(ZOOM_MIN);
-  });
-
-  it("adjustZoom is additive and respects bounds", async () => {
-    ipcMocked.updateSettings.mockResolvedValue({
-      syncStrategy: "rebase",
-      mergeBackStrategy: "rebaseFf",
-      zoom: 1.0,
-      initSubmodules: false,
-    });
-    await useSettingsStore.getState().adjustZoom(0.1);
-    expect(useSettingsStore.getState().settings.zoom).toBeCloseTo(1.1);
-    // Crank to upper bound.
-    for (let i = 0; i < 20; i++) {
-      await useSettingsStore.getState().adjustZoom(0.1);
-    }
-    expect(useSettingsStore.getState().settings.zoom).toBe(ZOOM_MAX);
-  });
-
-  it("resetZoom returns to 1.0", async () => {
-    ipcMocked.updateSettings.mockResolvedValue({
-      syncStrategy: "rebase",
-      mergeBackStrategy: "rebaseFf",
-      zoom: 1.5,
-      initSubmodules: false,
-    });
-    await useSettingsStore.getState().setZoom(1.5);
-    await useSettingsStore.getState().resetZoom();
-    expect(useSettingsStore.getState().settings.zoom).toBe(1.0);
+    await useSettingsStore.getState().setInitSubmodules(true);
+    expect(useSettingsStore.getState().settings.initSubmodules).toBe(true);
+    expect(ipcMocked.updateSettings).toHaveBeenCalledWith(
+      expect.objectContaining({ initSubmodules: true }),
+    );
   });
 });
