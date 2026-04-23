@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import Editor, { type Monaco, type OnMount } from "@monaco-editor/react";
 import type { editor as MonacoEditor } from "monaco-editor";
-import { readFile } from "@/ipc/client";
+import { onDiffUpdated, readFile } from "@/ipc/client";
 import { pasteAndSubmit } from "@/lib/agent";
 import type { Comment, FileContent, WorktreeId } from "@/ipc/types";
 import {
@@ -94,23 +94,47 @@ export function EditorPane({ worktreeId, path }: Props) {
       return;
     }
     let cancelled = false;
-    setLoading(true);
-    setError(null);
-    readFile(worktreeId, path)
-      .then((c) => {
+    // Refresh flag suppresses the initial loading spinner on agent-driven
+    // re-reads so the editor doesn't blank out every time the file on
+    // disk changes. Only the first read (triggered by `path` change)
+    // shows the "Loading…" placeholder.
+    const fetch = async (withSpinner: boolean) => {
+      if (withSpinner) setLoading(true);
+      setError(null);
+      try {
+        const c = await readFile(worktreeId, path);
         if (!cancelled) {
           setContent(c);
           setLoading(false);
         }
-      })
-      .catch((e) => {
+      } catch (e) {
         if (!cancelled) {
           setError(asMessage(e));
           setLoading(false);
         }
-      });
+      }
+    };
+
+    void fetch(true);
+
+    // Live-refresh on agent writes. `diff_updated` is emitted by the
+    // worktree file-watcher after its debounce; when the current file
+    // is in the updated diff we re-read it so the editor shows the
+    // agent's new content. Monaco's react wrapper no-ops when content
+    // is unchanged, so unrelated file changes are free.
+    let unlisten: (() => void) | null = null;
+    onDiffUpdated(worktreeId, (diff) => {
+      if (cancelled) return;
+      if (!diff.files.some((f) => f.path === path)) return;
+      void fetch(false);
+    }).then((fn) => {
+      if (cancelled) fn();
+      else unlisten = fn;
+    });
+
     return () => {
       cancelled = true;
+      unlisten?.();
     };
   }, [worktreeId, path]);
 
