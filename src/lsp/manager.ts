@@ -270,6 +270,65 @@ function rewriteLocationUri(
   return { ...loc, uri: monacoUri };
 }
 
+export type ResolvedDefinition =
+  | { kind: "sameFile"; line: number; column: number }
+  | { kind: "inWorktree"; relPath: string; line: number; column: number }
+  | { kind: "external"; uri: string };
+
+/// Query LSP for the definition at a position and classify the first
+/// location. Called from the editor's ⌘-click handler; the caller decides
+/// how to navigate based on `kind`. Returns `null` when the server has no
+/// definition or the session isn't ready.
+export async function resolveDefinition(opts: {
+  worktreeId: WorktreeId;
+  languageId: string;
+  monacoModelUri: string;
+  lineNumber: number;
+  column: number;
+}): Promise<ResolvedDefinition | null> {
+  const found = findSessionForModelUri(opts.monacoModelUri, opts.languageId);
+  if (!found || found.session.worktreeId !== opts.worktreeId) return null;
+  if (!found.session.capabilities.definitionProvider) return null;
+
+  const result = (await found.session.connection.sendRequest(
+    "textDocument/definition",
+    {
+      textDocument: { uri: found.lspUri },
+      position: { line: opts.lineNumber - 1, character: opts.column - 1 },
+    },
+  )) as Location | Location[] | LocationLink[] | null;
+
+  if (!result) return null;
+  const arr = Array.isArray(result) ? result : [result];
+  if (arr.length === 0) return null;
+
+  const first = arr[0];
+  const targetUri = "targetUri" in first ? first.targetUri : first.uri;
+  const targetRange =
+    "targetSelectionRange" in first
+      ? (first.targetSelectionRange ?? first.targetRange)
+      : first.range;
+  const line = targetRange.start.line + 1;
+  const column = targetRange.start.character + 1;
+
+  if (targetUri === found.lspUri) {
+    return { kind: "sameFile", line, column };
+  }
+
+  const root = found.session.rootUri.endsWith("/")
+    ? found.session.rootUri
+    : found.session.rootUri + "/";
+  if (targetUri.startsWith(root)) {
+    return {
+      kind: "inWorktree",
+      relPath: targetUri.slice(root.length),
+      line,
+      column,
+    };
+  }
+  return { kind: "external", uri: targetUri };
+}
+
 /// Register Monaco providers for a language on first use. Providers look
 /// up the session at request time so they pick up new sessions without
 /// needing to re-register.
@@ -306,12 +365,10 @@ export function ensureLanguageProviders(languageId: string): void {
       )) as Location | Location[] | LocationLink[] | null;
       if (!result) return null;
       const arr = Array.isArray(result) ? result : [result];
-      // Translate LSP URIs (absolute `file://` paths) back to the Monaco
-      // model URIs we registered under. Monaco's goto-definition fails with
-      // "Model not found" if the Location URI doesn't exactly match an
-      // existing model — same-file jumps would otherwise silently no-op
-      // because the server returns our absolute path and the model was
-      // opened under a relative one.
+      // Peek-on-⌘-hover uses this provider too, so we only return
+      // already-open locations. Cross-file goto is handled in
+      // EditorPane's ⌘-click handler via `resolveDefinition`, which
+      // knows how to open the target file first.
       const rewritten = arr
         .map((loc) => rewriteLocationUri(loc, found.monacoToLsp))
         .filter((loc): loc is NonNullable<typeof loc> => loc !== null);

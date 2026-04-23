@@ -22,7 +22,9 @@ import {
   closeInSession,
   ensureSession,
   openInSession,
+  resolveDefinition,
 } from "@/lsp/manager";
+import { useDiffsStore } from "@/stores/diffs";
 import { inferLanguage } from "./editor-language";
 
 export { inferLanguage };
@@ -183,6 +185,8 @@ function EditorWithComments({
   const onMount: OnMount = (e) => setEditor(e);
 
   useLspIntegration(editor, worktreeId, path, language);
+  useGotoClickHandler(editor, worktreeId, language);
+  usePendingReveal(editor, worktreeId, path, content);
 
   return (
     <>
@@ -836,6 +840,113 @@ function useLspIntegration(
     hasNotifiedNotFound,
     markNotFoundNotified,
   ]);
+}
+
+/// ⌘-click-to-goto: queries LSP ourselves, routes same-file jumps to
+/// Monaco's built-in action (which works when called explicitly), and
+/// cross-file jumps through the file-selection store so the other file
+/// opens with the cursor landing at the definition.
+///
+/// Monaco's own ⌘-click handler shows the peek underline correctly but
+/// stops short of firing the reveal action on click in this embedded
+/// setup (root cause unclear — likely a contribution load order thing).
+/// Driving it ourselves is reliable.
+function useGotoClickHandler(
+  editor: MonacoEditor.IStandaloneCodeEditor | null,
+  worktreeId: WorktreeId,
+  language: string,
+) {
+  const selectFile = useDiffsStore((s) => s.selectFile);
+  const setView = useDiffsStore((s) => s.setView);
+  const setPendingReveal = useDiffsStore((s) => s.setPendingReveal);
+
+  useEffect(() => {
+    if (!editor) return;
+    const sub = editor.onMouseDown(async (e) => {
+      const ev = e.event;
+      if (!ev.leftButton) return;
+      if (!ev.metaKey && !ev.ctrlKey) return;
+      if (!e.target.position) return;
+      // MouseTargetType.CONTENT_TEXT = 6
+      if (e.target.type !== 6) return;
+
+      const model = editor.getModel();
+      if (!model) return;
+
+      try {
+        const resolved = await resolveDefinition({
+          worktreeId,
+          languageId: language,
+          monacoModelUri: model.uri.toString(),
+          lineNumber: e.target.position.lineNumber,
+          column: e.target.position.column,
+        });
+        if (!resolved) return;
+
+        if (resolved.kind === "sameFile") {
+          editor.setPosition({
+            lineNumber: resolved.line,
+            column: resolved.column,
+          });
+          editor.revealLineInCenter(resolved.line);
+          editor.focus();
+        } else if (resolved.kind === "inWorktree") {
+          setView(worktreeId, "file");
+          selectFile(worktreeId, resolved.relPath);
+          setPendingReveal(worktreeId, {
+            path: resolved.relPath,
+            line: resolved.line,
+            column: resolved.column,
+          });
+        }
+        // external URIs (e.g. stdlib) aren't opened — no worktree-relative
+        // path and no model to load. Future: fetch + mount a read-only
+        // model for arbitrary paths.
+      } catch (err) {
+        console.warn("[lsp] goto click failed", err);
+      }
+    });
+    return () => sub.dispose();
+  }, [editor, worktreeId, language, selectFile, setView, setPendingReveal]);
+}
+
+/// Consume a `pendingReveal` posted by the cross-file goto handler.
+/// Fires once the editor is mounted *and* content for this path has
+/// been assigned to the model, so the line we want to reveal actually
+/// exists. Clears the pending state on success to avoid re-firing on
+/// layout reflows.
+function usePendingReveal(
+  editor: MonacoEditor.IStandaloneCodeEditor | null,
+  worktreeId: WorktreeId,
+  path: string,
+  content: string,
+) {
+  const pending = useDiffsStore(
+    (s) => s.pendingReveal[worktreeId] ?? null,
+  );
+  const clearPending = useDiffsStore((s) => s.setPendingReveal);
+
+  useEffect(() => {
+    if (!editor || !pending || pending.path !== path) return;
+    const model = editor.getModel();
+    if (!model) return;
+    // Wait until Monaco has swapped to the model for the target file…
+    if (!model.uri.toString().endsWith(`/${pending.path}`)) return;
+    // …AND the new content has been pushed into that model. Monaco swaps
+    // the model URI before the `value` prop sync runs, so there's a brief
+    // window where the model's URI matches but its content is still the
+    // previous file's text — revealing there lands the cursor on the
+    // wrong line and then clears `pending`. Matching on length is cheap
+    // and unambiguous since `content` is the truth source for this path.
+    if (model.getValue().length !== content.length) return;
+    if (model.getLineCount() < pending.line) return;
+
+    const pos = { lineNumber: pending.line, column: pending.column };
+    editor.revealLineInCenter(pending.line);
+    editor.setPosition(pos);
+    editor.focus();
+    clearPending(worktreeId, null);
+  }, [editor, worktreeId, path, content, pending, clearPending]);
 }
 
 function joinPath(base: string, rel: string): string {
