@@ -250,7 +250,7 @@ pub async fn merge_squash_and_commit(
     Ok(())
 }
 
-/// `true` if the branch ref (e.g. "agent/foo") exists locally.
+/// `true` if the branch ref (e.g. "foo") exists locally.
 pub async fn branch_exists(repo_root: &Path, branch: &str) -> AppResult<bool> {
     let res = Command::new("git")
         .arg("-C")

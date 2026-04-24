@@ -36,7 +36,7 @@ First build compiles ~450 Rust crates (~2 minutes). Subsequent rebuilds are a fe
 
 1. Pick a repo from **Home** (recent repos are remembered).
 2. (Optional, one-time per machine) open ⚙ → **Languages** and toggle the languages you care about. Requires the corresponding server binary on `PATH` — the row shows `found at …` or the install hint.
-3. In the sidebar, type a name in the input + click `+` → creates a worktree at `<repo>__worktrees/<slug>/` on branch `agent/<slug>`.
+3. In the sidebar, type a name in the input + click `+` → creates a worktree at `<repo>__worktrees/<slug>/` on branch `<slug>`.
 4. Select the worktree → the right pane shows an **Agent** tab. Pick a backend, click **Launch**.
 5. As the agent writes files, the **Diff** pane updates live. Click a file in the Changes list to see hunks; switch to the **File** tab for full content — hover / goto / completions come through the language server for enabled languages.
 6. Drop inline review comments by clicking `+` in the gutter, queue them up, then batch-send to the active agent.

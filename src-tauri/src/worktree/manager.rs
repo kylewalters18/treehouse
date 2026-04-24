@@ -92,8 +92,10 @@ pub enum MergeResult {
     WrongBranch { current: String, expected: String },
 }
 
-/// Create a new worktree under `<repo>__worktrees/<slug>/` on branch `agent/<slug>`.
+/// Create a new worktree under `<repo>__worktrees/<slug>/` on branch `<slug>`.
 /// `name` is a friendly label; it's slugified into the path + branch.
+/// Worktrees adopted from earlier versions may carry an `agent/<slug>` branch
+/// — reconcile handles those transparently.
 pub async fn create(
     workspace_id: WorkspaceId,
     name: &str,
@@ -107,7 +109,7 @@ pub async fn create(
         .clone();
 
     let slug = git_ops::slugify(name);
-    let branch = format!("agent/{slug}");
+    let branch = slug.clone();
     let root = git_ops::worktrees_root_for(&ws.root);
     let path: PathBuf = root.join(&slug);
 
@@ -546,7 +548,7 @@ mod tests {
         let (state, ws_id) = setup(&repo);
         let wt = create(ws_id, "first", CreateOptions::default(), &state).await.unwrap().worktree;
 
-        assert_eq!(wt.branch, "agent/first");
+        assert_eq!(wt.branch, "first");
         assert!(wt.path.exists(), "worktree dir should exist on disk");
         assert!(
             wt.path.join(".git").exists(),
@@ -572,8 +574,8 @@ mod tests {
         // Simulate a branch that already exists — e.g. the user created it
         // in a terminal, or it was fetched from elsewhere. We need a commit
         // on it so reuse is observably different from a fresh branch.
-        run_in(&repo.root, &["branch", "agent/reused", "main"]);
-        run_in(&repo.root, &["checkout", "-q", "agent/reused"]);
+        run_in(&repo.root, &["branch", "reused", "main"]);
+        run_in(&repo.root, &["checkout", "-q", "reused"]);
         std::fs::write(repo.root.join("carried-over.txt"), "prior work\n")
             .unwrap();
         run_in(&repo.root, &["add", "carried-over.txt"]);

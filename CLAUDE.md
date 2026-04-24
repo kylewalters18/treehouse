@@ -29,7 +29,7 @@ Greenfield, built macOS-first. Tauri v2 (Rust backend) + React 19 + Vite.
 
 Global `tauri::Emitter` events (`app.emit(...)`) are used sparingly for fan-out signals like `workspace://{id}/worktrees-changed` — anything per-session goes over a dedicated Channel.
 
-**Worktree path convention.** For a repo at `/path/to/myrepo`, worktrees live **as a sibling**: `/path/to/myrepo__worktrees/<slug>` on branch `agent/<slug>`. Never inside the repo (no `.gitignore` pollution) and never user-global (easier to discover in Finder). The `__worktrees` suffix is a hard-coded convention; see `worktree::git_ops::worktrees_root_for`.
+**Worktree path convention.** For a repo at `/path/to/myrepo`, worktrees live **as a sibling**: `/path/to/myrepo__worktrees/<slug>` on branch `<slug>`. Never inside the repo (no `.gitignore` pollution) and never user-global (easier to discover in Finder). The `__worktrees` suffix is a hard-coded convention; see `worktree::git_ops::worktrees_root_for`. Worktrees created before the prefix was dropped may carry an `agent/<slug>` branch — reconcile adopts them without rewriting.
 
 ## Module map
 
