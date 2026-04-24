@@ -210,23 +210,40 @@ export function WorktreeSidebar() {
             ◆
           </RailButton>
         )}
-        {regular.map((w) => {
-          const a = activity[w.id];
-          const tooltip =
-            w.branch +
-            (a?.ahead ? `  ↑${a.ahead}` : "") +
-            (a?.behind ? `  ↓${a.behind}` : "");
-          return (
-            <RailButton
-              key={w.id}
-              tooltip={tooltip}
-              onClick={() => selectWorktree(w.id)}
-              selected={selectedId === w.id}
-            >
-              <StatusDot activity={a?.activity ?? "inactive"} />
-            </RailButton>
+        {(() => {
+          const { withAgent, changes, dormant } = groupWorktrees(
+            regular,
+            activity,
           );
-        })}
+          const renderDot = (w: Worktree) => {
+            const a = activity[w.id];
+            const tooltip =
+              w.branch +
+              (a?.ahead ? `  ↑${a.ahead}` : "") +
+              (a?.behind ? `  ↓${a.behind}` : "");
+            return (
+              <RailButton
+                key={w.id}
+                tooltip={tooltip}
+                onClick={() => selectWorktree(w.id)}
+                selected={selectedId === w.id}
+              >
+                <StatusDot activity={a?.activity ?? "inactive"} />
+              </RailButton>
+            );
+          };
+          return (
+            <>
+              {withAgent.map(renderDot)}
+              {withAgent.length > 0 && (changes.length > 0 || dormant.length > 0) && (
+                <RailDivider />
+              )}
+              {changes.map(renderDot)}
+              {changes.length > 0 && dormant.length > 0 && <RailDivider />}
+              {dormant.map(renderDot)}
+            </>
+          );
+        })()}
       </div>
     );
   }
@@ -299,15 +316,10 @@ export function WorktreeSidebar() {
           </div>
         ) : (
           (() => {
-            // "Inactive" = no commits ahead of default AND no uncommitted
-            // changes. Covers both merged-back worktrees and ones that
-            // never accumulated work — both have nothing pending to review.
-            const isActive = (w: Worktree) => {
-              const a = activity[w.id];
-              return (a?.ahead ?? 0) > 0 || (a?.dirty ?? false);
-            };
-            const active = regular.filter(isActive);
-            const inactive = regular.filter((w) => !isActive(w));
+            const { withAgent, changes, dormant } = groupWorktrees(
+              regular,
+              activity,
+            );
             const renderRow = (w: Worktree, dim: boolean) => (
               <li
                 key={w.id}
@@ -351,18 +363,27 @@ export function WorktreeSidebar() {
             );
             return (
               <>
-                {active.length > 0 && (
-                  <ul className="divide-y divide-neutral-900">
-                    {active.map((w) => renderRow(w, false))}
-                  </ul>
-                )}
-                {inactive.length > 0 && (
+                {withAgent.length > 0 && (
                   <>
-                    <div className="border-t border-neutral-800 px-3 py-1.5 text-[11px] uppercase tracking-wider text-neutral-600">
-                      Inactive ({inactive.length})
-                    </div>
+                    <SectionHeader label="Agents" count={withAgent.length} />
                     <ul className="divide-y divide-neutral-900">
-                      {inactive.map((w) => renderRow(w, true))}
+                      {withAgent.map((w) => renderRow(w, false))}
+                    </ul>
+                  </>
+                )}
+                {changes.length > 0 && (
+                  <>
+                    <SectionHeader label="Changes" count={changes.length} />
+                    <ul className="divide-y divide-neutral-900">
+                      {changes.map((w) => renderRow(w, false))}
+                    </ul>
+                  </>
+                )}
+                {dormant.length > 0 && (
+                  <>
+                    <SectionHeader label="Inactive" count={dormant.length} />
+                    <ul className="divide-y divide-neutral-900">
+                      {dormant.map((w) => renderRow(w, true))}
                     </ul>
                   </>
                 )}
@@ -831,6 +852,47 @@ function MenuItem({
 function shortenPath(p: string): string {
   const parts = p.split("/");
   return parts.slice(-2).join("/");
+}
+
+/// Split worktrees into three buckets for sidebar grouping:
+///  - withAgent: an agent session is attached (activity is working/idle/
+///    needsAttention).
+///  - changes: no agent session, but the branch is ahead of default or the
+///    workdir is dirty. "Work without an agent watching it."
+///  - dormant: no agent, no pending work. The truly stale pile.
+/// Order within each group follows the sorted input (WorktreeId / creation
+/// order — see `worktree::manager::list_for_workspace`).
+function groupWorktrees(
+  worktrees: Worktree[],
+  activity: Record<WorktreeId, WorktreeActivity>,
+): { withAgent: Worktree[]; changes: Worktree[]; dormant: Worktree[] } {
+  const withAgent: Worktree[] = [];
+  const changes: Worktree[] = [];
+  const dormant: Worktree[] = [];
+  for (const w of worktrees) {
+    const a = activity[w.id];
+    const act: AgentActivity = a?.activity ?? "inactive";
+    if (act !== "inactive") {
+      withAgent.push(w);
+    } else if ((a?.ahead ?? 0) > 0 || (a?.dirty ?? false)) {
+      changes.push(w);
+    } else {
+      dormant.push(w);
+    }
+  }
+  return { withAgent, changes, dormant };
+}
+
+function SectionHeader({ label, count }: { label: string; count: number }) {
+  return (
+    <div className="border-t border-neutral-800 px-3 py-1.5 text-[11px] uppercase tracking-wider text-neutral-600">
+      {label} ({count})
+    </div>
+  );
+}
+
+function RailDivider() {
+  return <div className="my-1 h-px w-4 bg-neutral-800" />;
 }
 
 function AheadBehind({ ahead, behind }: { ahead: number; behind: number }) {
