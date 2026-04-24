@@ -1,5 +1,5 @@
 use std::io::{Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -85,7 +85,7 @@ fn spawn(
     let argv = std::iter::once(config.command.clone())
         .chain(config.args.iter().cloned())
         .collect::<Vec<_>>();
-    let root_uri = format!("file://{}", root_path.display());
+    let root_uri = path_to_file_uri(&root_path);
 
     let session = LspServerSession {
         id: server_id,
@@ -265,4 +265,68 @@ fn now_millis() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+/// Build a `file://` URI from an absolute path, percent-encoding bytes that
+/// aren't safe to include literally per RFC 8089 (spaces, non-ASCII, `%`,
+/// etc.). Keeps `/` as the path separator. macOS-only; not generalized for
+/// Windows drive letters.
+fn path_to_file_uri(path: &Path) -> String {
+    const SAFE: &[u8] = b"-_.~/";
+    let s = path.to_string_lossy();
+    let mut out = String::with_capacity(s.len() + 7);
+    out.push_str("file://");
+    for b in s.as_bytes() {
+        if b.is_ascii_alphanumeric() || SAFE.contains(b) {
+            out.push(*b as char);
+        } else {
+            use std::fmt::Write;
+            let _ = write!(out, "%{:02X}", b);
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn path_to_file_uri_plain_ascii() {
+        let p = PathBuf::from("/Users/kyle/Code/repo");
+        assert_eq!(path_to_file_uri(&p), "file:///Users/kyle/Code/repo");
+    }
+
+    #[test]
+    fn path_to_file_uri_encodes_spaces() {
+        let p = PathBuf::from("/Users/kyle/My Project");
+        assert_eq!(path_to_file_uri(&p), "file:///Users/kyle/My%20Project");
+    }
+
+    #[test]
+    fn path_to_file_uri_encodes_unicode_and_percent() {
+        let p = PathBuf::from("/tmp/café/100%");
+        // 'é' is UTF-8 0xC3 0xA9 → %C3%A9; '%' → %25
+        assert_eq!(path_to_file_uri(&p), "file:///tmp/caf%C3%A9/100%25");
+    }
+
+    #[test]
+    fn path_to_file_uri_keeps_slash_and_tilde() {
+        let p = PathBuf::from("/a/b-c_d.e~f/g");
+        assert_eq!(path_to_file_uri(&p), "file:///a/b-c_d.e~f/g");
+    }
+
+    #[test]
+    fn path_to_file_uri_encodes_shell_meta() {
+        // Paranoid check: chars that'd be dangerous in a shell must not
+        // appear literally either — though they're only going to an LSP
+        // server, not a shell.
+        let p = PathBuf::from("/tmp/$PATH'x`y\"z");
+        let uri = path_to_file_uri(&p);
+        assert!(!uri.contains('$'));
+        assert!(!uri.contains('\''));
+        assert!(!uri.contains('`'));
+        assert!(!uri.contains('"'));
+    }
 }
