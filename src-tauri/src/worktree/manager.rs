@@ -415,7 +415,11 @@ pub async fn merge(
 }
 
 pub fn list_for_workspace(workspace_id: WorkspaceId, state: &AppState) -> Vec<Worktree> {
-    state
+    // DashMap iteration order is non-deterministic; sorting by id (ULID →
+    // lexicographic == creation order) keeps the sidebar stable across
+    // refreshes so the main clone stays pinned at the top and newer
+    // worktrees always append below.
+    let mut out: Vec<Worktree> = state
         .worktrees
         .iter()
         .filter_map(|entry| {
@@ -426,7 +430,9 @@ pub fn list_for_workspace(workspace_id: WorkspaceId, state: &AppState) -> Vec<Wo
                 None
             }
         })
-        .collect()
+        .collect();
+    out.sort_by_key(|w| w.id);
+    out
 }
 
 /// Walk `git worktree list --porcelain` for the given workspace, find entries

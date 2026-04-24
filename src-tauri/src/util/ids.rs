@@ -5,7 +5,7 @@ use ulid::Ulid;
 
 macro_rules! typed_id {
     ($name:ident) => {
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, TS)]
         #[serde(transparent)]
         #[ts(export)]
         pub struct $name(#[ts(type = "string")] pub Ulid);
