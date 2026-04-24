@@ -21,13 +21,26 @@ Conventional IDEs treat AI agents as a side panel bolted onto a traditional edit
 - **Sync ↓** pulls the default branch into a worktree via merge or rebase (configurable). Auto-aborts rebase on conflict
 - **Focus mode** (`⌘\`) hides terminal + agent panes for distraction-free code reading
 
-## Run it
+## Install
+
+Grab the latest `.dmg` from [Releases](https://github.com/kylewalters18/treehouse/releases), drag `treehouse.app` to `/Applications`, then clear the quarantine bit once:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/treehouse.app
+```
+
+(The `.dmg` is ad-hoc signed, not notarized — without that `xattr` step macOS refuses to launch it. Paying Apple's $99/yr to skip this isn't worth it for a pre-v1 tool.)
+
+Apple Silicon only for now.
+
+## Build from source
 
 Requirements: macOS, Rust 1.77+, Node 20+, git.
 
 ```sh
 npm install
-npm run tauri dev
+npm run tauri dev         # hot-reload dev build
+npm run tauri build       # produces .app + .dmg under src-tauri/target/release/bundle/
 ```
 
 First build compiles ~450 Rust crates (~2 minutes). Subsequent rebuilds are a few seconds. The window should pop up; click **Open repository** and pick any local git repo.
@@ -59,7 +72,7 @@ v0 MVP is shipped; it's useful for one person on one machine. Meaningful gaps:
 
 - **Platform**: macOS only. Linux/Windows untested.
 - **Tests**: 73 Rust (`cargo test`) covering git operations, worktree reconciliation, diff compute, LSP root-marker resolution; 59 frontend (`npm test`, Vitest) covering the Zustand stores and pure utilities; a Playwright smoke suite (`npx playwright test`) driving the UI against a stubbed Tauri-IPC layer. No full integration coverage against the real Rust backend yet.
-- **Packaging**: no `.dmg` yet; run via `npm run tauri dev`.
+- **Packaging**: ad-hoc signed `.dmg` produced by `npm run tauri build`. Unnotarized — users need a one-time `xattr -dr com.apple.quarantine` after install.
 - **Not implemented**: cross-worktree search, command palette, editor write-back, notifications when agents need attention, settings UI beyond the gear menu.
 - **LSP gaps**: no indexing-progress indicator (rust-analyzer/pyright can feel silent for 10–60s on first open), no semantic tokens / inlay hints / code-action lightbulb, no `workspace/configuration` response (servers run with defaults), no goto into external stdlib paths (same-file + in-worktree jumps only).
 
