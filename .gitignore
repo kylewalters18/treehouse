@@ -25,3 +25,12 @@ dist-tsc-node
 test-results/
 playwright-report/
 .playwright/
+
+# Tauri icon generator emits Windows-Store / iOS / Android assets we don't
+# use on a macOS-only build. Regenerate any time with
+# `npm run tauri icon src-tauri/icons/source.png`.
+src-tauri/icons/64x64.png
+src-tauri/icons/Square*Logo.png
+src-tauri/icons/StoreLogo.png
+src-tauri/icons/ios/
+src-tauri/icons/android/

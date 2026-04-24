@@ -42,8 +42,26 @@ export function Home() {
   return (
     <div className="flex h-full w-full items-center justify-center">
       <div className="flex w-[32rem] flex-col gap-6 rounded-2xl border border-neutral-800 bg-neutral-900 p-10 shadow-2xl">
-        <div className="text-center">
-          <h1 className="text-2xl font-semibold tracking-tight text-neutral-100">
+        <div className="flex flex-col items-center text-center">
+          <div className="relative">
+            {/* Soft diffuse blue glow behind the mark. Sits below via
+                z-0; the PNG paints on top. Subtle "lit from within". */}
+            <div
+              aria-hidden
+              className="absolute inset-0 -z-0 rounded-[1.25rem] bg-blue-500/20 blur-2xl"
+            />
+            <img
+              src="/treehouse-icon.svg"
+              alt=""
+              width={72}
+              height={72}
+              // `rounded-2xl` (16px) matches the SVG's rx=224 at 72px render,
+              // so the ring tracks the icon's corners instead of the img's
+              // bounding box — no stray square outline past the rounded edge.
+              className="relative rounded-2xl ring-2 ring-white/30 drop-shadow-[0_10px_30px_rgba(0,0,0,0.6)]"
+            />
+          </div>
+          <h1 className="mt-4 text-2xl font-semibold tracking-tight text-neutral-100">
             treehouse
           </h1>
           <p className="mt-1 text-sm text-neutral-400">
