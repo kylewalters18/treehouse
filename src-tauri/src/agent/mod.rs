@@ -88,4 +88,9 @@ pub struct WorktreeActivity {
     /// `git status --porcelain` returned anything: tracked or untracked
     /// changes exist in the worktree's workdir.
     pub dirty: bool,
+    /// Branch's work is already represented on default (via merge, squash,
+    /// rebase, etc.) — detected by tree equality from `git merge-tree`.
+    /// Lets the sidebar drop squash-merged worktrees into "Inactive"
+    /// instead of stranding them under "Changes" forever.
+    pub merged: bool,
 }

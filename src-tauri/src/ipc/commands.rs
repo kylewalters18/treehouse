@@ -45,6 +45,8 @@ pub async fn open_workspace(
         }
         prime_worktree_watch(&app, &wt);
     }
+    // Seed the status cache so the first activity poll returns real data.
+    worktree::status::recompute_all_for_workspace(&app, ws.id).await;
     Ok(ws)
 }
 
@@ -137,6 +139,7 @@ pub async fn create_worktree(
     )
     .await?;
     prime_worktree_watch(&app, &result.worktree);
+    worktree::status::spawn_recompute(&app, result.worktree.id);
     let _ = app.emit(&events::worktrees_changed(workspace_id), ());
     Ok(result)
 }
@@ -158,6 +161,7 @@ pub async fn remove_worktree(
     agent::supervisor::kill_for_worktree(&state.agents, worktree_id);
     lsp::supervisor::kill_for_worktree(&state.lsp, worktree_id);
     state.diffs.remove(&worktree_id);
+    worktree::status::drop_for(&state, worktree_id);
     worktree::remove(worktree_id, force, &state).await?;
 
     if let Some(ws_id) = workspace_id {
@@ -180,6 +184,7 @@ pub async fn sync_worktree(
         // the sync file churn has already debounced and the final state may
         // not have triggered another event.
         fs_watch::recompute_and_emit(&app, worktree_id);
+        worktree::status::spawn_recompute(&app, worktree_id);
     }
     Ok(result)
 }
@@ -207,6 +212,7 @@ pub async fn merge_worktree(
         // triggers a useful fs event; explicitly recompute both so the
         // Changes list refreshes wherever the user happens to be looking.
         fs_watch::recompute_and_emit(&app, worktree_id);
+        worktree::status::spawn_recompute(&app, worktree_id);
         let main_clone_id: Option<WorktreeId> = state
             .worktrees
             .iter()
@@ -214,6 +220,22 @@ pub async fn merge_worktree(
             .map(|e| *e.key());
         if let Some(id) = main_clone_id {
             fs_watch::recompute_and_emit(&app, id);
+            worktree::status::spawn_recompute(&app, id);
+        }
+        // Every other worktree in the workspace may now be squash-merged
+        // or ff-caught-up; their `merged` / `ahead` might have flipped.
+        let siblings: Vec<WorktreeId> = state
+            .worktrees
+            .iter()
+            .filter(|e| {
+                e.value().workspace_id == ws_id
+                    && !e.value().is_main_clone
+                    && *e.key() != worktree_id
+            })
+            .map(|e| *e.key())
+            .collect();
+        for id in siblings {
+            worktree::status::spawn_recompute(&app, id);
         }
     }
     Ok(result)
@@ -289,43 +311,33 @@ pub async fn list_agents_for_worktree(
 
 #[tauri::command]
 pub async fn list_agent_activity(
+    app: AppHandle,
     workspace_id: WorkspaceId,
     state: State<'_, AppState>,
 ) -> AppResult<Vec<WorktreeActivity>> {
     let wts = worktree::list_for_workspace(workspace_id, &state);
-    let ws = state
-        .workspaces
-        .get(&workspace_id)
-        .map(|e| e.value().clone());
-
     let mut out = Vec::with_capacity(wts.len());
     for w in wts {
-        let (ahead, behind) = if w.is_main_clone {
-            (0, 0)
-        } else if let Some(ref ws) = ws {
-            // Resolve the most up-to-date default-branch ref (local or
-            // `origin/<default>`) so a stale local main doesn't inflate
-            // ahead counts. Best-effort: any git failure leaves (0, 0).
-            let base = crate::worktree::git_ops::resolve_default_base(
-                &ws.root,
-                &ws.default_branch,
-            )
-            .await;
-            crate::worktree::git_ops::ahead_behind(&ws.root, &base, &w.branch)
-                .await
-                .unwrap_or((0, 0))
-        } else {
-            (0, 0)
+        // Read from the event-driven status cache. Miss → zeros, and kick
+        // off a one-shot recompute so the next poll returns real numbers.
+        let (ahead, behind, dirty, merged) = match state
+            .worktree_status
+            .get(&w.id)
+            .map(|e| *e.value())
+        {
+            Some(s) => (s.ahead, s.behind, s.dirty, s.merged),
+            None => {
+                crate::worktree::status::spawn_recompute(&app, w.id);
+                (0, 0, false, false)
+            }
         };
-        let dirty = crate::worktree::git_ops::has_changes(&w.path)
-            .await
-            .unwrap_or(false);
         out.push(WorktreeActivity {
             worktree_id: w.id,
             activity: state.agents.activity_for_worktree(w.id),
             ahead,
             behind,
             dirty,
+            merged,
         });
     }
     Ok(out)

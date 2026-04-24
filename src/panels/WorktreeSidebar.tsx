@@ -33,6 +33,7 @@ export function WorktreeSidebar() {
   const toggleCollapsed = useUiStore((s) => s.toggleWorktreeSidebar);
 
   const [name, setName] = useState("");
+  const [creatingName, setCreatingName] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const [mergeTarget, setMergeTarget] = useState<Worktree | null>(null);
   const [syncTarget, setSyncTarget] = useState<Worktree | null>(null);
@@ -88,13 +89,19 @@ export function WorktreeSidebar() {
   async function onCreate(e: React.FormEvent) {
     e.preventDefault();
     if (!workspace || !name.trim() || creating) return;
-    const wt = await createWt(workspace.id, name.trim(), {
-      initSubmodules: initSubmodulesDefault,
-    });
-    if (wt) {
-      setName("");
-      inputRef.current?.focus();
-      selectWorktree(wt.id);
+    const trimmed = name.trim();
+    setCreatingName(trimmed);
+    try {
+      const wt = await createWt(workspace.id, trimmed, {
+        initSubmodules: initSubmodulesDefault,
+      });
+      if (wt) {
+        setName("");
+        inputRef.current?.focus();
+        selectWorktree(wt.id);
+      }
+    } finally {
+      setCreatingName(null);
     }
   }
 
@@ -281,11 +288,22 @@ export function WorktreeSidebar() {
         <button
           type="submit"
           disabled={!workspace || !name.trim() || creating}
-          className="rounded bg-blue-600 px-3 py-1 text-xs font-medium text-white hover:bg-blue-500 disabled:opacity-50"
+          className="flex items-center justify-center rounded bg-blue-600 px-3 py-1 text-xs font-medium text-white hover:bg-blue-500 disabled:opacity-50"
         >
-          {creating ? "…" : "+"}
+          {creating ? <Spinner /> : "+"}
         </button>
       </form>
+
+      {creatingName && (
+        <div className="flex items-center gap-2 border-b border-neutral-900 px-3 py-2 text-[11px] text-neutral-500">
+          <Spinner />
+          <span>
+            Creating{" "}
+            <span className="font-mono text-neutral-300">{creatingName}</span>
+            … this can take a moment if the remote is slow to fetch.
+          </span>
+        </div>
+      )}
 
       <div className="flex-1 overflow-y-auto">
         {mainClone && (
@@ -874,7 +892,12 @@ function groupWorktrees(
     const act: AgentActivity = a?.activity ?? "inactive";
     if (act !== "inactive") {
       withAgent.push(w);
-    } else if ((a?.ahead ?? 0) > 0 || (a?.dirty ?? false)) {
+    } else if (
+      !a?.merged &&
+      ((a?.ahead ?? 0) > 0 || (a?.dirty ?? false))
+    ) {
+      // `merged: true` means the branch's work is already on default (e.g.
+      // via squash-merge) — demote it to dormant regardless of `ahead`.
       changes.push(w);
     } else {
       dormant.push(w);
@@ -893,6 +916,15 @@ function SectionHeader({ label, count }: { label: string; count: number }) {
 
 function RailDivider() {
   return <div className="my-1 h-px w-4 bg-neutral-800" />;
+}
+
+function Spinner() {
+  return (
+    <span
+      aria-hidden
+      className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-current border-t-transparent"
+    />
+  );
 }
 
 function AheadBehind({ ahead, behind }: { ahead: number; behind: number }) {

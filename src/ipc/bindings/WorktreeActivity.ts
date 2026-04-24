@@ -15,4 +15,11 @@ behind: number,
  * `git status --porcelain` returned anything: tracked or untracked
  * changes exist in the worktree's workdir.
  */
-dirty: boolean, };
+dirty: boolean, 
+/**
+ * Branch's work is already represented on default (via merge, squash,
+ * rebase, etc.) — detected by tree equality from `git merge-tree`.
+ * Lets the sidebar drop squash-merged worktrees into "Inactive"
+ * instead of stranding them under "Changes" forever.
+ */
+merged: boolean, };

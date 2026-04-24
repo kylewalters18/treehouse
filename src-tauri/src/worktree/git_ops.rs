@@ -276,6 +276,46 @@ pub async fn rebase_onto(workdir: &Path, upstream: &str) -> AppResult<()> {
     }
 }
 
+/// `true` if merging `branch` into `base` produces a tree identical to
+/// `base`'s current tree — i.e. the branch's work is already represented on
+/// `base`, regardless of how it got there (merge, squash, rebase,
+/// cherry-pick). Complements the SHA-only `ahead_behind`, which can't see
+/// squash merges because they land as fresh commits with new SHAs.
+///
+/// Implementation: `git merge-tree --write-tree <base> <branch>` simulates
+/// the merge without touching the working tree and prints the merged tree's
+/// object id on stdout. We compare that to `<base>^{tree}`; if equal, the
+/// branch contributes nothing new. On merge conflict or any git error we
+/// return `false` (conservative — let the caller treat it as not-merged).
+pub async fn effectively_merged(
+    repo_root: &Path,
+    base: &str,
+    branch: &str,
+) -> AppResult<bool> {
+    // Short-circuit: if branch == base (fast-forwarded or same tip), tree
+    // equality holds trivially and we can skip the merge-tree computation.
+    if base == branch {
+        return Ok(true);
+    }
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(["merge-tree", "--write-tree", base, branch])
+        .output()
+        .await?;
+    if !out.status.success() {
+        // Non-zero = merge would conflict. Conflict means the branch has
+        // content the base lacks → not yet merged.
+        return Ok(false);
+    }
+    let merged_tree = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if merged_tree.is_empty() {
+        return Ok(false);
+    }
+    let base_tree = rev_parse(repo_root, &format!("{base}^{{tree}}")).await?;
+    Ok(merged_tree == base_tree)
+}
+
 /// `git merge --ff-only <branch>` — refuses to merge if a fast-forward isn't
 /// possible. Used by the merge-back "rebase + ff" strategy after the agent
 /// branch has been rebased onto the default branch.
@@ -652,6 +692,60 @@ mod tests {
 
         let base = resolve_default_base(&r.root, "main").await;
         assert_eq!(base, "origin/main", "origin is ahead of local → use origin");
+    }
+
+    #[tokio::test]
+    async fn effectively_merged_trivially_true_when_branch_at_base() {
+        let r = TempRepo::new();
+        // Fresh branch off main at the same commit — no unique work.
+        run_git(&r.root, &["checkout", "-q", "-b", "feature"]);
+        assert!(effectively_merged(&r.root, "main", "feature").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn effectively_merged_false_when_branch_has_unique_work() {
+        let r = TempRepo::new();
+        run_git(&r.root, &["checkout", "-q", "-b", "feature"]);
+        r.commit_file("new.txt", "hi\n", "feature");
+        assert!(!effectively_merged(&r.root, "main", "feature").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn effectively_merged_true_after_squash_merge() {
+        let r = TempRepo::new();
+        run_git(&r.root, &["checkout", "-q", "-b", "feature"]);
+        r.commit_file("a.txt", "a\n", "a");
+        r.commit_file("b.txt", "b\n", "b");
+        // Squash-merge feature into main — main gets ONE new commit whose
+        // tree matches feature's tree.
+        run_git(&r.root, &["checkout", "-q", "main"]);
+        merge_squash_and_commit(&r.root, "feature", "squashed").await.unwrap();
+        // Classic SHA-only ahead_behind still reports feature as 2 ahead of
+        // main because the squash commit has a different SHA. This check
+        // should see through that.
+        assert!(effectively_merged(&r.root, "main", "feature").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn effectively_merged_false_when_conflict_would_occur() {
+        let r = TempRepo::new();
+        run_git(&r.root, &["checkout", "-q", "-b", "feature"]);
+        r.commit_file("README.md", "feature\n", "feature edit");
+        run_git(&r.root, &["checkout", "-q", "main"]);
+        r.commit_file("README.md", "main\n", "main edit");
+        // Feature and main have divergent edits to the same file — a merge
+        // would conflict. merge-tree exits nonzero; we treat as not-merged.
+        assert!(!effectively_merged(&r.root, "main", "feature").await.unwrap());
+    }
+
+    fn run_git(root: &std::path::Path, args: &[&str]) {
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(args)
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {args:?} failed");
     }
 
     #[tokio::test]

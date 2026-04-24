@@ -39,8 +39,8 @@ test("worktree sidebar renders main clone + feature worktree", async ({
     list_worktrees: [main, feature],
     get_diff: emptyDiff(),
     list_agent_activity: [
-      { worktreeId: main.id, activity: "inactive", ahead: 0, behind: 0, dirty: false },
-      { worktreeId: feature.id, activity: "inactive", ahead: 0, behind: 0, dirty: false },
+      { worktreeId: main.id, activity: "inactive", ahead: 0, behind: 0, dirty: false, merged: false },
+      { worktreeId: feature.id, activity: "inactive", ahead: 0, behind: 0, dirty: false, merged: false },
     ],
   });
 

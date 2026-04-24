@@ -139,6 +139,10 @@ pub fn start(
                 ),
                 Err(e) => tracing::warn!(?e, "emit diff_updated failed"),
             }
+            // Same event batch likely moved ahead/behind/dirty too. Fire
+            // the git-status recompute so the next activity poll reflects
+            // the new state — no inline git subprocesses on the poll path.
+            crate::worktree::status::spawn_recompute(&app_for_events, worktree_id);
         },
     )
     .map_err(|e| AppError::Unknown(format!("watcher init: {e}")))?;
