@@ -138,8 +138,9 @@ export function readFile(
 export function listTree(
   worktreeId: WorktreeId,
   dir: string = "",
+  showIgnored: boolean = false,
 ): Promise<TreeEntry[]> {
-  return invoke<TreeEntry[]>("list_tree", { worktreeId, dir });
+  return invoke<TreeEntry[]>("list_tree", { worktreeId, dir, showIgnored });
 }
 
 // --- Terminals ---

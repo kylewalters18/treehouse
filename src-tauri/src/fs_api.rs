@@ -27,6 +27,12 @@ pub struct TreeEntry {
     /// Worktree-relative path, forward-slash-separated on all platforms.
     pub path: String,
     pub is_dir: bool,
+    /// True iff this entry is covered by `.gitignore` or the built-in ignore
+    /// list — only meaningful when `list_tree` was called with
+    /// `show_ignored = true`, since ignored entries are otherwise filtered
+    /// out. The tree renders these dimmer so the user can tell what they're
+    /// looking at.
+    pub ignored: bool,
 }
 
 /// Soft cap for in-memory file reads. Larger files are still returned but
@@ -90,9 +96,14 @@ pub async fn read_worktree_file(
 /// List one directory's direct children (used by the lazy-expanding file
 /// tree). Directories come first, then files; both sorted case-insensitively.
 /// `dir` is worktree-relative. "" means the worktree root.
+///
+/// When `show_ignored` is true, the `.gitignore` + built-in ignore filter is
+/// skipped entirely and entries that *would* have been filtered come back
+/// flagged `ignored = true` so the frontend can dim them.
 pub async fn list_tree(
     worktree_id: WorktreeId,
     dir: &str,
+    show_ignored: bool,
     state: &AppState,
 ) -> AppResult<Vec<TreeEntry>> {
     let wt = state
@@ -126,7 +137,8 @@ pub async fn list_tree(
             Ok(n) => n,
             Err(_) => continue, // non-UTF-8 filename
         };
-        if is_ignored(&gi, &root, &path, ft.is_dir()) {
+        let ignored = is_ignored(&gi, &root, &path, ft.is_dir());
+        if ignored && !show_ignored {
             continue;
         }
         let rel = path
@@ -138,6 +150,7 @@ pub async fn list_tree(
             name,
             path: rel,
             is_dir: ft.is_dir(),
+            ignored,
         });
     }
 

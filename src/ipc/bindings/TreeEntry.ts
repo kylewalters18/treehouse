@@ -4,4 +4,12 @@ export type TreeEntry = { name: string,
 /**
  * Worktree-relative path, forward-slash-separated on all platforms.
  */
-path: string, isDir: boolean, };
+path: string, isDir: boolean, 
+/**
+ * True iff this entry is covered by `.gitignore` or the built-in ignore
+ * list — only meaningful when `list_tree` was called with
+ * `show_ignored = true`, since ignored entries are otherwise filtered
+ * out. The tree renders these dimmer so the user can tell what they're
+ * looking at.
+ */
+ignored: boolean, };

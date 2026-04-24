@@ -11,6 +11,9 @@ type Props = {
   onSelect: (path: string) => void;
   /// Bump this to force a refresh of all currently-expanded directories.
   refreshToken: number;
+  /// When true, entries covered by `.gitignore` / the built-in ignore list
+  /// are included and rendered dimmed.
+  showIgnored: boolean;
 };
 
 export function FileTree({
@@ -19,6 +22,7 @@ export function FileTree({
   selectedPath,
   onSelect,
   refreshToken,
+  showIgnored,
 }: Props) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set([""]));
   const [children, setChildren] = useState<Map<string, TreeEntry[]>>(new Map());
@@ -29,7 +33,7 @@ export function FileTree({
   const loadDir = useCallback(
     async (dir: string) => {
       try {
-        const entries = await listTree(worktreeId, dir);
+        const entries = await listTree(worktreeId, dir, showIgnored);
         setChildren((prev) => {
           const next = new Map(prev);
           next.set(dir, entries);
@@ -42,7 +46,7 @@ export function FileTree({
         setError(msg);
       }
     },
-    [worktreeId],
+    [worktreeId, showIgnored],
   );
 
   // Initial load of root.
@@ -53,15 +57,21 @@ export function FileTree({
     void loadDir("");
   }, [worktreeId, loadDir]);
 
-  // When fs changes (signaled by parent via refreshToken), re-fetch every
-  // already-expanded directory so the tree stays current with the agent's
-  // work (new files appear, deleted ones disappear).
+  // When fs changes (signaled by parent via refreshToken) OR the
+  // show-ignored toggle flips, re-fetch every already-expanded directory
+  // so the tree stays current.
   useEffect(() => {
     if (refreshToken === 0) return;
     for (const dir of expandedRef.current) {
       void loadDir(dir);
     }
   }, [refreshToken, loadDir]);
+  useEffect(() => {
+    for (const dir of expandedRef.current) {
+      void loadDir(dir);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showIgnored]);
 
   function toggle(dir: string) {
     setExpanded((prev) => {
@@ -143,7 +153,7 @@ function TreeNode({
           isSelected && "bg-neutral-900 text-neutral-100",
         )}
         style={{ paddingLeft: `${8 + depth * 12}px` }}
-        title={entry.path}
+        title={entry.ignored ? `${entry.path} (ignored)` : entry.path}
       >
         <span className="w-3 shrink-0 text-center text-neutral-600">
           {entry.isDir ? (isExpanded ? "▾" : "▸") : ""}
@@ -153,6 +163,7 @@ function TreeNode({
             "truncate font-mono",
             entry.isDir ? "text-neutral-300" : "text-neutral-400",
             badge && !entry.isDir && "text-neutral-100",
+            entry.ignored && "italic text-neutral-600",
           )}
         >
           {entry.name}

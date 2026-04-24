@@ -416,9 +416,10 @@ pub async fn read_file(
 pub async fn list_tree(
     worktree_id: WorktreeId,
     dir: String,
+    show_ignored: Option<bool>,
     state: State<'_, AppState>,
 ) -> AppResult<Vec<TreeEntry>> {
-    fs_api::list_tree(worktree_id, &dir, &state).await
+    fs_api::list_tree(worktree_id, &dir, show_ignored.unwrap_or(false), &state).await
 }
 
 #[tauri::command]

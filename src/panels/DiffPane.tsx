@@ -39,6 +39,7 @@ function DiffView({ worktreeId }: { worktreeId: WorktreeId }) {
   const selectFile = useDiffsStore((s) => s.selectFile);
   const setView = useDiffsStore((s) => s.setView);
   const [treeRefresh, setTreeRefresh] = useState(0);
+  const [showIgnored, setShowIgnored] = useState(false);
 
   useEffect(() => {
     fetchDiff(worktreeId);
@@ -133,8 +134,24 @@ function DiffView({ worktreeId }: { worktreeId: WorktreeId }) {
             </ul>
           )}
         </div>
-        <div className="flex shrink-0 items-center border-b border-neutral-900 px-3 py-2 text-[11px] uppercase tracking-wider text-neutral-500">
-          Files
+        <div className="flex shrink-0 items-center justify-between gap-2 border-b border-neutral-900 px-3 py-2 text-[11px] uppercase tracking-wider text-neutral-500">
+          <span>Files</span>
+          <button
+            onClick={() => setShowIgnored((v) => !v)}
+            title={
+              showIgnored
+                ? "Hide gitignored files"
+                : "Show gitignored files (dimmed)"
+            }
+            className={cn(
+              "rounded px-1 font-mono text-[10px] normal-case tracking-normal transition",
+              showIgnored
+                ? "bg-neutral-800 text-neutral-200"
+                : "text-neutral-600 hover:bg-neutral-900 hover:text-neutral-300",
+            )}
+          >
+            {showIgnored ? "◉ ignored" : "○ ignored"}
+          </button>
         </div>
         <div className="flex-1 overflow-y-auto">
           <FileTree
@@ -143,6 +160,7 @@ function DiffView({ worktreeId }: { worktreeId: WorktreeId }) {
             selectedPath={selectedFile}
             onSelect={(path) => selectFile(worktreeId, path)}
             refreshToken={treeRefresh}
+            showIgnored={showIgnored}
           />
         </div>
       </aside>
