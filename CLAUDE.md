@@ -1,6 +1,6 @@
 # treehouse
 
-Desktop IDE centered on **parallel AI-agent development in git worktrees**. The unit of work is a worktree; agents (Claude Code by default) run as long-lived subprocesses inside each worktree, and the primary review surface is a live-updating diff of that worktree against a base ref. An embedded `xterm.js` terminal sits alongside, and merge-back into the main repo is one click.
+Desktop IDE centered on **parallel AI-agent development in git worktrees**. The unit of work is a worktree; agents (Claude Code / Codex / Kiro) run as long-lived subprocesses inside each worktree, and the primary review surface is a live-updating diff of that worktree against a base ref. Multiple agents and `xterm.js` terminals per worktree are tabbed; opt-in LSPs wire into Monaco for hover/goto/completions; inline review comments queue up and batch-send to the active agent; merge-back (merge / squash / rebase) is one click.
 
 Greenfield, built macOS-first. Tauri v2 (Rust backend) + React 19 + Vite.
 
@@ -37,31 +37,43 @@ Global `tauri::Emitter` events (`app.emit(...)`) are used sparingly for fan-out 
 src-tauri/src/
   main.rs, lib.rs         # Tauri builder, command/channel registration, shutdown hook
   state.rs                # AppState: DashMap registries + async merge lock
+  storage.rs              # Persisted JSON under ~/Library/Application Support/com.treehouse.app/
+                          #   recent workspaces, comments, settings (LSP toggles, merge strategy)
+  fs_api.rs               # File tree + read-file commands (ignore-aware)
+  test_support.rs         # Shared fixtures (repo scaffolding, etc.) for #[cfg(test)]
   ipc/
     commands.rs           # All #[tauri::command] fns — thin wrappers over modules
     events.rs             # Typed event name helpers
     mod.rs
   workspace/              # Workspace type, repo discovery, default branch detection
-  worktree/               # Worktree type, git_ops (shell-out), manager (CRUD + merge)
-  agent/                  # AgentSession, supervisor (PTY-based, one agent per worktree)
-  pty/                    # TerminalSession, manager (portable-pty for user shells)
+  worktree/               # Worktree type, git_ops (shell-out), manager (CRUD + merge + sync)
+  agent/                  # AgentSession, supervisor (PTY-based; tabbed — many sessions per worktree),
+                          #   hooks.rs wires Claude Code status hooks → WorktreeActivity
+  pty/                    # TerminalSession, manager (portable-pty; tabbed — many per worktree)
+  lsp/                    # Per-worktree language servers, stdio transport, root detection,
+                          #   registry + supervisor; opt-in via settings, Monaco-facing events
   diff/                   # DiffSet types + compute (git2 diff_tree_to_workdir)
   fs_watch/               # Per-worktree debounced notify watcher → triggers diff recompute
   util/
-    ids.rs                # ULID-backed typed ID newtypes (WorktreeId, AgentSessionId, ...)
+    ids.rs                # ULID-backed typed ID newtypes (WorktreeId, AgentSessionId, LspServerId, ...)
     errors.rs             # AppError → serde { kind, message }
 
 src/
   main.tsx, App.tsx
   routes/                 Home.tsx, Workspace.tsx
-  panels/                 WorktreeSidebar, DiffPane, TerminalPane, AgentPane
-  stores/                 workspace, worktrees, diffs, ui, toasts (Zustand)
+  panels/                 WorktreeSidebar, DiffPane, TerminalPane, AgentPane,
+                          EditorPane, FileTree, MarkdownPreview
+  stores/                 workspace, worktrees, diffs, ui, toasts, comments, lsp, settings (Zustand)
+  lsp/                    # Browser-side LSP client: session, manager, transport, Monaco converters
   ipc/
     client.ts             # Typed invoke()/listen()/Channel wrappers
     types.ts              # Re-exports from ./bindings/
     bindings/             # ts-rs OUTPUT — commit these; regen with `npm run gen-types`
-  components/             Toaster
-  lib/cn.ts               # clsx + tailwind-merge
+  components/             Toaster, SendQueueButton, SettingsMenu
+  lib/                    cn.ts (clsx + tailwind-merge), errors.ts, agent.ts
+  test/                   setup.ts, e2e-bootstrap.ts (stubs Tauri IPC for Playwright)
+
+e2e/                      Playwright specs (smoke, workspace) against a Tauri-IPC stub
 ```
 
 ## Running
@@ -76,9 +88,12 @@ On first run the Rust side compiles ~450 crates — give it a few minutes. Subse
 ```sh
 npm run gen-types         # after changing any Rust #[derive(TS)] type
 npx tsc -b                # TypeScript project-reference build (use this, not `tsc --noEmit`)
+cd src-tauri && cargo test --quiet   # 73 Rust tests (git ops, reconcile, diff, LSP roots)
+npm test                  # 59 Vitest tests (Zustand stores + pure utils)
+npx playwright test       # Playwright e2e against the Tauri-IPC stub
 ```
 
-The tauri-dev log is the place to look for runtime signals. Default log level is `treehouse_lib=debug`. Tracing messages like `watching worktree`, `launched agent`, `emitted diff_updated` are informative breadcrumbs for troubleshooting.
+The tauri-dev log is the place to look for runtime signals. Default log level is `treehouse_lib=debug`. Tracing messages like `watching worktree`, `launched agent`, `emitted diff_updated`, `lsp server ready` are informative breadcrumbs for troubleshooting.
 
 ## Conventions and gotchas
 
@@ -87,26 +102,30 @@ The tauri-dev log is the place to look for runtime signals. Default log level is
 - **`Channel<T>` generic types.** When you send `Vec<u8>`, Tauri serializes it as a JSON number array. Fine for low-volume; consider base64 if a hotspot. PTY and agent streams both do this — see `PtyEvent` / `AgentEvent`.
 - **`git2::diff_tree_to_workdir_with_index` does not honor `include_untracked`.** Use `diff_tree_to_workdir` for agent flows where files are created but not `git add`ed. This was a live-diff debugging dead-end — see `diff::compute::compute`.
 - **Never auto-commit.** Merge-back detects `commits_ahead == 0` and returns `NothingToMerge { uncommittedChanges }`, surfacing state to the user. Do not silently `git add -A && git commit` on the user's behalf.
-- **Agent reattach across pane unmount is lossy.** When the user selects a different worktree, the current Channel is torn down. We check `get_agent_for_worktree` on remount and warn "running but this window lost its live stream; kill and relaunch to view output." A Rust-side ring buffer + attach command would fix this (see post-MVP ideas below).
-- **Graceful shutdown hook.** `on_window_event(CloseRequested)` calls `agents.kill_all()` + `terminals.kill_all()`. New long-lived subprocess registries should plug in here to avoid orphans.
+- **Agent reattach uses a ring buffer.** Supervisor keeps a bounded byte buffer per session; on pane remount the `attach_agent` command replays the buffer into a fresh Channel before live output resumes. Don't bypass this by wiring new UI directly to `launch_agent` — go through the attach path or reconnects will silently drop output.
+- **Graceful shutdown hook.** `on_window_event(CloseRequested)` calls `agents.kill_all()` + `terminals.kill_all()` + `lsp.kill_all()`. New long-lived subprocess registries should plug in here to avoid orphans.
 - **Startup reconciliation.** `open_workspace` runs `worktree::reconcile`: `git worktree prune`, then any path under `<repo>__worktrees/` in `git worktree list --porcelain` that we don't know about gets adopted into state with a fresh `WorktreeId`. IDs are not stable across app restarts — frontend should not persist them.
+- **LSP is opt-in, per language, per worktree.** Settings toggles a language on; on first file open in an enabled language the supervisor spawns the configured binary (`rust-analyzer`, `pyright-langserver`, …) rooted at the nearest project marker (`Cargo.toml`, `package.json`, …). Custom servers are appended to `~/Library/Application Support/com.treehouse.app/languages.toml` — don't hardcode them.
+- **Playwright e2e stubs Tauri IPC.** Specs run against the Vite dev server with `src/test/e2e-bootstrap.ts` shimming `window.__TAURI_INTERNALS__`; they don't exercise real Rust. Treat them as UI regression, not integration.
 
 ## Scope — what's in vs. what's not
 
 **In v0 MVP:**
-- Open repo, multiple worktrees, per-worktree agent (Claude Code / Codex / Kiro), live diff, embedded terminal, merge-back, error toasts, graceful shutdown.
-- Typed ID newtypes (`WorktreeId`, `AgentSessionId`, `TerminalId`, `WorkspaceId`) all ULID-backed.
+- Open repo, multiple worktrees, multiple tabbed agents per worktree (Claude Code / Codex / Kiro), live diff, tabbed terminals per worktree, merge-back with three strategies (merge / squash / rebase), sync-down (merge or rebase), ring-buffer agent reattach, error toasts, graceful shutdown.
+- Inline review comments: gutter `+`, queued, batch-sent to the active agent as one prompt.
+- Opt-in LSPs (Rust / TS / Python / Go / C-C++ / Ruby / Lua + `languages.toml` extensions) — hover, completions, signature help, diagnostics, cmd-click goto (same-file + cross-file within the worktree).
+- Monaco editor with Markdown preview tab, live refresh when agents write the open file.
+- Typed ID newtypes (`WorktreeId`, `AgentSessionId`, `TerminalId`, `WorkspaceId`, `LspServerId`) all ULID-backed.
+- Persisted state under `~/Library/Application Support/com.treehouse.app/` (recent workspaces, comments, settings).
 - macOS only.
 
 **Deferred (post-MVP):**
-- Hunk-level accept/reject (diff viewer is read-only)
-- Multiple terminals per worktree (one per worktree in v0)
 - Editor write-back (Monaco is mounted read-only)
 - Codex / Kiro backends ship but haven't been road-tested like Claude Code
-- Agent reattach via ring buffer
 - Linux / Windows
 - Sandboxing (macOS `sandbox-exec`)
-- Settings persistence beyond gitignored `~/.config/treehouse/`
 - Cross-worktree search / command palette
+- LSP: indexing-progress surfacing, semantic tokens, inlay hints, `workspace/configuration`, goto into external stdlib paths
+- Notifications when agents need attention
 
 See `/Users/kylewalters/.claude/plans/i-want-to-make-delightful-mccarthy.md` for the full design doc this codebase is built against.

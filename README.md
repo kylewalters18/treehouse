@@ -14,7 +14,8 @@ Conventional IDEs treat AI agents as a side panel bolted onto a traditional edit
 - **Diff pane** with a Changes list (just what moved) and a Files tree (whole worktree), file-level A/M/D badges, click-through to a syntax-highlighted Monaco viewer
 - **Live diff updates** — file-watcher feeds a debounced git2 diff recompute; agent output lights the pane up within ~300ms
 - **Tabbed terminals and agents** per worktree. Multiple shells and multiple agent sessions (Claude + Codex side-by-side, two Claudes, whatever). Agents survive worktree switches via a ring-buffer reattach
-- **Inline review comments**. Click the `+` in the gutter to anchor a comment to a line, queue several, and send them to the active agent as a single prompt
+- **Inline review comments**. Click the `+` in the gutter to anchor a comment to a line, queue several, and send them to the active agent as a single prompt. The queue dropdown lets you jump back to a commented line, unqueue, or preview the batched prompt before send
+- **Markdown preview**. Open any `.md` file in the editor and flip to the Preview tab for GFM-rendered output; the preview live-refreshes as the agent rewrites the file
 - **Opt-in language servers (LSP)**. Toggle Rust, TypeScript/JS, Python, Go, C/C++, Ruby, or Lua in Settings → Languages. Each enabled language spawns a per-worktree stdio server (`rust-analyzer`, `pyright-langserver`, `typescript-language-server`, `gopls`, `clangd`, …) wired into Monaco for hover docs, ⌘-click goto-definition (including cross-file jumps within the worktree), completions, signature help, and diagnostic squigglies. Custom servers plug in by appending to `~/Library/Application Support/com.treehouse.app/languages.toml`
 - **Merge-back dialog** with three strategies: merge commit, squash + commit, or rebase + ff. Defaults persist; per-action override via the ▾
 - **Sync ↓** pulls the default branch into a worktree via merge or rebase (configurable). Auto-aborts rebase on conflict
@@ -57,9 +58,9 @@ For deeper detail — module layout, IPC conventions, gotchas — see [`CLAUDE.m
 v0 MVP is shipped; it's useful for one person on one machine. Meaningful gaps:
 
 - **Platform**: macOS only. Linux/Windows untested.
-- **Tests**: 73 Rust (`cargo test`) covering git operations, worktree reconciliation, diff compute, LSP root-marker resolution; 59 frontend (`npm test`, Vitest) covering the Zustand stores and pure utilities. No integration / E2E coverage yet.
+- **Tests**: 73 Rust (`cargo test`) covering git operations, worktree reconciliation, diff compute, LSP root-marker resolution; 59 frontend (`npm test`, Vitest) covering the Zustand stores and pure utilities; a Playwright smoke suite (`npx playwright test`) driving the UI against a stubbed Tauri-IPC layer. No full integration coverage against the real Rust backend yet.
 - **Packaging**: no `.dmg` yet; run via `npm run tauri dev`.
-- **Not implemented**: hunk-level accept/reject, cross-worktree search, command palette, editor write-back, notifications when agents need attention, settings UI beyond the gear menu.
+- **Not implemented**: cross-worktree search, command palette, editor write-back, notifications when agents need attention, settings UI beyond the gear menu.
 - **LSP gaps**: no indexing-progress indicator (rust-analyzer/pyright can feel silent for 10–60s on first open), no semantic tokens / inlay hints / code-action lightbulb, no `workspace/configuration` response (servers run with defaults), no goto into external stdlib paths (same-file + in-worktree jumps only).
 
 ## Conventions worth knowing
