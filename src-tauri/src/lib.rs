@@ -24,6 +24,8 @@ pub fn run() {
         )
         .init();
 
+    import_shell_path();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState::new())
@@ -85,4 +87,42 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running treehouse");
+}
+
+/// Mac `.app` bundles launched from Finder / launchd inherit a minimal PATH
+/// (`/usr/bin:/bin:/usr/sbin:/sbin`) — `.zshrc` / `.zprofile` never run, so
+/// user-managed dirs like `~/.local/bin`, `/opt/homebrew/bin`, or
+/// language-manager shims are missing. Subprocess spawns (agents, LSP
+/// servers) then fail to find binaries the user can invoke fine from a
+/// terminal.
+///
+/// Remedy: shell out once to the user's login shell with an interactive +
+/// login flag so the full init chain runs, capture `$PATH`, then export it
+/// into our own env. All subsequent `CommandBuilder` spawns inherit it.
+///
+/// Best-effort: on any failure (non-zero exit, empty output, timeout-ish)
+/// we leave the existing PATH alone. Keeps ~/.zshrc stderr out of our log.
+fn import_shell_path() {
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
+    let output = match std::process::Command::new(&shell)
+        .args(["-ilc", "printf %s \"$PATH\""])
+        .stderr(std::process::Stdio::null())
+        .output()
+    {
+        Ok(o) => o,
+        Err(e) => {
+            tracing::debug!(?e, %shell, "shell PATH import: spawn failed");
+            return;
+        }
+    };
+    if !output.status.success() {
+        tracing::debug!(status = ?output.status, "shell PATH import: nonzero exit");
+        return;
+    }
+    let captured = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if captured.is_empty() {
+        return;
+    }
+    tracing::info!(path = %captured, "imported PATH from login shell");
+    std::env::set_var("PATH", captured);
 }

@@ -107,6 +107,7 @@ The tauri-dev log is the place to look for runtime signals. Default log level is
 - **Startup reconciliation.** `open_workspace` runs `worktree::reconcile`: `git worktree prune`, then any path under `<repo>__worktrees/` in `git worktree list --porcelain` that we don't know about gets adopted into state with a fresh `WorktreeId`. IDs are not stable across app restarts — frontend should not persist them.
 - **LSP is opt-in, per language, per worktree.** Settings toggles a language on; on first file open in an enabled language the supervisor spawns the configured binary (`rust-analyzer`, `pyright-langserver`, …) rooted at the nearest project marker (`Cargo.toml`, `package.json`, …). Custom servers are appended to `~/Library/Application Support/com.treehouse.app/languages.toml` — don't hardcode them.
 - **Playwright e2e stubs Tauri IPC.** Specs run against the Vite dev server with `src/test/e2e-bootstrap.ts` shimming `window.__TAURI_INTERNALS__`; they don't exercise real Rust. Treat them as UI regression, not integration.
+- **Shell PATH is imported at startup.** macOS `.app` bundles launched from Finder/launchd inherit a minimal `/usr/bin:/bin:…` PATH — `.zshrc` never runs, so brew / `~/.local/bin` / language-manager shims are invisible. `lib.rs::import_shell_path` shells out to `$SHELL -ilc 'printf %s "$PATH"'` at boot and exports the captured PATH before the Tauri builder starts. All downstream `CommandBuilder` spawns (agents, LSP, terminals) inherit it. Best-effort: on failure we leave PATH alone, never fatal.
 
 ## Scope — what's in vs. what's not
 
