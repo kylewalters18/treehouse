@@ -387,6 +387,23 @@ pub async fn close_terminal(
 }
 
 #[tauri::command]
+pub async fn attach_terminal(
+    terminal_id: TerminalId,
+    channel: Channel<PtyEvent>,
+    state: State<'_, AppState>,
+) -> AppResult<TerminalSession> {
+    pty::manager::attach(&state.terminals, terminal_id, channel)
+}
+
+#[tauri::command]
+pub async fn list_terminals_for_worktree(
+    worktree_id: WorktreeId,
+    state: State<'_, AppState>,
+) -> AppResult<Vec<TerminalSession>> {
+    Ok(pty::manager::list_for_worktree(&state.terminals, worktree_id))
+}
+
+#[tauri::command]
 pub async fn read_file(
     worktree_id: WorktreeId,
     path: String,

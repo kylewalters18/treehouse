@@ -6,12 +6,14 @@ import "xterm/css/xterm.css";
 
 import { useUiStore } from "@/stores/ui";
 import {
+  attachTerminal,
   closeTerminal,
+  listTerminalsForWorktree,
   openTerminal,
   ptyResize,
   ptyWrite,
 } from "@/ipc/client";
-import type { TerminalId, WorktreeId } from "@/ipc/types";
+import type { PtyEvent, TerminalId, WorktreeId } from "@/ipc/types";
 import { cn } from "@/lib/cn";
 
 export function TerminalPane() {
@@ -26,28 +28,83 @@ export function TerminalPane() {
   return <TerminalTabs key={worktreeId} worktreeId={worktreeId} />;
 }
 
-type Tab = { localId: string; label: string };
+type Mode =
+  | { kind: "open" }
+  | { kind: "attach"; terminalId: TerminalId };
+
+type Tab = {
+  localId: string;
+  label: string;
+  mode: Mode;
+};
 
 function TerminalTabs({ worktreeId }: { worktreeId: WorktreeId }) {
-  const [tabs, setTabs] = useState<Tab[]>(() => [
-    { localId: crypto.randomUUID(), label: "zsh 1" },
-  ]);
-  const [activeId, setActiveId] = useState<string | null>(
-    () => tabs[0]?.localId ?? null,
-  );
-  const counter = useRef(1);
+  const [tabs, setTabs] = useState<Tab[]>([]);
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const [initLoading, setInitLoading] = useState(true);
+  const counter = useRef(0);
+  const terminalIds = useRef<Map<string, TerminalId>>(new Map());
+
+  // On worktree switch: adopt any existing terminals as attach-mode tabs so
+  // navigating back doesn't kill or lose them. If there are none, seed a
+  // fresh one so the pane isn't empty on first visit.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const existing = await listTerminalsForWorktree(worktreeId);
+        if (cancelled) return;
+        if (existing.length > 0) {
+          const adopted: Tab[] = existing.map((s) => {
+            counter.current += 1;
+            const localId = crypto.randomUUID();
+            terminalIds.current.set(localId, s.id);
+            return {
+              localId,
+              label: `zsh ${counter.current}`,
+              mode: { kind: "attach", terminalId: s.id },
+            };
+          });
+          setTabs(adopted);
+          setActiveId(adopted[adopted.length - 1].localId);
+        } else {
+          counter.current = 1;
+          const fresh: Tab = {
+            localId: crypto.randomUUID(),
+            label: "zsh 1",
+            mode: { kind: "open" },
+          };
+          setTabs([fresh]);
+          setActiveId(fresh.localId);
+        }
+      } catch {
+        // ignore
+      } finally {
+        if (!cancelled) setInitLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [worktreeId]);
 
   function addTab() {
     counter.current += 1;
     const next: Tab = {
       localId: crypto.randomUUID(),
       label: `zsh ${counter.current}`,
+      mode: { kind: "open" },
     };
     setTabs((prev) => [...prev, next]);
     setActiveId(next.localId);
   }
 
-  function closeTab(localId: string) {
+  async function closeTab(localId: string) {
+    const tid = terminalIds.current.get(localId);
+    if (tid) {
+      await closeTerminal(tid).catch(() => {});
+    }
+    terminalIds.current.delete(localId);
     setTabs((prev) => {
       const next = prev.filter((t) => t.localId !== localId);
       setActiveId((cur) => {
@@ -64,13 +121,15 @@ function TerminalTabs({ worktreeId }: { worktreeId: WorktreeId }) {
         tabs={tabs}
         activeId={activeId}
         onSelect={setActiveId}
-        onClose={closeTab}
+        onClose={(id) => void closeTab(id)}
         onNew={addTab}
       />
       <div className="relative flex-1">
         {tabs.length === 0 && (
           <div className="absolute inset-0 flex items-center justify-center text-xs text-neutral-600">
-            No terminals. Click + to open one.
+            {initLoading
+              ? "Checking for running terminals…"
+              : "No terminals. Click + to open one."}
           </div>
         )}
         {tabs.map((tab) => (
@@ -86,7 +145,11 @@ function TerminalTabs({ worktreeId }: { worktreeId: WorktreeId }) {
           >
             <TerminalInstance
               worktreeId={worktreeId}
+              mode={tab.mode}
               visible={tab.localId === activeId}
+              onSession={(id) => {
+                terminalIds.current.set(tab.localId, id);
+              }}
             />
           </div>
         ))}
@@ -147,10 +210,14 @@ function TabBar({
 
 function TerminalInstance({
   worktreeId,
+  mode,
   visible,
+  onSession,
 }: {
   worktreeId: WorktreeId;
+  mode: Mode;
   visible: boolean;
+  onSession: (id: TerminalId) => void;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -186,30 +253,28 @@ function TerminalInstance({
     term.open(host);
     fit.fit();
 
+    const onEvent = (ev: PtyEvent) => {
+      if (disposed) return;
+      if (ev.kind === "data") {
+        term.write(new Uint8Array(ev.bytes));
+      } else if (ev.kind === "exit") {
+        term.write(
+          `\r\n\x1b[38;2;115;115;115m[process exited${
+            ev.code !== null ? ` — code ${ev.code}` : ""
+          }]\x1b[0m\r\n`,
+        );
+      }
+    };
+
     (async () => {
       try {
-        const session = await openTerminal(
-          worktreeId,
-          term.cols,
-          term.rows,
-          (ev) => {
-            if (disposed) return;
-            if (ev.kind === "data") {
-              term.write(new Uint8Array(ev.bytes));
-            } else if (ev.kind === "exit") {
-              term.write(
-                `\r\n\x1b[38;2;115;115;115m[process exited${
-                  ev.code !== null ? ` — code ${ev.code}` : ""
-                }]\x1b[0m\r\n`,
-              );
-            }
-          },
-        );
-        if (disposed) {
-          await closeTerminal(session.id);
-          return;
-        }
+        const session =
+          mode.kind === "open"
+            ? await openTerminal(worktreeId, term.cols, term.rows, onEvent)
+            : await attachTerminal(mode.terminalId, onEvent);
+        if (disposed) return;
         idRef.current = session.id;
+        onSession(session.id);
 
         term.onData((data) => {
           if (idRef.current) {
@@ -235,14 +300,13 @@ function TerminalInstance({
     return () => {
       disposed = true;
       resizeObserver?.disconnect();
-      const id = idRef.current;
-      if (id) {
-        closeTerminal(id).catch(() => {});
-      }
       term.dispose();
       termRef.current = null;
       fitRef.current = null;
       idRef.current = null;
+      // NOTE: we do NOT close the terminal on unmount. Worktree switches
+      // should keep shells running; only explicit tab-close kills, via
+      // closeTab → closeTerminal in the parent.
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [worktreeId]);

@@ -60,6 +60,8 @@ pub fn run() {
             ipc::commands::pty_write,
             ipc::commands::pty_resize,
             ipc::commands::close_terminal,
+            ipc::commands::attach_terminal,
+            ipc::commands::list_terminals_for_worktree,
             ipc::commands::launch_agent,
             ipc::commands::agent_write,
             ipc::commands::agent_resize,

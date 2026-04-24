@@ -181,6 +181,23 @@ export function closeTerminal(terminalId: TerminalId): Promise<void> {
   return invoke<void>("close_terminal", { terminalId });
 }
 
+export function attachTerminal(
+  terminalId: TerminalId,
+  onEvent: (ev: PtyEvent) => void,
+): Promise<TerminalSession> {
+  const channel = new Channel<PtyEvent>();
+  channel.onmessage = onEvent;
+  return invoke<TerminalSession>("attach_terminal", { terminalId, channel });
+}
+
+export function listTerminalsForWorktree(
+  worktreeId: WorktreeId,
+): Promise<TerminalSession[]> {
+  return invoke<TerminalSession[]>("list_terminals_for_worktree", {
+    worktreeId,
+  });
+}
+
 // --- Agents ---
 
 export function launchAgent(
