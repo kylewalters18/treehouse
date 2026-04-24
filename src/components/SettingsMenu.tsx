@@ -1,7 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { useSettingsStore } from "@/stores/settings";
 import { useLspStore } from "@/stores/lsp";
-import type { LspConfig, MergeBackStrategy, SyncStrategy } from "@/ipc/types";
+import type {
+  AgentBackendKind,
+  LspConfig,
+  MergeBackStrategy,
+  SyncStrategy,
+} from "@/ipc/types";
 import { cn } from "@/lib/cn";
 
 const SYNC_OPTIONS: { value: SyncStrategy; label: string; sub: string }[] = [
@@ -15,6 +20,12 @@ const MERGE_OPTIONS: { value: MergeBackStrategy; label: string; sub: string }[] 
   { value: "squash", label: "Squash + commit", sub: "git merge --squash + your message" },
 ];
 
+const AGENT_OPTIONS: { value: AgentBackendKind; label: string; sub: string }[] = [
+  { value: "claudeCode", label: "Claude Code", sub: "claude" },
+  { value: "codex", label: "Codex", sub: "codex" },
+  { value: "kiro", label: "Kiro", sub: "kiro-cli" },
+];
+
 export function SettingsMenu() {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -22,6 +33,7 @@ export function SettingsMenu() {
   const setSync = useSettingsStore((s) => s.setSyncStrategy);
   const setMerge = useSettingsStore((s) => s.setMergeBackStrategy);
   const setInitSubmodules = useSettingsStore((s) => s.setInitSubmodules);
+  const setDefaultAgent = useSettingsStore((s) => s.setDefaultAgentBackend);
 
   useEffect(() => {
     if (!open) return;
@@ -67,6 +79,14 @@ export function SettingsMenu() {
               options={MERGE_OPTIONS}
               value={settings.mergeBackStrategy}
               onChange={(v) => void setMerge(v)}
+            />
+          </div>
+          <div className="mt-3 border-t border-neutral-800 pt-3">
+            <Section
+              label="Default agent"
+              options={AGENT_OPTIONS}
+              value={settings.defaultAgentBackend}
+              onChange={(v) => void setDefaultAgent(v)}
             />
           </div>
           <div className="mt-3 border-t border-neutral-800 pt-3">

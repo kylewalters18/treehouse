@@ -3,6 +3,7 @@ import { Terminal } from "xterm";
 import { FitAddon } from "xterm-addon-fit";
 import "xterm/css/xterm.css";
 
+import { useSettingsStore } from "@/stores/settings";
 import { useUiStore } from "@/stores/ui";
 import { useWorktreesStore } from "@/stores/worktrees";
 import {
@@ -64,7 +65,18 @@ type Mode =
 function AgentTabs({ worktreeId }: { worktreeId: WorktreeId }) {
   const [tabs, setTabs] = useState<Tab[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
-  const [backend, setBackend] = useState<AgentBackendKind>("claudeCode");
+  const defaultBackend = useSettingsStore((s) => s.settings.defaultAgentBackend);
+  const [backend, setBackend] = useState<AgentBackendKind>(defaultBackend);
+  // If settings load after this component mounted, and the user hasn't
+  // touched the dropdown yet, pick up the persisted default. Guarded by a
+  // ref so we only do this once per mount — subsequent Settings edits
+  // shouldn't stomp an active in-flight selection.
+  const pickedUpDefault = useRef(false);
+  useEffect(() => {
+    if (pickedUpDefault.current) return;
+    pickedUpDefault.current = true;
+    setBackend(defaultBackend);
+  }, [defaultBackend]);
   const [initLoading, setInitLoading] = useState(true);
   const sessionIds = useRef<Map<string, AgentSessionId>>(new Map());
   const setActiveAgent = useUiStore((s) => s.setActiveAgent);

@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 use ts_rs::TS;
 
+use crate::agent::AgentBackendKind;
 use crate::util::errors::{AppError, AppResult};
 use crate::worktree::{MergeBackStrategy, SyncStrategy};
 
@@ -118,6 +119,10 @@ pub struct Settings {
     /// new worktree after creation. Off by default — most repos don't have
     /// submodules and the extra git invocation just slows create down.
     pub init_submodules: bool,
+    /// Which agent backend is preselected in the AgentPane's + New launcher.
+    /// Persisted so users who always reach for the same agent don't have
+    /// to reselect it on every new session.
+    pub default_agent_backend: AgentBackendKind,
 }
 
 impl Default for Settings {
@@ -126,6 +131,7 @@ impl Default for Settings {
             sync_strategy: SyncStrategy::default(),
             merge_back_strategy: MergeBackStrategy::default(),
             init_submodules: false,
+            default_agent_backend: AgentBackendKind::ClaudeCode,
         }
     }
 }

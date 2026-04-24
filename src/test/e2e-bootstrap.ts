@@ -30,6 +30,7 @@ export function installE2EMocks(): void {
       syncStrategy: "rebase",
       mergeBackStrategy: "rebaseFf",
       initSubmodules: false,
+      defaultAgentBackend: "claudeCode",
     }),
     list_comments: async () => [],
     lsp_list_configs: async () => [],

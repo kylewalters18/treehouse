@@ -11,6 +11,7 @@ function freshState() {
       syncStrategy: "rebase",
       mergeBackStrategy: "rebaseFf",
       initSubmodules: false,
+      defaultAgentBackend: "claudeCode",
     },
     loaded: false,
   });
@@ -27,6 +28,7 @@ describe("settings store", () => {
       syncStrategy: "merge",
       mergeBackStrategy: "squash",
       initSubmodules: true,
+      defaultAgentBackend: "kiro",
     });
     await useSettingsStore.getState().load();
     const s = useSettingsStore.getState();
@@ -49,6 +51,7 @@ describe("settings store", () => {
       syncStrategy: "merge",
       mergeBackStrategy: "rebaseFf",
       initSubmodules: false,
+      defaultAgentBackend: "claudeCode",
     });
     await useSettingsStore.getState().setSyncStrategy("merge");
     expect(useSettingsStore.getState().settings.syncStrategy).toBe("merge");
@@ -62,11 +65,26 @@ describe("settings store", () => {
       syncStrategy: "rebase",
       mergeBackStrategy: "rebaseFf",
       initSubmodules: true,
+      defaultAgentBackend: "claudeCode",
     });
     await useSettingsStore.getState().setInitSubmodules(true);
     expect(useSettingsStore.getState().settings.initSubmodules).toBe(true);
     expect(ipcMocked.updateSettings).toHaveBeenCalledWith(
       expect.objectContaining({ initSubmodules: true }),
+    );
+  });
+
+  it("setDefaultAgentBackend updates state and writes to backend", async () => {
+    ipcMocked.updateSettings.mockResolvedValueOnce({
+      syncStrategy: "rebase",
+      mergeBackStrategy: "rebaseFf",
+      initSubmodules: false,
+      defaultAgentBackend: "kiro",
+    });
+    await useSettingsStore.getState().setDefaultAgentBackend("kiro");
+    expect(useSettingsStore.getState().settings.defaultAgentBackend).toBe("kiro");
+    expect(ipcMocked.updateSettings).toHaveBeenCalledWith(
+      expect.objectContaining({ defaultAgentBackend: "kiro" }),
     );
   });
 });
