@@ -40,6 +40,66 @@ struct AgentShared {
     last_newline: Instant,
     /// Last time the reader saw any byte at all (including spinner rewrites).
     last_any_output: Instant,
+    /// Last time an **attention** pattern (e.g. `[y/N]`, Kiro's "requires
+    /// approval" menu, `Press enter`) appeared. The non-hook classifier
+    /// promotes to NeedsAttention when this is the most recent strong signal.
+    /// `None` until the first hit.
+    last_attention_match: Option<Instant>,
+    /// Last time an **idle-beacon** pattern (Kiro's "ask a question or
+    /// describe a task" REPL prompt) appeared. Forces Idle when this is the
+    /// most recent strong signal — without it, Kiro's blinking-cursor idle
+    /// state confuses byte timing into NeedsAttention.
+    last_idle_match: Option<Instant>,
+}
+
+/// Byte patterns signalling an interactive prompt that requires a user
+/// response — generic CLI confirmation gates plus Kiro's approval-menu header.
+/// Short, stable strings. False positives are cheap (a transient NeedsAttention
+/// dot that expires with `PATTERN_TTL`); false negatives fall back to byte
+/// timing.
+const ATTENTION_PATTERNS: &[&[u8]] = &[
+    b"[y/N]",
+    b"[Y/n]",
+    b"(y/n)",
+    b"(Y/n)",
+    b"(y/N)",
+    b"Press enter",
+    b"Press Enter",
+    b"Press ENTER",
+    b"press any key",
+    // Kiro permission-approval menu header ("shell requires approval",
+    // "file write requires approval", …). Distinctive phrase; not expected
+    // in ordinary tool output.
+    b"requires approval",
+];
+
+/// Byte patterns signalling the agent is idle and waiting for a new prompt.
+/// Without this, Kiro's cursor-blinking REPL rewrites trick byte timing into
+/// classifying idle as NeedsAttention.
+const IDLE_PATTERNS: &[&[u8]] = &[
+    // Kiro REPL prompt shown when the agent finishes a turn and is waiting
+    // for the next user input.
+    b"ask a question or describe a task",
+];
+
+/// How long a pattern match remains authoritative. Kiro redraws its menus
+/// and idle beacon on cursor blink / arrow nav, so this typically refreshes
+/// well within the window; the TTL is just a safety valve for stuck state.
+const PATTERN_TTL: Duration = Duration::from_secs(45);
+
+fn scan_patterns(chunk: &[u8], patterns: &[&[u8]]) -> bool {
+    patterns
+        .iter()
+        .any(|needle| memmem_slice(chunk, needle))
+}
+
+/// Tiny substring search — no dep needed for the handful of short needles we
+/// scan per chunk. Cost is O(chunk * needle) per pattern, fine at 8 KiB reads.
+fn memmem_slice(haystack: &[u8], needle: &[u8]) -> bool {
+    if needle.is_empty() || needle.len() > haystack.len() {
+        return needle.is_empty();
+    }
+    haystack.windows(needle.len()).any(|w| w == needle)
 }
 
 /// Handle kept by the manager; holding it keeps the PTY + child alive.
@@ -117,9 +177,10 @@ impl AgentRegistry {
     /// > Idle > Inactive. No running agents → Inactive.
     ///
     /// Preferred signal is Claude's hook events (see `agent::hooks`), which
-    /// are authoritative. We fall back to the byte-timing heuristic when no
-    /// hook has reported for this worktree yet (e.g. agent just launched
-    /// and hasn't triggered its first event).
+    /// are authoritative. Fallback for other backends (Kiro, Codex) is a
+    /// hybrid heuristic: byte timing for Working/Idle, plus a pattern scan
+    /// for common confirmation prompts (`[y/N]`, "Press enter") that
+    /// promotes Idle to NeedsAttention when a response is clearly pending.
     pub fn activity_for_worktree(&self, worktree_id: WorktreeId) -> AgentActivity {
         let any_running = self.inner.iter().any(|e| {
             e.value().session.worktree_id == worktree_id
@@ -158,14 +219,33 @@ impl AgentRegistry {
             if !matches!(sh.status, AgentStatus::Running | AgentStatus::Starting) {
                 continue;
             }
-            let since_newline = sh.last_newline.elapsed();
-            let since_any = sh.last_any_output.elapsed();
-            let a = if since_newline < WORKING_WINDOW {
-                AgentActivity::Working
-            } else if since_newline < IDLE_WINDOW && since_any < SPINNER_ACTIVITY_WINDOW {
-                AgentActivity::Idle
-            } else {
-                AgentActivity::NeedsAttention
+            // Pattern signals (when fresh) are more reliable than byte timing
+            // for non-Claude backends: Kiro's idle beacon and approval menus
+            // are explicit states we can read directly. Whichever pattern
+            // fired most recently wins; only fall back to byte timing when
+            // neither is fresh.
+            let att = sh.last_attention_match.filter(|t| t.elapsed() < PATTERN_TTL);
+            let idl = sh.last_idle_match.filter(|t| t.elapsed() < PATTERN_TTL);
+            let pattern_state = match (att, idl) {
+                (Some(a_t), Some(i_t)) if a_t >= i_t => Some(AgentActivity::NeedsAttention),
+                (Some(_), Some(_)) => Some(AgentActivity::Idle),
+                (Some(_), None) => Some(AgentActivity::NeedsAttention),
+                (None, Some(_)) => Some(AgentActivity::Idle),
+                (None, None) => None,
+            };
+            let a = match pattern_state {
+                Some(s) => s,
+                None => {
+                    let since_newline = sh.last_newline.elapsed();
+                    let since_any = sh.last_any_output.elapsed();
+                    if since_newline < WORKING_WINDOW {
+                        AgentActivity::Working
+                    } else if since_newline < IDLE_WINDOW && since_any < SPINNER_ACTIVITY_WINDOW {
+                        AgentActivity::Idle
+                    } else {
+                        AgentActivity::NeedsAttention
+                    }
+                }
             };
             best = max_severity(best, a);
         }
@@ -288,6 +368,8 @@ pub fn launch(
         status: AgentStatus::Running,
         last_newline: Instant::now(),
         last_any_output: Instant::now(),
+        last_attention_match: None,
+        last_idle_match: None,
     }));
 
     // Announce "Running" immediately so the UI can swap state.
@@ -309,6 +391,8 @@ pub fn launch(
                     Ok(n) => {
                         let chunk = &buf[..n];
                         let saw_newline = chunk.contains(&b'\n');
+                        let saw_attention = scan_patterns(chunk, ATTENTION_PATTERNS);
+                        let saw_idle = scan_patterns(chunk, IDLE_PATTERNS);
                         let mut sh = shared_for_reader.lock();
                         sh.ring.extend(chunk.iter().copied());
                         let excess = sh.ring.len().saturating_sub(RING_MAX_BYTES);
@@ -319,6 +403,12 @@ pub fn launch(
                         sh.last_any_output = now;
                         if saw_newline {
                             sh.last_newline = now;
+                        }
+                        if saw_attention {
+                            sh.last_attention_match = Some(now);
+                        }
+                        if saw_idle {
+                            sh.last_idle_match = Some(now);
                         }
                         if let Some(ch) = sh.channel.as_ref() {
                             // If the current attached channel breaks, detach it;
@@ -458,4 +548,71 @@ fn now_millis() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn has_attention(chunk: &[u8]) -> bool {
+        scan_patterns(chunk, ATTENTION_PATTERNS)
+    }
+    fn has_idle(chunk: &[u8]) -> bool {
+        scan_patterns(chunk, IDLE_PATTERNS)
+    }
+
+    #[test]
+    fn attention_patterns_match_known_confirmations() {
+        assert!(has_attention(b"Proceed? [y/N] "));
+        assert!(has_attention(b"Overwrite? [Y/n] "));
+        assert!(has_attention(b"continue? (y/n) "));
+        assert!(has_attention(b"Press enter to continue"));
+        assert!(has_attention(b"Press ENTER"));
+        assert!(has_attention(b"... press any key to dismiss"));
+    }
+
+    #[test]
+    fn attention_patterns_match_kiro_approval_menu() {
+        // Real Kiro output shape for its permission gates.
+        let sample = b"\x1b[2J  shell requires approval\r\n  \xe2\x9d\xaf Yes, single permission\r\n    Trust, always allow in this session\r\n    No (Tab to edit)\r\n";
+        assert!(has_attention(sample));
+        // File-write variant should trigger the same header.
+        assert!(has_attention(b"file write requires approval"));
+    }
+
+    #[test]
+    fn idle_patterns_match_kiro_repl_prompt() {
+        assert!(has_idle(b"ask a question or describe a task"));
+        // Leading ANSI escape (clear-line) shouldn't break the scan — the
+        // plain-text portion of the chunk still contains the phrase.
+        assert!(has_idle(b"\x1b[2K\rask a question or describe a task"));
+    }
+
+    #[test]
+    fn attention_and_idle_pools_do_not_overlap() {
+        // Make sure the two pattern lists don't share strings — a chunk
+        // triggering both would have ambiguous meaning.
+        for a in ATTENTION_PATTERNS {
+            for i in IDLE_PATTERNS {
+                assert_ne!(a, i, "pattern appears in both pools: {:?}", a);
+            }
+        }
+    }
+
+    #[test]
+    fn scan_patterns_ignores_unrelated_output() {
+        assert!(!has_attention(b""));
+        assert!(!has_attention(b"Running tests...\n"));
+        assert!(!has_attention(b"y or n?")); // not our canonical pattern
+        assert!(!has_attention(b"[info] building"));
+        assert!(!has_idle(b"Ask a Question"));
+    }
+
+    #[test]
+    fn scan_patterns_finds_pattern_anywhere_in_chunk() {
+        let mut big = vec![b' '; 2000];
+        big.extend_from_slice(b"[y/N]");
+        big.extend(std::iter::repeat(b' ').take(1000));
+        assert!(has_attention(&big));
+    }
 }
