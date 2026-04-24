@@ -12,8 +12,7 @@ use crate::util::ids::{AgentSessionId, WorktreeId};
 pub enum AgentBackendKind {
     ClaudeCode,
     Codex,
-    Aider,
-    GenericCli,
+    Kiro,
 }
 
 impl AgentBackendKind {
@@ -21,8 +20,7 @@ impl AgentBackendKind {
         match self {
             AgentBackendKind::ClaudeCode => vec!["claude".to_string()],
             AgentBackendKind::Codex => vec!["codex".to_string()],
-            AgentBackendKind::Aider => vec!["aider".to_string()],
-            AgentBackendKind::GenericCli => Vec::new(),
+            AgentBackendKind::Kiro => vec!["kiro-cli".to_string()],
         }
     }
 }

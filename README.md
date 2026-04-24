@@ -1,6 +1,6 @@
 # treehouse
 
-A desktop IDE built around **parallel AI-agent development in git worktrees**. Open a repo, spin up isolated worktrees, launch Claude Code / Codex / Aider inside each, and review their work side-by-side through a live-updating multi-file diff.
+A desktop IDE built around **parallel AI-agent development in git worktrees**. Open a repo, spin up isolated worktrees, launch Claude Code / Codex / Kiro inside each, and review their work side-by-side through a live-updating multi-file diff.
 
 > Greenfield, macOS-first, early stage.
 

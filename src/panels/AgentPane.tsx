@@ -24,15 +24,13 @@ import { cn } from "@/lib/cn";
 const BACKENDS: { label: string; value: AgentBackendKind }[] = [
   { label: "Claude Code", value: "claudeCode" },
   { label: "Codex", value: "codex" },
-  { label: "Aider", value: "aider" },
-  { label: "Generic CLI", value: "genericCli" },
+  { label: "Kiro", value: "kiro" },
 ];
 
 const BACKEND_LABELS: Record<AgentBackendKind, string> = {
   claudeCode: "Claude",
   codex: "Codex",
-  aider: "Aider",
-  genericCli: "CLI",
+  kiro: "Kiro",
 };
 
 export function AgentPane() {
@@ -81,8 +79,7 @@ function AgentTabs({ worktreeId }: { worktreeId: WorktreeId }) {
   const counters = useRef<Record<AgentBackendKind, number>>({
     claudeCode: 0,
     codex: 0,
-    aider: 0,
-    genericCli: 0,
+    kiro: 0,
   });
 
   // On worktree switch: discover already-running agents and adopt them as
@@ -373,13 +370,19 @@ function AgentInstance({
   }, [visible]);
 
   return (
-    <div className="relative h-full w-full">
+    <div className="flex h-full w-full flex-col">
       {error && (
-        <div className="m-3 rounded border border-red-900/60 bg-red-950/40 px-3 py-2 text-xs text-red-300">
+        <div className="m-3 shrink-0 rounded border border-red-900/60 bg-red-950/40 px-3 py-2 text-xs text-red-300">
           {error}
         </div>
       )}
-      <div ref={hostRef} className="absolute inset-0 p-2" />
+      {/* Wrap xterm's host in a `relative flex-1` box so the host itself
+          can stay `absolute inset-0`. Xterm's fit()'s internal DOM resizes
+          have to NOT influence this container, or its ResizeObserver loops
+          infinitely — `absolute` decouples child size from parent layout. */}
+      <div className="relative flex-1">
+        <div ref={hostRef} className="absolute inset-0 p-2" />
+      </div>
     </div>
   );
 }

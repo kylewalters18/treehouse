@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { pasteAndSubmit } from "@/lib/agent";
+import { listAgentsForWorktree } from "@/ipc/client";
+import type { AgentSession, AgentSessionId } from "@/ipc/types";
 import { useCommentsStore, formatBatchForAgent } from "@/stores/comments";
 import { useDiffsStore } from "@/stores/diffs";
 import { useUiStore } from "@/stores/ui";
@@ -32,6 +34,8 @@ export function SendQueueButton() {
 
   const [open, setOpen] = useState(false);
   const [showPreview, setShowPreview] = useState(false);
+  const [agents, setAgents] = useState<AgentSession[]>([]);
+  const [targetAgentId, setTargetAgentId] = useState<AgentSessionId | null>(null);
   const ref = useRef<HTMLDivElement>(null);
 
   // Queued comments scoped to the currently-selected worktree's branch.
@@ -69,6 +73,43 @@ export function SendQueueButton() {
     if (queued.length === 0) setOpen(false);
   }, [queued.length]);
 
+  // Refresh the agent list when the dropdown opens so the picker reflects
+  // any agents launched since the last time it was shown. Preselect the
+  // currently-active-tab agent — that's what the pill used to do before
+  // we exposed the picker, and matches the "send to the one you're
+  // looking at" default. Filter to running/starting statuses so the
+  // target is always sendable.
+  useEffect(() => {
+    if (!open || !selectedWorktreeId) return;
+    let cancelled = false;
+    listAgentsForWorktree(selectedWorktreeId)
+      .then((list) => {
+        if (cancelled) return;
+        const sendable = list.filter(
+          (a) =>
+            a.status.kind === "running" || a.status.kind === "starting",
+        );
+        setAgents(sendable);
+        // Preserve prior selection if still present; otherwise fall back
+        // to the active agent, then the first sendable one.
+        setTargetAgentId((prev) => {
+          if (prev && sendable.some((a) => a.id === prev)) return prev;
+          if (activeAgentId && sendable.some((a) => a.id === activeAgentId)) {
+            return activeAgentId;
+          }
+          return sendable[0]?.id ?? null;
+        });
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setAgents([]);
+        setTargetAgentId(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, selectedWorktreeId, activeAgentId]);
+
   if (queued.length === 0) return null;
 
   function jumpTo(filePath: string, line: number) {
@@ -80,12 +121,12 @@ export function SendQueueButton() {
   }
 
   async function send() {
-    if (!activeAgentId) {
-      toastInfo("No active agent in this worktree");
+    if (!targetAgentId) {
+      toastInfo("No agent selected");
       return;
     }
     try {
-      await pasteAndSubmit(activeAgentId, formatBatchForAgent(queued));
+      await pasteAndSubmit(targetAgentId, formatBatchForAgent(queued));
       toastSuccess(
         `Sent ${queued.length} comment${queued.length === 1 ? "" : "s"}`,
         "Marking as resolved.",
@@ -154,13 +195,54 @@ export function SendQueueButton() {
               </pre>
             )}
           </div>
+          <div className="border-t border-neutral-800 px-3 py-2">
+            <div className="mb-1 text-[11px] uppercase tracking-wider text-neutral-500">
+              Send to
+            </div>
+            {agents.length === 0 ? (
+              <div className="text-[11px] text-neutral-500">
+                No running agents in this worktree
+              </div>
+            ) : (
+              <div className="flex flex-col gap-1">
+                {agents.map((a) => (
+                  <label
+                    key={a.id}
+                    className={cn(
+                      "flex cursor-pointer items-center gap-2 rounded border px-2 py-1 text-xs",
+                      targetAgentId === a.id
+                        ? "border-blue-700 bg-blue-950/30"
+                        : "border-neutral-800 hover:bg-neutral-950",
+                    )}
+                  >
+                    <input
+                      type="radio"
+                      checked={targetAgentId === a.id}
+                      onChange={() => setTargetAgentId(a.id)}
+                      className="accent-blue-600"
+                    />
+                    <span className="min-w-0 flex-1">
+                      <div className="truncate text-neutral-100">
+                        {backendLabel(a)}
+                        {a.id === activeAgentId && (
+                          <span className="ml-1 text-[10px] text-neutral-500">
+                            (active tab)
+                          </span>
+                        )}
+                      </div>
+                      <div className="truncate font-mono text-[10px] text-neutral-500">
+                        {a.argv.join(" ")}
+                      </div>
+                    </span>
+                  </label>
+                ))}
+              </div>
+            )}
+          </div>
           <div className="flex items-center justify-end gap-2 border-t border-neutral-800 px-3 py-2">
-            <span className="mr-auto text-[11px] text-neutral-500">
-              {activeAgentId ? "" : "No active agent"}
-            </span>
             <button
               onClick={send}
-              disabled={!activeAgentId}
+              disabled={!targetAgentId}
               className="rounded border border-blue-700 bg-blue-950/40 px-2 py-1 text-[11px] font-medium text-blue-200 hover:bg-blue-950/60 disabled:cursor-not-allowed disabled:opacity-40"
             >
               Send all ({queued.length})
@@ -170,4 +252,18 @@ export function SendQueueButton() {
       )}
     </div>
   );
+}
+
+/// Display label for an agent row. Backend kinds come through as
+/// `"claudeCode" | "codex" | "kiro"`; camelCase isn't user-friendly,
+/// so map to human strings.
+function backendLabel(a: AgentSession): string {
+  switch (a.backend) {
+    case "claudeCode":
+      return "Claude Code";
+    case "codex":
+      return "Codex";
+    case "kiro":
+      return "Kiro";
+  }
 }

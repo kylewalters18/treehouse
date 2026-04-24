@@ -94,15 +94,15 @@ The tauri-dev log is the place to look for runtime signals. Default log level is
 ## Scope — what's in vs. what's not
 
 **In v0 MVP:**
-- Open repo, multiple worktrees, per-worktree agent (Claude Code or generic argv), live diff, embedded terminal, merge-back, error toasts, graceful shutdown.
+- Open repo, multiple worktrees, per-worktree agent (Claude Code / Codex / Kiro), live diff, embedded terminal, merge-back, error toasts, graceful shutdown.
 - Typed ID newtypes (`WorktreeId`, `AgentSessionId`, `TerminalId`, `WorkspaceId`) all ULID-backed.
 - macOS only.
 
 **Deferred (post-MVP):**
 - Hunk-level accept/reject (diff viewer is read-only)
 - Multiple terminals per worktree (one per worktree in v0)
-- Editor write-back (Monaco isn't even mounted yet)
-- Codex / Aider backends (types exist, no UX)
+- Editor write-back (Monaco is mounted read-only)
+- Codex / Kiro backends ship but haven't been road-tested like Claude Code
 - Agent reattach via ring buffer
 - Linux / Windows
 - Sandboxing (macOS `sandbox-exec`)
