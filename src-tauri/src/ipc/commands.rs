@@ -303,9 +303,15 @@ pub async fn list_agent_activity(
         let (ahead, behind) = if w.is_main_clone {
             (0, 0)
         } else if let Some(ref ws) = ws {
-            // Resolve against the base ref captured at creation (workspace
-            // default branch). Best-effort: any git failure leaves (0, 0).
-            crate::worktree::git_ops::ahead_behind(&ws.root, &ws.default_branch, &w.branch)
+            // Resolve the most up-to-date default-branch ref (local or
+            // `origin/<default>`) so a stale local main doesn't inflate
+            // ahead counts. Best-effort: any git failure leaves (0, 0).
+            let base = crate::worktree::git_ops::resolve_default_base(
+                &ws.root,
+                &ws.default_branch,
+            )
+            .await;
+            crate::worktree::git_ops::ahead_behind(&ws.root, &base, &w.branch)
                 .await
                 .unwrap_or((0, 0))
         } else {

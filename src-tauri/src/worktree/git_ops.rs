@@ -145,6 +145,59 @@ pub async fn commits_ahead(repo_root: &Path, base: &str, branch: &str) -> AppRes
     Ok(stdout.trim().parse::<u32>().unwrap_or(0))
 }
 
+/// Pick the most up-to-date base ref for ahead/behind computations against
+/// the workspace's default branch. When `origin/<default>` exists locally
+/// and has commits the local `<default>` hasn't seen, use it — otherwise
+/// fall back to `<default>`.
+///
+/// This handles the "stale local main" case: if the user hasn't pulled in
+/// a while but their worktree branches were rooted on a newer base, using
+/// local main produces wildly inflated ahead counts. No fetch is performed
+/// — we only consult the refs already on disk.
+pub async fn resolve_default_base(repo_root: &Path, default_branch: &str) -> String {
+    let remote_ref = format!("origin/{default_branch}");
+    // `git rev-parse --verify --quiet refs/remotes/origin/<default>` — exit
+    // 0 iff the ref exists. `.output()` never errors on nonzero exit here,
+    // so we inspect `status.success()`.
+    let remote_exists = Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args([
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("refs/remotes/{remote_ref}"),
+        ])
+        .output()
+        .await
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if !remote_exists {
+        return default_branch.to_string();
+    }
+    // `git merge-base --is-ancestor A B` → exit 0 if A is ancestor of B.
+    // If origin is ancestor of local, local is up-to-date or ahead → use
+    // local. Else origin has commits local doesn't → use origin.
+    let origin_is_ancestor_of_local = Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args([
+            "merge-base",
+            "--is-ancestor",
+            &remote_ref,
+            default_branch,
+        ])
+        .output()
+        .await
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if origin_is_ancestor_of_local {
+        default_branch.to_string()
+    } else {
+        remote_ref
+    }
+}
+
 /// Single-call ahead/behind using `git rev-list --left-right --count
 /// base...branch`. Returns `(ahead, behind)` where `ahead` is commits on
 /// `branch` not on `base` and `behind` is commits on `base` not on `branch`.
@@ -531,6 +584,74 @@ mod tests {
         // Best-effort contract: no remotes means nothing to fetch, not an
         // error. Also exercises the path in manager::create.
         fetch_all(&r.root).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn resolve_default_base_returns_local_when_no_origin() {
+        let r = TempRepo::new();
+        let base = resolve_default_base(&r.root, "main").await;
+        assert_eq!(base, "main");
+    }
+
+    #[tokio::test]
+    async fn resolve_default_base_returns_local_when_origin_is_ancestor() {
+        let r = TempRepo::new();
+        // Advance local main.
+        let m1 = r.commit_file("a.txt", "a\n", "a");
+        // Set refs/remotes/origin/main to the initial commit (before M1) →
+        // origin is ancestor of local.
+        let parent = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&r.root)
+            .args(["rev-parse", &format!("{m1}^")])
+            .output()
+            .unwrap();
+        let parent_sha = String::from_utf8(parent.stdout).unwrap().trim().to_string();
+        let ok = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&r.root)
+            .args(["update-ref", "refs/remotes/origin/main", &parent_sha])
+            .status()
+            .unwrap();
+        assert!(ok.success());
+
+        let base = resolve_default_base(&r.root, "main").await;
+        assert_eq!(base, "main", "local is ahead of origin → use local");
+    }
+
+    #[tokio::test]
+    async fn resolve_default_base_returns_origin_when_local_is_stale() {
+        let r = TempRepo::new();
+        // Advance local past the initial commit, capture its SHA, then
+        // point refs/remotes/origin/main at it — origin "ahead" of where
+        // we'll leave local.
+        let m1 = r.commit_file("a.txt", "a\n", "a");
+        let ok = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&r.root)
+            .args(["update-ref", "refs/remotes/origin/main", &m1])
+            .status()
+            .unwrap();
+        assert!(ok.success());
+        // Roll local main back to the pre-M1 commit so origin is strictly
+        // ahead of local.
+        let parent = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&r.root)
+            .args(["rev-parse", &format!("{m1}^")])
+            .output()
+            .unwrap();
+        let parent_sha = String::from_utf8(parent.stdout).unwrap().trim().to_string();
+        let ok = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&r.root)
+            .args(["update-ref", "refs/heads/main", &parent_sha])
+            .status()
+            .unwrap();
+        assert!(ok.success());
+
+        let base = resolve_default_base(&r.root, "main").await;
+        assert_eq!(base, "origin/main", "origin is ahead of local → use origin");
     }
 
     #[tokio::test]
