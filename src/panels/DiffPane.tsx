@@ -1,14 +1,17 @@
 import { useEffect, useMemo, useState } from "react";
+import { DiffEditor } from "@monaco-editor/react";
 import { useUiStore } from "@/stores/ui";
 import { useWorktreesStore } from "@/stores/worktrees";
 import { useDiffsStore } from "@/stores/diffs";
 import { useLspStore } from "@/stores/lsp";
-import { onDiffUpdated } from "@/ipc/client";
-import type { DiffLine, FileDiff, FileStatus, WorktreeId } from "@/ipc/types";
+import { onDiffUpdated, readBlobAtRef, readFile } from "@/ipc/client";
+import type { FileDiff, FileStatus, WorktreeId } from "@/ipc/types";
 import { cn } from "@/lib/cn";
 import { EditorPane } from "./EditorPane";
 import { FileTree } from "./FileTree";
 import { MarkdownPreview, isMarkdownPath } from "./MarkdownPreview";
+import { inferLanguage } from "./editor-language";
+import { THEME_NAME, defineTreehouseTheme } from "./monaco-theme";
 
 export function DiffPane() {
   const worktreeId = useUiStore((s) => s.selectedWorktreeId);
@@ -208,8 +211,12 @@ function DiffView({ worktreeId }: { worktreeId: WorktreeId }) {
             <EditorPane worktreeId={worktreeId} path={selectedFile} />
           ) : view === "preview" && isMarkdownPath(selectedFile) ? (
             <MarkdownPreview worktreeId={worktreeId} path={selectedFile} />
-          ) : selected ? (
-            <HunksView file={selected} />
+          ) : selected && diff ? (
+            <DiffEditorView
+              worktreeId={worktreeId}
+              baseRef={diff.baseRef}
+              file={selected}
+            />
           ) : (
             <div className="flex h-full items-center justify-center text-xs text-neutral-600">
               No diff for this file — switch to the File tab
@@ -327,7 +334,76 @@ function StatusBadge({ status }: { status: FileStatus }) {
   );
 }
 
-function HunksView({ file }: { file: FileDiff }) {
+/// Inline diff powered by Monaco's `DiffEditor` so we get syntax
+/// highlighting, unified / side-by-side rendering, and folded-unchanged
+/// regions. Fetches the "before" content via `git show <base_ref>:<path>`
+/// and the "after" content from the worktree's workdir.
+function DiffEditorView({
+  worktreeId,
+  baseRef,
+  file,
+}: {
+  worktreeId: WorktreeId;
+  baseRef: string;
+  file: FileDiff;
+}) {
+  const [before, setBefore] = useState<string | null>(null);
+  const [after, setAfter] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const language = useMemo(() => inferLanguage(file.path), [file.path]);
+
+  useEffect(() => {
+    if (file.binary) {
+      setBefore("");
+      setAfter("");
+      return;
+    }
+    let cancelled = false;
+    setError(null);
+    setBefore(null);
+    setAfter(null);
+
+    const loadBefore = async (): Promise<string> => {
+      // `deleted` / `modified`: the base-ref side holds the prior content.
+      // `renamed`: the prior content lives at the old path (`from`).
+      // `added` / `untracked`: no prior version — empty string.
+      if (file.status.kind === "added" || file.status.kind === "untracked") {
+        return "";
+      }
+      const oldPath =
+        file.status.kind === "renamed" ? file.status.from : file.path;
+      return await readBlobAtRef(worktreeId, oldPath, baseRef);
+    };
+
+    const loadAfter = async (): Promise<string> => {
+      // Deleted files: no current workdir version.
+      if (file.status.kind === "deleted") return "";
+      const r = await readFile(worktreeId, file.path);
+      return r.text ?? "";
+    };
+
+    (async () => {
+      try {
+        const [b, a] = await Promise.all([loadBefore(), loadAfter()]);
+        if (cancelled) return;
+        setBefore(b);
+        setAfter(a);
+      } catch (e: unknown) {
+        if (cancelled) return;
+        const msg =
+          e && typeof e === "object" && "message" in e
+            ? String((e as { message: unknown }).message)
+            : String(e);
+        setError(msg);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [worktreeId, baseRef, file.path, file.status, file.binary]);
+
   if (file.binary) {
     return (
       <div className="m-3 rounded border border-neutral-800 bg-neutral-900/60 p-4 text-center text-xs text-neutral-500">
@@ -335,47 +411,57 @@ function HunksView({ file }: { file: FileDiff }) {
       </div>
     );
   }
+  if (error) {
+    return (
+      <div className="m-3 rounded border border-red-900/60 bg-red-950/40 px-3 py-2 text-xs text-red-300">
+        {error}
+      </div>
+    );
+  }
+  if (before === null || after === null) {
+    return (
+      <div className="flex h-full items-center justify-center text-xs text-neutral-600">
+        Loading diff…
+      </div>
+    );
+  }
   return (
-    <div className="font-mono text-xs">
-      {file.hunks.length === 0 ? (
-        <div className="m-3 text-center text-xs text-neutral-600">
-          {(file.status.kind === "deleted" && "File deleted.") ||
-            (file.status.kind === "added" && "New empty file.") ||
-            "No hunks."}
-        </div>
-      ) : (
-        file.hunks.map((h) => (
-          <div key={h.id} className="border-t border-neutral-900">
-            <div className="bg-neutral-900/60 px-3 py-1 text-[11px] text-neutral-500">
-              {h.header.trim()}
-            </div>
-            {h.lines.map((line, i) => (
-              <LineRow key={i} line={line} />
-            ))}
-          </div>
-        ))
-      )}
+    <div className="h-full w-full bg-neutral-950">
+      <DiffEditor
+        original={before}
+        modified={after}
+        language={language}
+        theme={THEME_NAME}
+        beforeMount={defineTreehouseTheme}
+        options={{
+          readOnly: true,
+          renderSideBySide: false,
+          minimap: { enabled: false },
+          fontFamily:
+            'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace',
+          fontSize: 12,
+          lineHeight: 18,
+          scrollBeyondLastLine: false,
+          smoothScrolling: true,
+          renderWhitespace: "none",
+          renderLineHighlight: "none",
+          // Collapse long runs of unchanged lines to the standard +/-3
+          // context window — matches the mental model from `git diff`.
+          hideUnchangedRegions: {
+            enabled: true,
+            contextLineCount: 3,
+            minimumLineCount: 3,
+            revealLineCount: 20,
+          },
+          scrollbar: {
+            verticalScrollbarSize: 10,
+            horizontalScrollbarSize: 10,
+          },
+          overviewRulerBorder: false,
+          overviewRulerLanes: 0,
+        }}
+      />
     </div>
   );
 }
 
-function LineRow({ line }: { line: DiffLine }) {
-  const kind = line.kind;
-  const cls =
-    kind === "add"
-      ? "bg-emerald-950/40 text-emerald-200"
-      : kind === "del"
-        ? "bg-rose-950/40 text-rose-200"
-        : "text-neutral-400";
-  const prefix = kind === "add" ? "+" : kind === "del" ? "-" : " ";
-  return (
-    <div className={cn("flex", cls)}>
-      <span className="w-4 shrink-0 select-none px-1 text-center text-neutral-600">
-        {prefix}
-      </span>
-      <pre className="flex-1 whitespace-pre-wrap break-all px-2 py-0">
-        {line.content}
-      </pre>
-    </div>
-  );
-}

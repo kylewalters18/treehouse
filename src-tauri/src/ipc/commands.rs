@@ -424,6 +424,33 @@ pub async fn read_file(
     fs_api::read_worktree_file(worktree_id, &path, &state).await
 }
 
+/// Read a file's content at a specific ref (branch / sha / tag). Used by
+/// the DiffEditor to render the "before" side of a diff. Returns an empty
+/// string when the path didn't exist at that ref — git's own behavior is
+/// nonzero exit, which we normalize to empty so Monaco can show "added"
+/// files as a pure-insertion diff without a separate error path.
+#[tauri::command]
+pub async fn read_blob_at_ref(
+    worktree_id: WorktreeId,
+    path: String,
+    reference: String,
+    state: State<'_, AppState>,
+) -> AppResult<String> {
+    let wt = state
+        .worktrees
+        .get(&worktree_id)
+        .ok_or_else(|| AppError::Unknown(format!("unknown worktree: {worktree_id}")))?
+        .clone();
+    let workspace_root = state
+        .workspaces
+        .get(&wt.workspace_id)
+        .map(|e| e.value().root.clone())
+        .ok_or_else(|| AppError::Unknown("workspace missing".into()))?;
+    Ok(crate::worktree::git_ops::show_blob(&workspace_root, &reference, &path)
+        .await?
+        .unwrap_or_default())
+}
+
 #[tauri::command]
 pub async fn list_tree(
     worktree_id: WorktreeId,

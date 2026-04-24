@@ -143,6 +143,16 @@ export function listTree(
   return invoke<TreeEntry[]>("list_tree", { worktreeId, dir, showIgnored });
 }
 
+/// Read a file's content at a specific git ref via `git show <ref>:<path>`.
+/// Returns "" if the path didn't exist at that ref.
+export function readBlobAtRef(
+  worktreeId: WorktreeId,
+  path: string,
+  reference: string,
+): Promise<string> {
+  return invoke<string>("read_blob_at_ref", { worktreeId, path, reference });
+}
+
 // --- Terminals ---
 
 export function openTerminal(

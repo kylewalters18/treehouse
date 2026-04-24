@@ -276,6 +276,32 @@ pub async fn rebase_onto(workdir: &Path, upstream: &str) -> AppResult<()> {
     }
 }
 
+/// Read a file's content at a specific ref via `git show <ref>:<path>`.
+/// Returns `Ok(None)` if the path didn't exist at that ref (a legitimate
+/// state for added / new files). Binary files come back as lossy-decoded
+/// UTF-8 strings — callers that care about binary-vs-text should check
+/// upstream before calling this.
+pub async fn show_blob(
+    repo_root: &Path,
+    rev: &str,
+    path: &str,
+) -> AppResult<Option<String>> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(["show", &format!("{rev}:{path}")])
+        .output()
+        .await?;
+    if !out.status.success() {
+        // git returns nonzero when the path doesn't exist at the given
+        // ref (e.g., a file added on the worktree branch has no base-ref
+        // version). Treat that as "empty content at base" rather than
+        // surfacing an error.
+        return Ok(None);
+    }
+    Ok(Some(String::from_utf8_lossy(&out.stdout).into_owned()))
+}
+
 /// `true` if merging `branch` into `base` produces a tree identical to
 /// `base`'s current tree — i.e. the branch's work is already represented on
 /// `base`, regardless of how it got there (merge, squash, rebase,
