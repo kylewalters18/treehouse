@@ -336,6 +336,27 @@ function AgentInstance({
             agentWrite(agentIdRef.current, encoder.encode(data)).catch(() => {});
           }
         });
+        // xterm collapses Shift+Enter to plain `\r` by default, so agents
+        // submit instead of inserting a newline. Intercept and emit the
+        // alt+enter sequence (ESC + CR) — the convention readline /
+        // Ink-based TUIs (Claude Code, Codex) respect as "literal
+        // newline" regardless of continuation-mode state.
+        // preventDefault is load-bearing: returning false suppresses
+        // xterm's keydown handling but the hidden-textarea browser default
+        // would still fire, inserting a stray `\n` that confuses the TUI.
+        term.attachCustomKeyEventHandler((ev) => {
+          if (ev.type === "keydown" && ev.key === "Enter" && ev.shiftKey) {
+            ev.preventDefault();
+            if (agentIdRef.current) {
+              agentWrite(
+                agentIdRef.current,
+                encoder.encode("\x1b\r"),
+              ).catch(() => {});
+            }
+            return false;
+          }
+          return true;
+        });
         term.onResize(({ cols, rows }) => {
           if (agentIdRef.current) {
             agentResize(agentIdRef.current, cols, rows).catch(() => {});
