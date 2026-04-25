@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { Terminal } from "xterm";
 import { FitAddon } from "xterm-addon-fit";
 import { WebLinksAddon } from "xterm-addon-web-links";
@@ -15,6 +16,22 @@ import {
 } from "@/ipc/client";
 import type { PtyEvent, TerminalId, WorktreeId } from "@/ipc/types";
 import { cn } from "@/lib/cn";
+import {
+  closeLeaf,
+  firstLeaf,
+  leaves,
+  makeLeaf,
+  setLeafMode,
+  splitLeaf,
+  type PaneLeaf,
+  type PaneNode,
+} from "./pane-tree";
+import {
+  EMPTY_LAYOUT,
+  reconcileLayout,
+  useTerminalLayoutStore,
+  type TerminalTab,
+} from "@/stores/terminal-layout";
 import { fitAndPin } from "./xterm-fit";
 
 export function TerminalPane() {
@@ -29,55 +46,79 @@ export function TerminalPane() {
   return <TerminalTabs key={worktreeId} worktreeId={worktreeId} />;
 }
 
-type Mode =
-  | { kind: "open" }
-  | { kind: "attach"; terminalId: TerminalId };
-
-type Tab = {
-  localId: string;
-  label: string;
-  mode: Mode;
-};
-
 function TerminalTabs({ worktreeId }: { worktreeId: WorktreeId }) {
-  const [tabs, setTabs] = useState<Tab[]>([]);
-  const [activeId, setActiveId] = useState<string | null>(null);
+  const layout = useTerminalLayoutStore(
+    (s) => s.layouts[worktreeId] ?? EMPTY_LAYOUT,
+  );
+  const updateLayout = useTerminalLayoutStore((s) => s.updateLayout);
   const [initLoading, setInitLoading] = useState(true);
-  const counter = useRef(0);
-  const terminalIds = useRef<Map<string, TerminalId>>(new Map());
+  // Sentinel for the adopt effect — StrictMode double-mounts in dev,
+  // and a second adopt run can race the freshly-seeded tab's openTerminal
+  // call: listTerminalsForWorktree picks up the new PTY before the leaf
+  // has flipped from `open` to `attach` mode in the store, so reconcile
+  // treats it as unknown and appends a phantom second tab pointing at
+  // the same session. Skipping the second run is safer than chasing the
+  // race with extra in-flight tracking.
+  const adoptedFor = useRef<WorktreeId | null>(null);
+  /// LeafState pool lives in a module-level map keyed by worktreeId so
+  /// the xterm Terminal + its host element survive `TerminalTabs`
+  /// unmount/remount on worktree switch. If we tore them down at switch
+  /// time, the next visit would create a fresh Terminal at 80×24 and
+  /// then `fit.fit()` to the slot's real dims would trigger a
+  /// `term.resize` → SIGWINCH → zsh redraw with PROMPT_SP (`%`
+  /// artefacts). Keeping the term alive means same dims after remount,
+  /// no SIGWINCH, no redraw.
+  const leafStates = useMemo(() => getLeafStates(worktreeId), [worktreeId]);
 
-  // On worktree switch: adopt any existing terminals as attach-mode tabs so
-  // navigating back doesn't kill or lose them. If there are none, seed a
-  // fresh one so the pane isn't empty on first visit.
   useEffect(() => {
+    if (adoptedFor.current === worktreeId) {
+      // StrictMode's second mount: mount 1 already adopted (or is in
+      // flight). Mount 1's finally skipped its setInitLoading because
+      // its closure was cancelled by cleanup, so clear it here instead
+      // — otherwise the pane sits on "Checking…" forever.
+      setInitLoading(false);
+      return;
+    }
+    adoptedFor.current = worktreeId;
     let cancelled = false;
     (async () => {
       try {
-        const existing = await listTerminalsForWorktree(worktreeId);
+        const running = await listTerminalsForWorktree(worktreeId);
         if (cancelled) return;
-        if (existing.length > 0) {
-          const adopted: Tab[] = existing.map((s) => {
-            counter.current += 1;
-            const localId = crypto.randomUUID();
-            terminalIds.current.set(localId, s.id);
-            return {
-              localId,
-              label: `zsh ${counter.current}`,
-              mode: { kind: "attach", terminalId: s.id },
+        updateLayout(worktreeId, (prev) => {
+          let next = reconcileLayout(prev, running);
+          if (next.tabs.length === 0) {
+            const counter = next.counter + 1;
+            const leaf = makeLeaf({ kind: "open" });
+            next = {
+              tabs: [
+                {
+                  localId: crypto.randomUUID(),
+                  label: `zsh ${counter}`,
+                  tree: leaf,
+                  activeLeafId: leaf.localId,
+                },
+              ],
+              activeTabId: null,
+              counter,
             };
-          });
-          setTabs(adopted);
-          setActiveId(adopted[adopted.length - 1].localId);
-        } else {
-          counter.current = 1;
-          const fresh: Tab = {
-            localId: crypto.randomUUID(),
-            label: "zsh 1",
-            mode: { kind: "open" },
-          };
-          setTabs([fresh]);
-          setActiveId(fresh.localId);
-        }
+            next.activeTabId = next.tabs[0].localId;
+          }
+          // Drop any pooled leaf states whose leaves were pruned by
+          // reconcile (their PTY died while we were elsewhere). Without
+          // this the pool would slowly accumulate dead xterm Terminals.
+          const surviving = new Set<string>();
+          for (const tab of next.tabs) {
+            for (const l of leaves(tab.tree)) surviving.add(l.localId);
+          }
+          for (const [id, state] of leafStates) {
+            if (!surviving.has(id)) {
+              detachLeafState(state);
+              leafStates.delete(id);
+            }
+          }
+          return next;
+        });
       } catch {
         // ignore
       } finally {
@@ -87,43 +128,146 @@ function TerminalTabs({ worktreeId }: { worktreeId: WorktreeId }) {
     return () => {
       cancelled = true;
     };
-  }, [worktreeId]);
+  }, [worktreeId, updateLayout]);
+
+  const tabs = layout.tabs;
+  const activeTabId = layout.activeTabId;
+
+  function setActiveTabId(id: string | null) {
+    updateLayout(worktreeId, (prev) => ({ ...prev, activeTabId: id }));
+  }
 
   function addTab() {
-    counter.current += 1;
-    const next: Tab = {
-      localId: crypto.randomUUID(),
-      label: `zsh ${counter.current}`,
-      mode: { kind: "open" },
-    };
-    setTabs((prev) => [...prev, next]);
-    setActiveId(next.localId);
+    updateLayout(worktreeId, (prev) => {
+      const counter = prev.counter + 1;
+      const leaf = makeLeaf({ kind: "open" });
+      const next = {
+        localId: crypto.randomUUID(),
+        label: `zsh ${counter}`,
+        tree: leaf,
+        activeLeafId: leaf.localId,
+      };
+      return {
+        tabs: [...prev.tabs, next],
+        activeTabId: next.localId,
+        counter,
+      };
+    });
   }
 
   async function closeTab(localId: string) {
-    const tid = terminalIds.current.get(localId);
-    if (tid) {
-      await closeTerminal(tid).catch(() => {});
+    const tab = tabs.find((t) => t.localId === localId);
+    if (tab) {
+      for (const l of leaves(tab.tree)) {
+        const state = leafStates.get(l.localId);
+        if (state) {
+          disposeLeafState(state);
+          leafStates.delete(l.localId);
+        } else if (l.mode.kind === "attach") {
+          // Defensive: leaf was attach-mode in stored layout but no
+          // local xterm state was ever created (visited the tab but
+          // never rendered, or reconcile kept it alive after a worktree
+          // switch). Kill the PTY directly.
+          await closeTerminal(l.mode.terminalId).catch(() => {});
+        }
+      }
     }
-    terminalIds.current.delete(localId);
-    setTabs((prev) => {
-      const next = prev.filter((t) => t.localId !== localId);
-      setActiveId((cur) => {
-        if (cur !== localId) return cur;
-        return next.length > 0 ? next[next.length - 1].localId : null;
-      });
-      return next;
+    updateLayout(worktreeId, (prev) => {
+      const tabs = prev.tabs.filter((t) => t.localId !== localId);
+      const activeTabId =
+        prev.activeTabId === localId
+          ? tabs[tabs.length - 1]?.localId ?? null
+          : prev.activeTabId;
+      return { ...prev, tabs, activeTabId };
     });
+  }
+
+  function splitActive(direction: "horizontal" | "vertical") {
+    updateLayout(worktreeId, (prev) => ({
+      ...prev,
+      tabs: prev.tabs.map((tab) => {
+        if (tab.localId !== prev.activeTabId) return tab;
+        const newLeaf = makeLeaf({ kind: "open" });
+        return {
+          ...tab,
+          tree: splitLeaf(tab.tree, tab.activeLeafId, direction, newLeaf),
+          activeLeafId: newLeaf.localId,
+        };
+      }),
+    }));
+  }
+
+  async function closePane(tabId: string, leafId: string) {
+    const state = leafStates.get(leafId);
+    if (state) {
+      disposeLeafState(state);
+      leafStates.delete(leafId);
+    } else {
+      const tab = tabs.find((t) => t.localId === tabId);
+      const leaf = tab
+        ? leaves(tab.tree).find((l) => l.localId === leafId)
+        : null;
+      if (leaf && leaf.mode.kind === "attach") {
+        await closeTerminal(leaf.mode.terminalId).catch(() => {});
+      }
+    }
+    updateLayout(worktreeId, (prev) => {
+      const tabs: typeof prev.tabs = [];
+      let removedTab = false;
+      for (const t of prev.tabs) {
+        if (t.localId !== tabId) {
+          tabs.push(t);
+          continue;
+        }
+        const tree = closeLeaf(t.tree, leafId);
+        if (tree === null) {
+          removedTab = true;
+          continue;
+        }
+        tabs.push({ ...t, tree, activeLeafId: firstLeaf(tree).localId });
+      }
+      const activeTabId =
+        removedTab && prev.activeTabId === tabId
+          ? tabs[tabs.length - 1]?.localId ?? null
+          : prev.activeTabId;
+      return { ...prev, tabs, activeTabId };
+    });
+  }
+
+  function setActiveLeaf(tabId: string, leafId: string) {
+    updateLayout(worktreeId, (prev) => ({
+      ...prev,
+      tabs: prev.tabs.map((tab) =>
+        tab.localId === tabId ? { ...tab, activeLeafId: leafId } : tab,
+      ),
+    }));
+  }
+
+  // When a freshly-opened leaf gets its server session id back, flip
+  // its mode in the layout from `open` to `attach` so the next adopt
+  // pass can hand it off without re-spawning.
+  function onLeafSession(tabId: string, leafId: string, terminalId: TerminalId) {
+    updateLayout(worktreeId, (prev) => ({
+      ...prev,
+      tabs: prev.tabs.map((tab) =>
+        tab.localId === tabId
+          ? { ...tab, tree: setLeafMode(tab.tree, leafId, { kind: "attach", terminalId }) }
+          : tab,
+      ),
+    }));
   }
 
   return (
     <div className="flex h-full flex-col bg-neutral-950">
       <TabBar
         tabs={tabs}
-        activeId={activeId}
-        onSelect={setActiveId}
+        activeId={activeTabId}
+        onSelect={setActiveTabId}
         onClose={(id) => void closeTab(id)}
         onNew={addTab}
+        onSplitRight={() => splitActive("horizontal")}
+        onSplitDown={() => splitActive("vertical")}
+        canSplit={activeTabId !== null}
       />
       <div className="relative flex-1">
         {tabs.length === 0 && (
@@ -133,27 +277,118 @@ function TerminalTabs({ worktreeId }: { worktreeId: WorktreeId }) {
               : "No terminals. Click + to open one."}
           </div>
         )}
-        {tabs.map((tab) => (
-          <div
-            key={tab.localId}
-            className={cn(
-              "absolute inset-0",
-              tab.localId !== activeId && "pointer-events-none",
-            )}
-            style={{
-              visibility: tab.localId === activeId ? "visible" : "hidden",
-            }}
-          >
-            <TerminalInstance
-              worktreeId={worktreeId}
-              mode={tab.mode}
-              visible={tab.localId === activeId}
-              onSession={(id) => {
-                terminalIds.current.set(tab.localId, id);
-              }}
-            />
-          </div>
-        ))}
+        {tabs.map((tab) => {
+          const tabVisible = tab.localId === activeTabId;
+          return (
+            <div
+              key={tab.localId}
+              className={cn(
+                "absolute inset-0",
+                !tabVisible && "pointer-events-none",
+              )}
+              style={{ visibility: tabVisible ? "visible" : "hidden" }}
+            >
+              <PaneRender
+                node={tab.tree}
+                worktreeId={worktreeId}
+                tabVisible={tabVisible}
+                activeLeafId={tab.activeLeafId}
+                leafStates={leafStates}
+                onActivate={(leafId) => setActiveLeaf(tab.localId, leafId)}
+                onClose={(leafId) => void closePane(tab.localId, leafId)}
+                onSession={(leafId, id) => onLeafSession(tab.localId, leafId, id)}
+              />
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/// Recursive renderer for a pane tree. Splits become resizable
+/// `<PanelGroup>`s; leaves render the actual terminal wrapper.
+function PaneRender(props: {
+  node: PaneNode;
+  worktreeId: WorktreeId;
+  tabVisible: boolean;
+  activeLeafId: string;
+  leafStates: Map<string, LeafState>;
+  onActivate: (leafId: string) => void;
+  onClose: (leafId: string) => void;
+  onSession: (leafId: string, id: TerminalId) => void;
+}): React.ReactNode {
+  const { node } = props;
+  if (node.kind === "leaf") {
+    return <PaneLeafView leaf={node} {...props} />;
+  }
+  return (
+    <PanelGroup
+      direction={node.direction}
+      autoSaveId={`treehouse-pane-${node.id}`}
+      className="h-full w-full"
+    >
+      <Panel defaultSize={50} minSize={10}>
+        <PaneRender {...props} node={node.a} />
+      </Panel>
+      <PanelResizeHandle
+        className={cn(
+          "bg-neutral-800 hover:bg-neutral-700",
+          node.direction === "horizontal" ? "w-px" : "h-px",
+        )}
+      />
+      <Panel defaultSize={50} minSize={10}>
+        <PaneRender {...props} node={node.b} />
+      </Panel>
+    </PanelGroup>
+  );
+}
+
+function PaneLeafView({
+  leaf,
+  worktreeId,
+  tabVisible,
+  activeLeafId,
+  leafStates,
+  onActivate,
+  onClose,
+  onSession,
+}: {
+  leaf: PaneLeaf;
+  worktreeId: WorktreeId;
+  tabVisible: boolean;
+  activeLeafId: string;
+  leafStates: Map<string, LeafState>;
+  onActivate: (leafId: string) => void;
+  onClose: (leafId: string) => void;
+  onSession: (leafId: string, id: TerminalId) => void;
+}) {
+  const isActive = activeLeafId === leaf.localId;
+  return (
+    <div
+      onMouseDown={() => onActivate(leaf.localId)}
+      className={cn(
+        "group relative h-full w-full",
+        isActive && "ring-1 ring-inset ring-blue-500/40",
+      )}
+    >
+      <TerminalLeafSlot
+        leaf={leaf}
+        worktreeId={worktreeId}
+        visible={tabVisible}
+        focused={tabVisible && isActive}
+        leafStates={leafStates}
+        onSession={(id) => onSession(leaf.localId, id)}
+      />
+      <div className="pointer-events-none absolute right-1 top-1 z-10 flex gap-0.5 opacity-0 transition group-hover:opacity-100">
+        <button
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={() => onClose(leaf.localId)}
+          title="Close pane"
+          className="pointer-events-auto rounded border border-neutral-800 bg-neutral-900/90 px-1 py-0.5 text-[10px] text-neutral-400 hover:border-red-800 hover:text-red-300"
+        >
+          ✕
+        </button>
       </div>
     </div>
   );
@@ -165,12 +400,18 @@ function TabBar({
   onSelect,
   onClose,
   onNew,
+  onSplitRight,
+  onSplitDown,
+  canSplit,
 }: {
-  tabs: Tab[];
+  tabs: TerminalTab[];
   activeId: string | null;
   onSelect: (id: string) => void;
   onClose: (id: string) => void;
   onNew: () => void;
+  onSplitRight: () => void;
+  onSplitDown: () => void;
+  canSplit: boolean;
 }) {
   return (
     <div className="flex shrink-0 items-center gap-0.5 overflow-x-auto border-b border-neutral-800 px-1 py-0.5">
@@ -198,131 +439,237 @@ function TabBar({
           </button>
         </div>
       ))}
-      <button
-        onClick={onNew}
-        title="New terminal"
-        className="ml-0.5 shrink-0 rounded px-1.5 py-0.5 text-xs text-neutral-500 hover:bg-neutral-900 hover:text-neutral-200"
-      >
-        +
-      </button>
+      <div className="ml-auto flex shrink-0 items-center gap-0.5">
+        <button
+          onClick={onSplitRight}
+          disabled={!canSplit}
+          title="Split active pane to the right"
+          className="rounded px-1.5 py-0.5 text-xs text-neutral-500 hover:bg-neutral-900 hover:text-neutral-200 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          ⇥
+        </button>
+        <button
+          onClick={onSplitDown}
+          disabled={!canSplit}
+          title="Split active pane below"
+          className="rounded px-1.5 py-0.5 text-xs text-neutral-500 hover:bg-neutral-900 hover:text-neutral-200 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          ⤓
+        </button>
+        <button
+          onClick={onNew}
+          title="New terminal"
+          className="ml-0.5 rounded px-1.5 py-0.5 text-xs text-neutral-500 hover:bg-neutral-900 hover:text-neutral-200"
+        >
+          +
+        </button>
+      </div>
     </div>
   );
 }
 
-function TerminalInstance({
+/// Per-leaf state lives in a Map per worktreeId at module scope so it
+/// survives both PaneLeafView remounts (split / sibling-close) and
+/// TerminalTabs remounts on worktree switch. Without this, splitting
+/// or revisiting a worktree tears down xterms and reattaches PTYs —
+/// zsh redraws via PROMPT_SP and the user sees `%` artifacts.
+const leafStatesByWorktree = new Map<WorktreeId, Map<string, LeafState>>();
+
+function getLeafStates(worktreeId: WorktreeId): Map<string, LeafState> {
+  let m = leafStatesByWorktree.get(worktreeId);
+  if (!m) {
+    m = new Map();
+    leafStatesByWorktree.set(worktreeId, m);
+  }
+  return m;
+}
+
+export type LeafState = {
+  host: HTMLDivElement;
+  term: Terminal;
+  fit: FitAddon;
+  sessionId: TerminalId | null;
+  resizeObserver: ResizeObserver | null;
+  /// Sticky once disposeLeafState runs. Guards the async open/attach
+  /// path against doing anything (and against orphaning a PTY) if the
+  /// leaf was killed before the IPC resolved.
+  killed: boolean;
+};
+
+export function createLeafState(
+  worktreeId: WorktreeId,
+  leaf: PaneLeaf,
+  onSession: (id: TerminalId) => void,
+): LeafState {
+  const host = document.createElement("div");
+  host.style.position = "absolute";
+  host.style.inset = "0";
+  host.style.padding = "8px";
+  host.style.boxSizing = "border-box";
+
+  const term = new Terminal({
+    fontFamily:
+      'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace',
+    fontSize: 13,
+    theme: {
+      background: "#121314",
+      foreground: "#BBBEBF",
+      cursor: "#BBBEBF",
+    },
+    cursorBlink: true,
+    scrollback: 10_000,
+    allowProposedApi: true,
+  });
+  const fit = new FitAddon();
+  term.loadAddon(fit);
+  term.loadAddon(new WebLinksAddon());
+  term.open(host);
+
+  const state: LeafState = {
+    host,
+    term,
+    fit,
+    sessionId: null,
+    resizeObserver: null,
+    killed: false,
+  };
+
+  const encoder = new TextEncoder();
+  const onEvent = (ev: PtyEvent) => {
+    if (state.killed) return;
+    if (ev.kind === "data") {
+      term.write(new Uint8Array(ev.bytes));
+    } else if (ev.kind === "exit") {
+      term.write(
+        `\r\n\x1b[38;2;140;140;140m[process exited${
+          ev.code !== null ? ` — code ${ev.code}` : ""
+        }]\x1b[0m\r\n`,
+      );
+    }
+  };
+
+  (async () => {
+    try {
+      let session;
+      if (leaf.mode.kind === "open") {
+        session = await openTerminal(worktreeId, term.cols, term.rows, onEvent);
+        // Killed before the PTY came back — kill the orphan so it
+        // doesn't reappear as a phantom tab on the next worktree visit.
+        if (state.killed) {
+          await closeTerminal(session.id).catch(() => {});
+          return;
+        }
+      } else {
+        session = await attachTerminal(leaf.mode.terminalId, onEvent);
+        if (state.killed) return;
+      }
+      state.sessionId = session.id;
+      onSession(session.id);
+
+      term.onData((data) => {
+        if (state.sessionId && !state.killed) {
+          ptyWrite(state.sessionId, encoder.encode(data)).catch(() => {});
+        }
+      });
+      term.onResize(({ cols, rows }) => {
+        if (state.sessionId && !state.killed) {
+          ptyResize(state.sessionId, cols, rows).catch(() => {});
+        }
+      });
+      state.resizeObserver = new ResizeObserver(() => {
+        fitAndPin(fit, term);
+      });
+      state.resizeObserver.observe(host);
+    } catch (e) {
+      term.write(`\r\nerror: failed to open terminal — ${e}\r\n`);
+    }
+  })();
+
+  return state;
+}
+
+/// Tear down a leaf's xterm AND kill its PTY. Safe to call while the
+/// async open/attach is still in flight — the `killed` flag short-
+/// circuits and orphan-kills inside that path.
+export function disposeLeafState(state: LeafState) {
+  state.killed = true;
+  state.resizeObserver?.disconnect();
+  state.term.dispose();
+  if (state.sessionId) {
+    closeTerminal(state.sessionId).catch(() => {});
+  }
+}
+
+/// Tear down xterm but keep the PTY alive on the Rust side — used on
+/// worktree switch so the user can come back and reattach.
+function detachLeafState(state: LeafState) {
+  state.killed = true;
+  state.resizeObserver?.disconnect();
+  state.term.dispose();
+}
+
+function TerminalLeafSlot({
+  leaf,
   worktreeId,
-  mode,
   visible,
+  focused,
+  leafStates,
   onSession,
 }: {
+  leaf: PaneLeaf;
   worktreeId: WorktreeId;
-  mode: Mode;
   visible: boolean;
+  focused: boolean;
+  leafStates: Map<string, LeafState>;
   onSession: (id: TerminalId) => void;
 }) {
-  const hostRef = useRef<HTMLDivElement>(null);
-  const termRef = useRef<Terminal | null>(null);
-  const fitRef = useRef<FitAddon | null>(null);
-  const idRef = useRef<TerminalId | null>(null);
+  const slotRef = useRef<HTMLDivElement>(null);
 
+  // Attach this leaf's persistent host element into our slot. On unmount
+  // (split / sibling-close that destroys this slot), detach but DON'T
+  // dispose — the state stays in the map keyed by leaf.localId and the
+  // next mount will reattach it intact.
+  //
+  // Deps are scoped to leaf.localId on purpose: the effect must run
+  // exactly once per slot lifetime (per leaf identity), not on every
+  // parent re-render. Including the leaf object or the freshly-bound
+  // `onSession` function in deps would re-run the effect on every
+  // ancestor render, briefly detaching the xterm host from the DOM
+  // during cleanup → reattach — that's what was producing the cross-
+  // pane breakage when multiple splits existed.
   useEffect(() => {
-    const host = hostRef.current;
-    if (!host) return;
-    let disposed = false;
-    let resizeObserver: ResizeObserver | null = null;
-    const encoder = new TextEncoder();
-
-    const term = new Terminal({
-      fontFamily:
-        'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace',
-      fontSize: 13,
-      theme: {
-        background: "#121314",
-        foreground: "#BBBEBF",
-        cursor: "#BBBEBF",
-      },
-      cursorBlink: true,
-      scrollback: 10_000,
-      allowProposedApi: true,
-    });
-    const fit = new FitAddon();
-    term.loadAddon(fit);
-    term.loadAddon(new WebLinksAddon());
-    termRef.current = term;
-    fitRef.current = fit;
-
-    term.open(host);
-    fit.fit();
-
-    const onEvent = (ev: PtyEvent) => {
-      if (disposed) return;
-      if (ev.kind === "data") {
-        term.write(new Uint8Array(ev.bytes));
-      } else if (ev.kind === "exit") {
-        term.write(
-          `\r\n\x1b[38;2;140;140;140m[process exited${
-            ev.code !== null ? ` — code ${ev.code}` : ""
-          }]\x1b[0m\r\n`,
-        );
-      }
-    };
-
-    (async () => {
-      try {
-        const session =
-          mode.kind === "open"
-            ? await openTerminal(worktreeId, term.cols, term.rows, onEvent)
-            : await attachTerminal(mode.terminalId, onEvent);
-        if (disposed) return;
-        idRef.current = session.id;
-        onSession(session.id);
-
-        term.onData((data) => {
-          if (idRef.current) {
-            ptyWrite(idRef.current, encoder.encode(data)).catch(() => {});
-          }
-        });
-        term.onResize(({ cols, rows }) => {
-          if (idRef.current) {
-            ptyResize(idRef.current, cols, rows).catch(() => {});
-          }
-        });
-        resizeObserver = new ResizeObserver(() => {
-          fitAndPin(fit, term);
-        });
-        resizeObserver.observe(host);
-      } catch (e) {
-        term.write(`\r\nerror: failed to open terminal — ${e}\r\n`);
-      }
-    })();
-
+    const slot = slotRef.current;
+    if (!slot) return;
+    let state = leafStates.get(leaf.localId);
+    if (!state) {
+      state = createLeafState(worktreeId, leaf, onSession);
+      leafStates.set(leaf.localId, state);
+    }
+    slot.appendChild(state.host);
+    try {
+      state.fit.fit();
+    } catch {}
     return () => {
-      disposed = true;
-      resizeObserver?.disconnect();
-      term.dispose();
-      termRef.current = null;
-      fitRef.current = null;
-      idRef.current = null;
-      // NOTE: we do NOT close the terminal on unmount. Worktree switches
-      // should keep shells running; only explicit tab-close kills, via
-      // closeTab → closeTerminal in the parent.
+      if (state.host.parentNode === slot) {
+        slot.removeChild(state.host);
+      }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [worktreeId]);
+  }, [leaf.localId]);
 
-  // When this tab becomes active, re-fit to the (possibly changed) pane size
-  // and refocus so typing flows in right away.
   useEffect(() => {
     if (!visible) return;
-    const fit = fitRef.current;
-    const term = termRef.current;
-    if (fit && term) fitAndPin(fit, term);
-    if (term) term.focus();
-  }, [visible]);
+    const state = leafStates.get(leaf.localId);
+    if (!state) return;
+    try {
+      fitAndPin(state.fit, state.term);
+    } catch {}
+  }, [visible, leaf.localId, leafStates]);
 
-  return (
-    <div className="relative h-full w-full">
-      <div ref={hostRef} className="absolute inset-0 p-2" />
-    </div>
-  );
+  useEffect(() => {
+    if (!focused) return;
+    leafStates.get(leaf.localId)?.term.focus();
+  }, [focused, leaf.localId, leafStates]);
+
+  return <div ref={slotRef} className="relative h-full w-full" />;
 }
