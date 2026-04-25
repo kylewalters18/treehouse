@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { DiffEditor } from "@monaco-editor/react";
+import { DiffEditor, type DiffOnMount } from "@monaco-editor/react";
+import type { editor as MonacoEditor } from "monaco-editor";
 import { useUiStore } from "@/stores/ui";
 import { useWorktreesStore } from "@/stores/worktrees";
 import { useDiffsStore } from "@/stores/diffs";
@@ -7,7 +8,7 @@ import { useLspStore } from "@/stores/lsp";
 import { onDiffUpdated, readBlobAtRef, readFile } from "@/ipc/client";
 import type { FileDiff, FileStatus, WorktreeId } from "@/ipc/types";
 import { cn } from "@/lib/cn";
-import { EditorPane } from "./EditorPane";
+import { CommentOverlay, EditorPane } from "./EditorPane";
 import { FileTree } from "./FileTree";
 import { MarkdownPreview, isMarkdownPath } from "./MarkdownPreview";
 import { inferLanguage } from "./editor-language";
@@ -342,8 +343,24 @@ function DiffEditorView({
   const [before, setBefore] = useState<string | null>(null);
   const [after, setAfter] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [modifiedEditor, setModifiedEditor] =
+    useState<MonacoEditor.IStandaloneCodeEditor | null>(null);
 
   const language = useMemo(() => inferLanguage(file.path), [file.path]);
+
+  const onMount: DiffOnMount = (diffEditor) => {
+    // Anchor review comments to the modified (right-hand / new) side only —
+    // suppressing the gutter "+" on the original side so users can't pin
+    // comments to deleted lines they can't act on. Also hide the original
+    // line-number column: in inline diff mode it renders inside the
+    // modified gutter and would push the review "+" to the right of the
+    // line number, inverting the order vs the File view.
+    diffEditor.getOriginalEditor().updateOptions({
+      glyphMargin: false,
+      lineNumbers: "off",
+    });
+    setModifiedEditor(diffEditor.getModifiedEditor());
+  };
 
   useEffect(() => {
     if (file.binary) {
@@ -418,16 +435,18 @@ function DiffEditorView({
     );
   }
   return (
-    <div className="h-full w-full bg-neutral-950">
+    <div className="relative h-full w-full bg-neutral-950">
       <DiffEditor
         original={before}
         modified={after}
         language={language}
         theme={THEME_NAME}
+        onMount={onMount}
         options={{
           readOnly: true,
           renderSideBySide: false,
           minimap: { enabled: false },
+          glyphMargin: true,
           fontFamily:
             'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace',
           fontSize: 12,
@@ -452,6 +471,13 @@ function DiffEditorView({
           overviewRulerLanes: 0,
         }}
       />
+      {modifiedEditor && (
+        <CommentOverlay
+          editor={modifiedEditor}
+          worktreeId={worktreeId}
+          filePath={file.path}
+        />
+      )}
     </div>
   );
 }

@@ -236,7 +236,7 @@ const COMPOSER_HEIGHT_LINES = 6;
 /// widget, kept in sync via the view zone's `onDomNodeTop`/`onComputedHeight`
 /// callbacks. Widget content is rendered with React `createPortal` into the
 /// overlay's DOM node.
-function CommentOverlay({
+export function CommentOverlay({
   editor,
   worktreeId,
   filePath,
@@ -357,6 +357,13 @@ function CommentOverlay({
   useEffect(() => {
     const handle = (ev: MouseEvent) => {
       const target = ev.target as Element | null;
+      // Scope to this editor's DOM. The DiffEditorView mounts two
+      // `.monaco-editor` instances side-by-side; without this check a
+      // click on either side's gutter would fire every CommentOverlay
+      // listening at document-capture phase.
+      const editorDom = editor.getDomNode();
+      if (!editorDom || !target || !editorDom.contains(target as Node)) return;
+
       let el = target as HTMLElement | null;
       while (el) {
         if (el.classList?.contains("treehouse-comment-plus")) break;
