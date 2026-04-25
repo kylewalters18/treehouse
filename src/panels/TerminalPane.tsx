@@ -15,6 +15,7 @@ import {
 } from "@/ipc/client";
 import type { PtyEvent, TerminalId, WorktreeId } from "@/ipc/types";
 import { cn } from "@/lib/cn";
+import { fitAndPin } from "./xterm-fit";
 
 export function TerminalPane() {
   const worktreeId = useUiStore((s) => s.selectedWorktreeId);
@@ -287,9 +288,7 @@ function TerminalInstance({
           }
         });
         resizeObserver = new ResizeObserver(() => {
-          try {
-            fit.fit();
-          } catch {}
+          fitAndPin(fit, term);
         });
         resizeObserver.observe(host);
       } catch (e) {
@@ -317,14 +316,8 @@ function TerminalInstance({
     if (!visible) return;
     const fit = fitRef.current;
     const term = termRef.current;
-    if (fit) {
-      try {
-        fit.fit();
-      } catch {}
-    }
-    if (term) {
-      term.focus();
-    }
+    if (fit && term) fitAndPin(fit, term);
+    if (term) term.focus();
   }, [visible]);
 
   return (

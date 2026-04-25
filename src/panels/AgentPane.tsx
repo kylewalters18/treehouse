@@ -21,6 +21,7 @@ import type {
   WorktreeId,
 } from "@/ipc/types";
 import { cn } from "@/lib/cn";
+import { fitAndPin } from "./xterm-fit";
 
 const BACKENDS: { label: string; value: AgentBackendKind }[] = [
   { label: "Claude Code", value: "claudeCode" },
@@ -341,9 +342,7 @@ function AgentInstance({
           }
         });
         ro = new ResizeObserver(() => {
-          try {
-            fit.fit();
-          } catch {}
+          fitAndPin(fit, term);
         });
         ro.observe(host);
       } catch (e: unknown) {
@@ -373,11 +372,7 @@ function AgentInstance({
     if (!visible) return;
     const fit = fitRef.current;
     const term = termRef.current;
-    if (fit) {
-      try {
-        fit.fit();
-      } catch {}
-    }
+    if (fit && term) fitAndPin(fit, term);
     if (term) term.focus();
   }, [visible]);
 
