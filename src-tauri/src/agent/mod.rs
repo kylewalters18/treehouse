@@ -50,6 +50,16 @@ pub struct AgentSession {
     pub status: AgentStatus,
 }
 
+/// One named agent (sub-agent profile / context) the user can pre-select
+/// when launching. Discovered by shelling out to the backend's CLI:
+/// `claude agents list` or `kiro-cli agent list`. Codex has no analog.
+#[derive(Debug, Clone, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct BackendAgent {
+    pub name: String,
+}
+
 /// Streamed over a per-session Tauri Channel returned from `launch_agent`.
 #[derive(Debug, Clone, Serialize, TS)]
 #[serde(tag = "kind", rename_all = "camelCase")]

@@ -68,6 +68,7 @@ pub fn run() {
             ipc::commands::agent_resize,
             ipc::commands::kill_agent,
             ipc::commands::list_agents_for_worktree,
+            ipc::commands::list_backend_agents,
             ipc::commands::attach_agent,
             ipc::commands::list_agent_activity,
             ipc::commands::lsp_ensure,

@@ -5,6 +5,7 @@ import type {
   AgentEvent,
   AgentSession,
   AgentSessionId,
+  BackendAgent,
   Comment,
   CreateWorktreeResult,
   DiffSet,
@@ -210,6 +211,16 @@ export function listTerminalsForWorktree(
 }
 
 // --- Agents ---
+
+export function listBackendAgents(
+  backend: AgentBackendKind,
+  worktreeId: WorktreeId | null,
+): Promise<BackendAgent[]> {
+  return invoke<BackendAgent[]>("list_backend_agents", {
+    backend,
+    worktreeId,
+  });
+}
 
 export function launchAgent(
   worktreeId: WorktreeId,

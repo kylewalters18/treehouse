@@ -309,6 +309,23 @@ pub async fn list_agents_for_worktree(
     Ok(state.agents.list_for_worktree(worktree_id))
 }
 
+/// Discover the named sub-agents the backend's CLI knows about (e.g.
+/// `claude agents list`, `kiro-cli agent list`). When `worktree_id` is
+/// supplied the lookup runs in that worktree's path so workspace-scoped
+/// agents (`<repo>/.claude/agents/`, `<repo>/.kiro/agents/`) are visible.
+#[tauri::command]
+pub async fn list_backend_agents(
+    backend: AgentBackendKind,
+    worktree_id: Option<WorktreeId>,
+    state: State<'_, AppState>,
+) -> AppResult<Vec<agent::BackendAgent>> {
+    let cwd = worktree_id
+        .and_then(|id| state.worktrees.get(&id).map(|w| w.path.clone()))
+        .or_else(|| std::env::current_dir().ok())
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    Ok(agent::supervisor::list_backend_agents(backend, &cwd))
+}
+
 #[tauri::command]
 pub async fn list_agent_activity(
     app: AppHandle,

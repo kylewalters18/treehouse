@@ -550,6 +550,144 @@ fn now_millis() -> u64 {
         .unwrap_or(0)
 }
 
+/// Run the backend's `agents list` command in `cwd` and return the parsed
+/// agent names. Codex has no analog and returns an empty list. CLI errors
+/// (binary missing, non-zero exit, unparseable output) bubble up as Ok with
+/// an empty list — surfacing the empty dropdown rather than a hard error
+/// keeps the launch flow usable when discovery fails.
+pub fn list_backend_agents(
+    backend: super::AgentBackendKind,
+    cwd: &std::path::Path,
+) -> Vec<super::BackendAgent> {
+    let argv: Vec<&str> = match backend {
+        super::AgentBackendKind::ClaudeCode => vec!["claude", "agents", "list"],
+        super::AgentBackendKind::Kiro => vec!["kiro-cli", "agent", "list"],
+        super::AgentBackendKind::Codex => return vec![],
+    };
+    let output = match std::process::Command::new(argv[0])
+        .args(&argv[1..])
+        .current_dir(cwd)
+        .output()
+    {
+        Ok(o) if o.status.success() => o,
+        Ok(o) => {
+            tracing::warn!(
+                backend = ?backend,
+                code = ?o.status.code(),
+                "agents-list command exited non-zero"
+            );
+            return vec![];
+        }
+        Err(e) => {
+            tracing::warn!(backend = ?backend, ?e, "agents-list command failed to spawn");
+            return vec![];
+        }
+    };
+    // Claude writes its agent list to stdout; kiro-cli writes to stderr.
+    // Concatenate so the parser works regardless and we don't depend on
+    // the CLI never changing which stream it picks.
+    let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
+    text.push_str(&String::from_utf8_lossy(&output.stderr));
+    match backend {
+        super::AgentBackendKind::ClaudeCode => parse_claude_agents(&text),
+        super::AgentBackendKind::Kiro => parse_kiro_agents(&text),
+        super::AgentBackendKind::Codex => vec![],
+    }
+}
+
+/// Strip CSI sequences (`\x1b[...m`) so Kiro's color-coded output can be
+/// parsed line-by-line. Doesn't try to handle every escape — just enough
+/// for the SGR codes the CLIs actually emit.
+fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            // Skip CSI: optional `[`, then anything until a final byte 0x40-0x7E.
+            for next in chars.by_ref() {
+                if ('@'..='~').contains(&next) {
+                    break;
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// Claude `agents list` output is like:
+/// ```text
+/// 4 active agents
+///
+/// Built-in agents:
+///   Explore · haiku
+///   general-purpose · inherit
+///   Plan · inherit
+/// ```
+/// Each agent row is two-space indented and contains ` · `. There may be
+/// additional sections (`User agents:`, `Project agents:`) with the same
+/// row shape.
+fn parse_claude_agents(text: &str) -> Vec<super::BackendAgent> {
+    let mut out = Vec::new();
+    for line in text.lines() {
+        if !line.starts_with("  ") {
+            continue;
+        }
+        let trimmed = line.trim();
+        let Some((name, _)) = trimmed.split_once('·') else {
+            continue;
+        };
+        let name = name.trim();
+        if !name.is_empty() {
+            out.push(super::BackendAgent {
+                name: name.to_string(),
+            });
+        }
+    }
+    out
+}
+
+/// Kiro `agent list` output (after ANSI strip) is like:
+/// ```text
+/// Workspace: ~/.../.kiro/agents
+/// Global:    ~/.kiro/agents
+///
+/// * kiro_default    (Built-in)    Default agent
+///   cpp-refactor    Workspace     Placeholder agent for C++
+///                                  (main.cpp, point.{h,cpp}).
+///   kiro_help       (Built-in)    Help agent that answers questions ...
+///                                  using documentation
+/// ```
+/// Built-in agents show `(Built-in)`; workspace/user agents show a plain
+/// type word (no parens) — so we can't filter on parentheses. Instead use
+/// indentation: agent rows start with `* ` or exactly two spaces;
+/// description-continuation lines start with many more spaces.
+fn parse_kiro_agents(text: &str) -> Vec<super::BackendAgent> {
+    let stripped = strip_ansi(text);
+    let mut out = Vec::new();
+    for line in stripped.lines() {
+        let is_agent_row = line.starts_with("* ")
+            || (line.starts_with("  ") && !line.starts_with("   "));
+        if !is_agent_row {
+            continue;
+        }
+        let trimmed = line.trim_start_matches(['*', ' ']);
+        let Some(name) = trimmed.split_whitespace().next() else {
+            continue;
+        };
+        // Header lines like "  Workspace: ..." would otherwise pass the
+        // indent test if they were two-space-indented.
+        if name.ends_with(':') {
+            continue;
+        }
+        out.push(super::BackendAgent {
+            name: name.to_string(),
+        });
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -614,5 +752,45 @@ mod tests {
         big.extend_from_slice(b"[y/N]");
         big.extend(std::iter::repeat(b' ').take(1000));
         assert!(has_attention(&big));
+    }
+
+    #[test]
+    fn parse_claude_agents_extracts_built_in_names() {
+        let sample = "4 active agents\n\nBuilt-in agents:\n  Explore · haiku\n  general-purpose · inherit\n  Plan · inherit\n  statusline-setup · sonnet\n";
+        let agents = parse_claude_agents(sample);
+        let names: Vec<_> = agents.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["Explore", "general-purpose", "Plan", "statusline-setup"]
+        );
+    }
+
+    #[test]
+    fn parse_kiro_agents_strips_ansi_and_skips_continuation_lines() {
+        // Real `kiro-cli agent list` payload shape: ANSI-colored labels,
+        // asterisk-marked default, mix of (Built-in) and Workspace types
+        // (the latter has no parens), and a description that wraps onto
+        // a continuation line containing parentheses of its own — which
+        // mustn't be picked up as a phantom agent row. Built explicitly
+        // (no string-continuation) so source indentation doesn't get
+        // eaten and the parser sees real column positions.
+        let lines = [
+            "\x1b[38;5;244mWorkspace: \x1b[0m~/Code/foo/.kiro/agents",
+            "\x1b[38;5;244mGlobal:    \x1b[0m~/.kiro/agents",
+            "",
+            "* kiro_default    \x1b[38;5;244m(Built-in)\x1b[0m    Default agent",
+            "  cpp-refactor    Workspace     Placeholder Kiro agent for C++ refactoring tasks",
+            "                                 (main.cpp, point.{h,cpp}).",
+            "  kiro_help       \x1b[38;5;244m(Built-in)\x1b[0m    Help agent that answers questions about Kiro CLI",
+            "                                 features using documentation",
+            "  test-runner     Workspace     Placeholder Kiro agent that runs the test suite",
+        ];
+        let sample = lines.join("\n");
+        let agents = parse_kiro_agents(&sample);
+        let names: Vec<_> = agents.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["kiro_default", "cpp-refactor", "kiro_help", "test-runner"]
+        );
     }
 }

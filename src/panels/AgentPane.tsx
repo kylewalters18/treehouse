@@ -13,11 +13,13 @@ import {
   killAgent,
   launchAgent,
   listAgentsForWorktree,
+  listBackendAgents,
 } from "@/ipc/client";
 import type {
   AgentBackendKind,
   AgentEvent,
   AgentSessionId,
+  BackendAgent,
   WorktreeId,
 } from "@/ipc/types";
 import { cn } from "@/lib/cn";
@@ -60,14 +62,40 @@ type Tab = {
 };
 
 type Mode =
-  | { kind: "launch"; backend: AgentBackendKind }
+  | { kind: "launch"; backend: AgentBackendKind; argv?: string[] }
   | { kind: "attach"; agentId: AgentSessionId };
+
+/// Build an argv that pre-selects a sub-agent on the backend's CLI.
+/// `null` agentName = use the backend default (no `--agent` flag).
+function argvForAgent(
+  backend: AgentBackendKind,
+  agentName: string | null,
+): string[] | undefined {
+  if (!agentName) return undefined;
+  switch (backend) {
+    case "claudeCode":
+      return ["claude", "--agent", agentName];
+    case "kiro":
+      // kiro-cli's default subcommand is `chat`; --agent only attaches there.
+      return ["kiro-cli", "chat", "--agent", agentName];
+    case "codex":
+      return undefined;
+  }
+}
+
+function backendSupportsAgents(backend: AgentBackendKind): boolean {
+  return backend === "claudeCode" || backend === "kiro";
+}
 
 function AgentTabs({ worktreeId }: { worktreeId: WorktreeId }) {
   const [tabs, setTabs] = useState<Tab[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const defaultBackend = useSettingsStore((s) => s.settings.defaultAgentBackend);
   const [backend, setBackend] = useState<AgentBackendKind>(defaultBackend);
+  const [agentName, setAgentName] = useState<string | null>(null);
+  const [agentsByBackend, setAgentsByBackend] = useState<
+    Partial<Record<AgentBackendKind, BackendAgent[]>>
+  >({});
   // If settings load after this component mounted, and the user hasn't
   // touched the dropdown yet, pick up the persisted default. Guarded by a
   // ref so we only do this once per mount — subsequent Settings edits
@@ -128,13 +156,43 @@ function AgentTabs({ worktreeId }: { worktreeId: WorktreeId }) {
     };
   }, [worktreeId]);
 
+  // Lazily fetch the agent list for the currently-selected backend.
+  // CLI shell-out costs ~100ms; cache per-backend for the lifetime of the
+  // pane so toggling the backend dropdown back and forth is instant.
+  useEffect(() => {
+    if (!backendSupportsAgents(backend)) return;
+    if (agentsByBackend[backend] !== undefined) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const list = await listBackendAgents(backend, worktreeId);
+        if (cancelled) return;
+        setAgentsByBackend((prev) => ({ ...prev, [backend]: list }));
+      } catch {
+        if (cancelled) return;
+        setAgentsByBackend((prev) => ({ ...prev, [backend]: [] }));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [backend, worktreeId, agentsByBackend]);
+
+  // Dropping into a backend that doesn't support agents (Codex) — clear
+  // any stale selection so we don't pass a name the new backend can't use.
+  useEffect(() => {
+    if (!backendSupportsAgents(backend)) setAgentName(null);
+  }, [backend]);
+
   function onLaunch() {
     counters.current[backend] = (counters.current[backend] ?? 0) + 1;
+    const argv = argvForAgent(backend, agentName);
+    const labelSuffix = agentName ? ` (${agentName})` : "";
     const next: Tab = {
       localId: crypto.randomUUID(),
-      mode: { kind: "launch", backend },
+      mode: { kind: "launch", backend, argv },
       backend,
-      label: `${BACKEND_LABELS[backend]} ${counters.current[backend]}`,
+      label: `${BACKEND_LABELS[backend]} ${counters.current[backend]}${labelSuffix}`,
     };
     setTabs((prev) => [...prev, next]);
     setActiveId(next.localId);
@@ -160,52 +218,69 @@ function AgentTabs({ worktreeId }: { worktreeId: WorktreeId }) {
 
   return (
     <div className="flex h-full flex-col border-l border-neutral-800 bg-neutral-950">
-      <div className="flex shrink-0 items-center gap-1 overflow-x-auto border-b border-neutral-800 px-1 py-0.5">
-        {tabs.map((tab) => (
-          <div
-            key={tab.localId}
-            onClick={() => setActiveId(tab.localId)}
-            className={cn(
-              "group flex shrink-0 cursor-pointer items-center gap-1 rounded px-2 py-0.5 text-[11px]",
-              tab.localId === activeId
-                ? "bg-neutral-800 text-neutral-100"
-                : "text-neutral-400 hover:bg-neutral-900",
-            )}
-          >
-            <span className="font-mono">{tab.label}</span>
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                closeTab(tab.localId);
-              }}
-              className="opacity-0 transition group-hover:opacity-100 text-neutral-500 hover:text-red-400"
-              title="Kill agent"
-            >
-              ✕
-            </button>
-          </div>
-        ))}
-        <div className="ml-auto flex shrink-0 items-center gap-1">
+      <div className="flex shrink-0 items-center justify-end gap-1 border-b border-neutral-800 px-1 py-0.5">
+        <select
+          value={backend}
+          onChange={(e) => setBackend(e.target.value as AgentBackendKind)}
+          className="rounded border border-neutral-800 bg-neutral-900 px-1 py-0.5 text-[11px] focus:outline-none"
+        >
+          {BACKENDS.map((b) => (
+            <option key={b.value} value={b.value}>
+              {b.label}
+            </option>
+          ))}
+        </select>
+        {backendSupportsAgents(backend) && (
           <select
-            value={backend}
-            onChange={(e) => setBackend(e.target.value as AgentBackendKind)}
-            className="rounded border border-neutral-800 bg-neutral-900 px-1 py-0.5 text-[11px] focus:outline-none"
+            value={agentName ?? ""}
+            onChange={(e) => setAgentName(e.target.value || null)}
+            title="Sub-agent profile"
+            className="max-w-[12rem] rounded border border-neutral-800 bg-neutral-900 px-1 py-0.5 text-[11px] focus:outline-none"
           >
-            {BACKENDS.map((b) => (
-              <option key={b.value} value={b.value}>
-                {b.label}
+            <option value="">Default</option>
+            {(agentsByBackend[backend] ?? []).map((a) => (
+              <option key={a.name} value={a.name}>
+                {a.name}
               </option>
             ))}
           </select>
-          <button
-            onClick={onLaunch}
-            title="Launch new agent"
-            className="rounded bg-blue-600 px-2 py-0.5 text-[11px] font-medium text-white hover:bg-blue-500"
-          >
-            + Launch
-          </button>
-        </div>
+        )}
+        <button
+          onClick={onLaunch}
+          title="Launch new agent"
+          className="rounded bg-blue-600 px-2 py-0.5 text-[11px] font-medium text-white hover:bg-blue-500"
+        >
+          + Launch
+        </button>
       </div>
+      {hasTabs && (
+        <div className="flex shrink-0 items-center gap-1 overflow-x-auto border-b border-neutral-800 px-1 py-0.5">
+          {tabs.map((tab) => (
+            <div
+              key={tab.localId}
+              onClick={() => setActiveId(tab.localId)}
+              className={cn(
+                "group flex shrink-0 cursor-pointer items-center gap-1 rounded px-2 py-0.5 text-[11px]",
+                tab.localId === activeId
+                  ? "bg-neutral-800 text-neutral-100"
+                  : "text-neutral-400 hover:bg-neutral-900",
+              )}
+            >
+              <span className="font-mono">{tab.label}</span>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  closeTab(tab.localId);
+                }}
+                className="opacity-0 transition group-hover:opacity-100 text-neutral-500 hover:text-red-400"
+                title="Kill agent"
+              >
+                ✕
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
 
       <div className="relative flex-1">
         {!hasTabs && (
@@ -321,6 +396,7 @@ function AgentInstance({
             term.cols,
             term.rows,
             onEvent,
+            mode.argv,
           );
           id = s.id;
         } else {

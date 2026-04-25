@@ -16,9 +16,9 @@ describe("inferLanguage", () => {
   });
 
   it("maps shell dialects", () => {
-    expect(inferLanguage("run.sh")).toBe("shell");
-    expect(inferLanguage("setup.zsh")).toBe("shell");
-    expect(inferLanguage("boot.bash")).toBe("shell");
+    expect(inferLanguage("run.sh")).toBe("shellscript");
+    expect(inferLanguage("setup.zsh")).toBe("shellscript");
+    expect(inferLanguage("boot.bash")).toBe("shellscript");
   });
 
   it("falls back to plaintext for unknown or missing extensions", () => {

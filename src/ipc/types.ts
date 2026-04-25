@@ -32,6 +32,7 @@ export type { AgentStatus } from "./bindings/AgentStatus";
 export type { AgentEvent } from "./bindings/AgentEvent";
 export type { AgentActivity } from "./bindings/AgentActivity";
 export type { WorktreeActivity } from "./bindings/WorktreeActivity";
+export type { BackendAgent } from "./bindings/BackendAgent";
 
 export type { MergeResult } from "./bindings/MergeResult";
 export type { MergeBackStrategy } from "./bindings/MergeBackStrategy";
