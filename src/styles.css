@@ -38,3 +38,13 @@ body {
 .treehouse-comment-plus:hover {
   color: #3b82f6;
 }
+
+/* Suppress Monaco's keybinding tooltip on action-bar buttons — the
+ * "(Escape)" / "Previous Match (⇧⏎)" hints that flicker over the find
+ * widget when you mouse around its toolbar. These are tooltip-style
+ * hovers (`role="tooltip"`); the editor's code-content hover (LSP type
+ * info, hover docs) is rendered without that role and is unaffected. */
+.monaco-hover[role="tooltip"],
+.monaco-hover-content[role="tooltip"] {
+  display: none !important;
+}
