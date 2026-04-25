@@ -3,6 +3,8 @@ import ReactDOM from "react-dom/client";
 import * as monaco from "monaco-editor";
 import { loader } from "@monaco-editor/react";
 import { App } from "./App";
+import { setupShiki } from "./panels/monaco-shiki";
+import { defineTreehouseTheme } from "./panels/monaco-theme";
 import "./styles.css";
 
 // E2E harness: stub the Tauri IPC layer before any app code imports it,
@@ -24,6 +26,15 @@ if (import.meta.env.VITE_E2E) {
 // our LSP hover/definition/completion providers would register cleanly
 // but the editor never called them.
 loader.config({ monaco });
+
+// Register Shiki TextMate grammars for non-TS/JS languages before any
+// editor mounts — otherwise the first file open paints before tokenizers
+// are ready. On success Shiki also registers the `treehouse-dark` theme;
+// on failure we register a Monarch-tuned fallback under the same name.
+await setupShiki(monaco).catch((err) => {
+  console.error("Shiki setup failed; falling back to Monarch theme", err);
+  defineTreehouseTheme(monaco);
+});
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>

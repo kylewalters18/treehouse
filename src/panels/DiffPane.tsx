@@ -11,7 +11,7 @@ import { EditorPane } from "./EditorPane";
 import { FileTree } from "./FileTree";
 import { MarkdownPreview, isMarkdownPath } from "./MarkdownPreview";
 import { inferLanguage } from "./editor-language";
-import { THEME_NAME, defineTreehouseTheme } from "./monaco-theme";
+import { THEME_NAME } from "./monaco-theme";
 
 export function DiffPane() {
   const worktreeId = useUiStore((s) => s.selectedWorktreeId);
@@ -432,7 +432,6 @@ function DiffEditorView({
         modified={after}
         language={language}
         theme={THEME_NAME}
-        beforeMount={defineTreehouseTheme}
         options={{
           readOnly: true,
           renderSideBySide: false,

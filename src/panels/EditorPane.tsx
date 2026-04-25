@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import Editor, { type OnMount } from "@monaco-editor/react";
 import type { editor as MonacoEditor } from "monaco-editor";
-import { THEME_NAME, defineTreehouseTheme } from "./monaco-theme";
+import { THEME_NAME } from "./monaco-theme";
 import { onDiffUpdated, readFile } from "@/ipc/client";
 import { pasteAndSubmit } from "@/lib/agent";
 import type { Comment, FileContent, WorktreeId } from "@/ipc/types";
@@ -172,7 +172,6 @@ function EditorWithComments({
         language={language}
         value={content}
         theme={THEME_NAME}
-        beforeMount={defineTreehouseTheme}
         onMount={onMount}
         path={path}
         options={{
