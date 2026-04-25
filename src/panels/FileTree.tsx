@@ -1,11 +1,22 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  ChevronDown,
+  ChevronRight,
+  Folder,
+  FolderOpen,
+} from "lucide-react";
 import { listTree } from "@/ipc/client";
 import type { FileStatus, TreeEntry, WorktreeId } from "@/ipc/types";
 import { cn } from "@/lib/cn";
+import {
+  iconForFile,
+  statusFilenameColor,
+  type FileIconComponent,
+} from "./file-icons";
 
 type Props = {
   worktreeId: WorktreeId;
-  /// Worktree-relative paths that have a diff entry, for change badges.
+  /// Worktree-relative paths that have a diff entry, for change tinting.
   statusByPath: Map<string, FileStatus>;
   selectedPath: string | null;
   onSelect: (path: string) => void;
@@ -140,45 +151,63 @@ function TreeNode({
   onSelect: (path: string) => void;
 }) {
   const isExpanded = entry.isDir && expanded.has(entry.path);
-  const badge = statusByPath.get(entry.path);
+  const status = statusByPath.get(entry.path);
   const isSelected = selectedPath === entry.path;
   const dirContents = children.get(entry.path) ?? [];
+
+  const fileIcon = entry.isDir ? null : iconForFile(entry.name);
+  const Icon: FileIconComponent = entry.isDir
+    ? isExpanded
+      ? FolderOpen
+      : Folder
+    : fileIcon!.Icon;
+  const iconColor = entry.isDir ? "#7dd3fc" : fileIcon!.color;
+  const Chevron = entry.isDir ? (isExpanded ? ChevronDown : ChevronRight) : null;
+
+  const nameClass =
+    entry.ignored
+      ? "italic text-neutral-600"
+      : status && !entry.isDir
+        ? statusFilenameColor(status.kind)
+        : entry.isDir
+          ? "text-neutral-200"
+          : "text-neutral-400";
 
   return (
     <li>
       <button
         onClick={() => (entry.isDir ? onToggle(entry.path) : onSelect(entry.path))}
         className={cn(
-          "flex w-full items-center gap-1.5 px-2 py-0.5 text-left text-[11px] hover:bg-neutral-900",
-          isSelected && "bg-neutral-900 text-neutral-100",
+          "relative flex w-full items-center gap-1 py-0.5 pr-2 text-left text-[11px] transition-colors",
+          isSelected
+            ? "bg-[#3994BC26] text-neutral-100"
+            : "hover:bg-white/[0.04]",
         )}
-        style={{ paddingLeft: `${8 + depth * 12}px` }}
+        style={{ paddingLeft: `${4 + depth * 12}px` }}
         title={entry.ignored ? `${entry.path} (ignored)` : entry.path}
       >
-        <span className="w-3 shrink-0 text-center text-neutral-600">
-          {entry.isDir ? (isExpanded ? "▾" : "▸") : ""}
+        {/* Indent guides — one faint vertical line per ancestor depth,
+            centered in each indent step. Stacked rows visually connect
+            because adjacent buttons have no vertical gap. */}
+        {Array.from({ length: depth }).map((_, i) => (
+          <span
+            key={i}
+            aria-hidden
+            className="pointer-events-none absolute bottom-0 top-0 w-px bg-neutral-800"
+            style={{ left: `${4 + i * 12 + 5}px` }}
+          />
+        ))}
+        <span className="flex w-3 shrink-0 items-center justify-center text-neutral-500">
+          {Chevron ? <Chevron size={11} strokeWidth={2.5} /> : null}
         </span>
-        <span
-          className={cn(
-            "truncate font-mono",
-            entry.isDir ? "text-neutral-300" : "text-neutral-400",
-            badge && !entry.isDir && "text-neutral-100",
-            entry.ignored && "italic text-neutral-600",
-          )}
-        >
+        <Icon
+          size={13}
+          color={iconColor}
+          className={cn("shrink-0", entry.ignored && "opacity-50")}
+        />
+        <span className={cn("truncate font-mono", nameClass)}>
           {entry.name}
         </span>
-        {badge && !entry.isDir && (
-          <span
-            className={cn(
-              "ml-auto shrink-0 rounded px-1 font-mono text-[9px] font-bold",
-              statusBadgeColor(badge),
-            )}
-            title={badge.kind}
-          >
-            {statusBadgeLetter(badge)}
-          </span>
-        )}
       </button>
       {isExpanded && dirContents.length > 0 && (
         <ul>
@@ -197,7 +226,7 @@ function TreeNode({
           ))}
         </ul>
       )}
-      {isExpanded && dirContents.length === 0 && expanded.has(entry.path) && (
+      {isExpanded && dirContents.length === 0 && (
         <div
           className="px-2 py-0.5 text-[11px] italic text-neutral-700"
           style={{ paddingLeft: `${24 + depth * 12}px` }}
@@ -209,36 +238,3 @@ function TreeNode({
   );
 }
 
-function statusBadgeLetter(s: FileStatus): string {
-  switch (s.kind) {
-    case "added":
-      return "A";
-    case "modified":
-      return "M";
-    case "deleted":
-      return "D";
-    case "renamed":
-      return "R";
-    case "untracked":
-      return "?";
-    default:
-      return "·";
-  }
-}
-
-function statusBadgeColor(s: FileStatus): string {
-  switch (s.kind) {
-    case "added":
-      return "bg-emerald-900/60 text-emerald-300";
-    case "modified":
-      return "bg-amber-900/60 text-amber-300";
-    case "deleted":
-      return "bg-rose-900/60 text-rose-300";
-    case "renamed":
-      return "bg-blue-900/60 text-blue-300";
-    case "untracked":
-      return "bg-neutral-800 text-neutral-400";
-    default:
-      return "bg-neutral-800 text-neutral-400";
-  }
-}

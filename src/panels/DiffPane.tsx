@@ -11,6 +11,7 @@ import { EditorPane } from "./EditorPane";
 import { FileTree } from "./FileTree";
 import { MarkdownPreview, isMarkdownPath } from "./MarkdownPreview";
 import { inferLanguage } from "./editor-language";
+import { iconForFile, statusFilenameColor } from "./file-icons";
 import { THEME_NAME } from "./monaco-theme";
 
 export function DiffPane() {
@@ -108,32 +109,44 @@ function DiffView({ worktreeId }: { worktreeId: WorktreeId }) {
             </div>
           ) : (
             <ul>
-              {diff.files.map((f) => (
-                <li key={f.path}>
-                  <button
-                    onClick={() => {
-                      selectFile(worktreeId, f.path);
-                      setView(worktreeId, "diff");
-                    }}
-                    className={cn(
-                      "flex w-full items-center justify-between gap-2 px-3 py-1 text-left text-xs hover:bg-neutral-900",
-                      selectedFile === f.path && "bg-neutral-900",
-                    )}
-                    title={f.path}
-                  >
-                    <span className="flex min-w-0 items-center gap-2">
-                      <StatusBadge status={f.status} />
-                      <span className="truncate font-mono text-[11px] text-neutral-200">
-                        {f.path}
+              {diff.files.map((f) => {
+                const basename = f.path.split("/").pop() ?? f.path;
+                const { Icon, color } = iconForFile(basename);
+                const isSelected = selectedFile === f.path;
+                return (
+                  <li key={f.path}>
+                    <button
+                      onClick={() => {
+                        selectFile(worktreeId, f.path);
+                        setView(worktreeId, "diff");
+                      }}
+                      className={cn(
+                        "flex w-full items-center justify-between gap-2 px-3 py-1 text-left text-xs transition-colors",
+                        isSelected
+                          ? "bg-[#3994BC26] text-neutral-100"
+                          : "hover:bg-white/[0.04]",
+                      )}
+                      title={f.path}
+                    >
+                      <span className="flex min-w-0 items-center gap-1.5">
+                        <Icon size={13} color={color} className="shrink-0" />
+                        <span
+                          className={cn(
+                            "truncate font-mono text-[11px]",
+                            statusFilenameColor(f.status.kind),
+                          )}
+                        >
+                          {f.path}
+                        </span>
                       </span>
-                    </span>
-                    <span className="shrink-0 font-mono text-[11px]">
-                      <span className="text-emerald-400">+{f.insertions}</span>{" "}
-                      <span className="text-rose-400">-{f.deletions}</span>
-                    </span>
-                  </button>
-                </li>
-              ))}
+                      <span className="shrink-0 font-mono text-[11px]">
+                        <span className="text-emerald-400">+{f.insertions}</span>{" "}
+                        <span className="text-rose-400">-{f.deletions}</span>
+                      </span>
+                    </button>
+                  </li>
+                );
+              })}
             </ul>
           )}
         </div>
@@ -312,27 +325,6 @@ function TabButton({
   );
 }
 
-function StatusBadge({ status }: { status: FileStatus }) {
-  const kind = status.kind;
-  const map: Record<string, { label: string; cls: string }> = {
-    added: { label: "A", cls: "bg-emerald-900/50 text-emerald-300" },
-    modified: { label: "M", cls: "bg-amber-900/50 text-amber-300" },
-    deleted: { label: "D", cls: "bg-rose-900/50 text-rose-300" },
-    renamed: { label: "R", cls: "bg-blue-900/50 text-blue-300" },
-    untracked: { label: "?", cls: "bg-neutral-800 text-neutral-400" },
-  };
-  const m = map[kind] ?? { label: "·", cls: "bg-neutral-800 text-neutral-400" };
-  return (
-    <span
-      className={cn(
-        "inline-flex h-4 w-4 shrink-0 items-center justify-center rounded font-mono text-[11px] font-bold",
-        m.cls,
-      )}
-    >
-      {m.label}
-    </span>
-  );
-}
 
 /// Inline diff powered by Monaco's `DiffEditor` so we get syntax
 /// highlighting, unified / side-by-side rendering, and folded-unchanged
