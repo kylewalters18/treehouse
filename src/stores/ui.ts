@@ -9,11 +9,6 @@ type UiState = {
   /// it as the user clicks tabs; comment-send code reads it to route
   /// payloads to the right session.
   activeAgentByWorktree: Record<WorktreeId, AgentSessionId | null>;
-  /// Last agent the user explicitly picked from a per-comment Send
-  /// picker. Sticky so repeated sends route to the same target without
-  /// re-picking. Falls back to the active tab when unset (or when the
-  /// stored agent has died and is no longer in the running list).
-  lastSendTargetByWorktree: Record<WorktreeId, AgentSessionId | null>;
   /// Per-session display label as the AgentPane shows it on tabs (e.g.
   /// "Claude 1" or "Claude 1 (rust-analyzer)"). The numeric counter is
   /// AgentPane-local state, so consumers like SendTargetPopover need
@@ -28,10 +23,6 @@ type UiState = {
     worktreeId: WorktreeId,
     agentId: AgentSessionId | null,
   ) => void;
-  setLastSendTarget: (
-    worktreeId: WorktreeId,
-    agentId: AgentSessionId | null,
-  ) => void;
   setAgentLabel: (agentId: AgentSessionId, label: string) => void;
   clearAgentLabel: (agentId: AgentSessionId) => void;
   reset: () => void;
@@ -42,7 +33,6 @@ export const useUiStore = create<UiState>((set) => ({
   focusMode: false,
   worktreeSidebarCollapsed: false,
   activeAgentByWorktree: {},
-  lastSendTargetByWorktree: {},
   agentLabelsBySessionId: {},
   selectWorktree(id) {
     set({ selectedWorktreeId: id });
@@ -63,14 +53,6 @@ export const useUiStore = create<UiState>((set) => ({
     set((s) => ({
       activeAgentByWorktree: {
         ...s.activeAgentByWorktree,
-        [worktreeId]: agentId,
-      },
-    }));
-  },
-  setLastSendTarget(worktreeId, agentId) {
-    set((s) => ({
-      lastSendTargetByWorktree: {
-        ...s.lastSendTargetByWorktree,
         [worktreeId]: agentId,
       },
     }));
@@ -96,7 +78,6 @@ export const useUiStore = create<UiState>((set) => ({
       focusMode: false,
       worktreeSidebarCollapsed: false,
       activeAgentByWorktree: {},
-      lastSendTargetByWorktree: {},
       agentLabelsBySessionId: {},
     });
   },

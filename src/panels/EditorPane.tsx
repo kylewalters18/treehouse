@@ -602,11 +602,6 @@ function CommentWidget({
   const [draft, setDraft] = useState(comment.text);
   const resolved = comment.resolvedAt !== null;
 
-  const lastSendTarget = useUiStore(
-    (s) => s.lastSendTargetByWorktree[worktreeId] ?? null,
-  );
-  const setLastSendTarget = useUiStore((s) => s.setLastSendTarget);
-
   // Lazily fetched when the picker opens; cached in component state so
   // reopening the same widget's picker doesn't re-shell unless the user
   // explicitly refreshes (closing and reopening clears nothing — we
@@ -636,21 +631,11 @@ function CommentWidget({
     };
   }, [pickerOpen, worktreeId]);
 
-  // Resolve the target the main Send button routes to. Sticky last-pick
-  // wins if it's still alive in `agents`; otherwise fall back to the
-  // currently-active tab. `agents` is null until the picker has been
-  // opened at least once — before that we trust the stored target / active.
-  const effectiveTarget: AgentSessionId | null = (() => {
-    if (lastSendTarget) {
-      if (!agents || agents.some((a) => a.id === lastSendTarget)) {
-        return lastSendTarget;
-      }
-    }
-    return activeAgentId;
-  })();
+  // Main Send always routes to the active tab — picking a non-active
+  // agent is a one-shot via the popover, not a sticky preference.
+  const effectiveTarget = activeAgentId;
 
   async function sendToTarget(agentId: AgentSessionId) {
-    setLastSendTarget(worktreeId, agentId);
     setPickerOpen(false);
     await onSendTo(agentId);
   }
