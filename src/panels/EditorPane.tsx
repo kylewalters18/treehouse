@@ -438,9 +438,9 @@ function CommentOverlay({
         domNode.style.width = `${initWidth}px`;
         domNode.style.top = "0px";
         domNode.style.height = `${desc.heightLines * 18}px`;
-        domNode.style.background = "#0f0f0f";
-        domNode.style.borderTop = "1px solid #262626";
-        domNode.style.borderBottom = "1px solid #262626";
+        domNode.style.background = "#191A1B";
+        domNode.style.borderTop = "1px solid #2A2B2C";
+        domNode.style.borderBottom = "1px solid #2A2B2C";
         domNode.style.boxSizing = "border-box";
         domNode.style.overflow = "auto";
         domNode.style.padding = "6px 12px";

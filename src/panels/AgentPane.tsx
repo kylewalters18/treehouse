@@ -273,9 +273,9 @@ function AgentInstance({
         'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace',
       fontSize: 13,
       theme: {
-        background: "#0a0a0a",
-        foreground: "#e5e5e5",
-        cursor: "#e5e5e5",
+        background: "#121314",
+        foreground: "#BBBEBF",
+        cursor: "#BBBEBF",
       },
       cursorBlink: true,
       scrollback: 20_000,
@@ -301,7 +301,7 @@ function AgentInstance({
                 : ""
               : `: ${ev.status.message}`;
           term.write(
-            `\r\n\x1b[38;2;115;115;115m[agent ${ev.status.kind}${suffix}]\x1b[0m\r\n`,
+            `\r\n\x1b[38;2;140;140;140m[agent ${ev.status.kind}${suffix}]\x1b[0m\r\n`,
           );
         }
       }

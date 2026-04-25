@@ -236,9 +236,9 @@ function TerminalInstance({
         'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace',
       fontSize: 13,
       theme: {
-        background: "#0a0a0a",
-        foreground: "#e5e5e5",
-        cursor: "#e5e5e5",
+        background: "#121314",
+        foreground: "#BBBEBF",
+        cursor: "#BBBEBF",
       },
       cursorBlink: true,
       scrollback: 10_000,
@@ -259,7 +259,7 @@ function TerminalInstance({
         term.write(new Uint8Array(ev.bytes));
       } else if (ev.kind === "exit") {
         term.write(
-          `\r\n\x1b[38;2;115;115;115m[process exited${
+          `\r\n\x1b[38;2;140;140;140m[process exited${
             ev.code !== null ? ` — code ${ev.code}` : ""
           }]\x1b[0m\r\n`,
         );
