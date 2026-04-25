@@ -1,6 +1,6 @@
 # treehouse
 
-Desktop IDE centered on **parallel AI-agent development in git worktrees**. The unit of work is a worktree; agents (Claude Code / Codex / Kiro) run as long-lived subprocesses inside each worktree, and the primary review surface is a live-updating diff of that worktree against a base ref. Multiple agents and `xterm.js` terminals per worktree are tabbed; opt-in LSPs wire into Monaco for hover/goto/completions; inline review comments queue up and batch-send to the active agent; merge-back (merge / squash / rebase) is one click.
+Desktop ADE (agentic development environment) centered on **parallel AI-agent development in git worktrees**. The unit of work is a worktree; agents (Claude Code / Codex / Kiro) run as long-lived subprocesses inside each worktree, and the primary review surface is a live-updating diff of that worktree against a base ref. Multiple agents and `xterm.js` terminals per worktree are tabbed; opt-in LSPs wire into Monaco for hover/goto/completions; inline review comments queue up and batch-send to the active agent; merge-back (merge / squash / rebase) is one click.
 
 Greenfield, built macOS-first. Tauri v2 (Rust backend) + React 19 + Vite.
 
