@@ -338,7 +338,7 @@ function AgentTabs({ worktreeId }: { worktreeId: WorktreeId }) {
   );
 }
 
-function AgentInstance({
+export function AgentInstance({
   worktreeId,
   mode,
   visible,
@@ -414,11 +414,20 @@ function AgentInstance({
             mode.argv,
           );
           id = s.id;
+          // Cleanup may have fired while launchAgent was in flight —
+          // worktree switch mid-launch, or React StrictMode's
+          // mount-unmount-mount cycle in dev. The session is alive on
+          // the Rust side; kill it now so it doesn't reappear as a
+          // duplicate tab on next worktree visit.
+          if (disposed) {
+            await killAgent(id).catch(() => {});
+            return;
+          }
         } else {
           const s = await attachAgent(mode.agentId, onEvent);
           id = s.id;
+          if (disposed) return;
         }
-        if (disposed) return;
         agentIdRef.current = id;
         onSession(id);
 
