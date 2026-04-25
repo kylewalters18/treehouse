@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { AlertTriangle, Check, Loader2 } from "lucide-react";
 import { useWorkspaceStore } from "@/stores/workspace";
 import { useWorktreesStore } from "@/stores/worktrees";
 import { useUiStore } from "@/stores/ui";
@@ -946,6 +947,11 @@ function AheadBehind({ ahead, behind }: { ahead: number; behind: number }) {
   );
 }
 
+/// Per-worktree agent activity glyph. Spinner while output is flowing,
+/// green check when it briefly stops (rendering / between turns), amber
+/// triangle once it's been quiet long enough that it's almost certainly
+/// awaiting input. A small empty dot when there's no agent attached so
+/// the row's leading slot stays visually anchored.
 function StatusDot({
   activity,
   className,
@@ -953,42 +959,38 @@ function StatusDot({
   activity: AgentActivity;
   className?: string;
 }) {
-  const { color, pulse, title } = activityStyle(activity);
-  return (
-    <span
-      title={title}
-      className={cn(
-        "inline-block h-2 w-2 shrink-0 rounded-full",
-        color,
-        pulse && "animate-pulse",
-        className,
-      )}
-    />
-  );
-}
-
-function activityStyle(activity: AgentActivity): {
-  color: string;
-  pulse: boolean;
-  title: string;
-} {
+  const wrapper = "inline-flex h-3 w-3 shrink-0 items-center justify-center";
   switch (activity) {
     case "working":
-      return { color: "bg-emerald-500", pulse: true, title: "agent: working" };
+      return (
+        <span title="agent: working" className={cn(wrapper, className)}>
+          <Loader2 size={12} className="animate-spin text-sky-400" />
+        </span>
+      );
     case "idle":
-      return { color: "bg-neutral-400", pulse: false, title: "agent: idle" };
+      return (
+        <span title="agent: idle" className={cn(wrapper, className)}>
+          <Check size={12} className="text-emerald-400" />
+        </span>
+      );
     case "needsAttention":
-      return {
-        color: "bg-red-500",
-        pulse: true,
-        title: "agent: needs attention",
-      };
+      return (
+        <span
+          title="agent: needs attention"
+          className={cn(wrapper, className)}
+        >
+          <AlertTriangle
+            size={12}
+            className="animate-pulse text-amber-400"
+          />
+        </span>
+      );
     case "inactive":
     default:
-      return {
-        color: "bg-neutral-700",
-        pulse: false,
-        title: "no agent",
-      };
+      return (
+        <span title="no agent" className={cn(wrapper, className)}>
+          <span className="h-1.5 w-1.5 rounded-full bg-neutral-700" />
+        </span>
+      );
   }
 }
