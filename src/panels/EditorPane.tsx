@@ -1,11 +1,17 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import Editor, { type OnMount } from "@monaco-editor/react";
 import type { editor as MonacoEditor } from "monaco-editor";
 import { THEME_NAME } from "./monaco-theme";
-import { onDiffUpdated, readFile } from "@/ipc/client";
+import { listAgentsForWorktree, onDiffUpdated, readFile } from "@/ipc/client";
 import { pasteAndSubmit } from "@/lib/agent";
-import type { Comment, FileContent, WorktreeId } from "@/ipc/types";
+import type {
+  AgentSession,
+  AgentSessionId,
+  Comment,
+  FileContent,
+  WorktreeId,
+} from "@/ipc/types";
 import {
   formatCommentForAgent,
   useCommentsStore,
@@ -523,12 +529,13 @@ export function CommentOverlay({
             <CommentWidget
               comment={c}
               queued={queue.has(c.id)}
-              canSend={!!activeAgentId}
+              worktreeId={worktreeId}
+              activeAgentId={activeAgentId}
               onToggleQueue={() => toggleQueue(c.id)}
               onResolve={() => void resolveComment(c.id)}
               onDelete={() => void removeComment(c.id)}
               onUpdateText={(text) => void updateText(c.id, text)}
-              onSend={() => sendOne(c, activeAgentId)}
+              onSendTo={(agentId) => sendOne(c, agentId)}
             />,
             e.domNode,
             desc.key,
@@ -556,9 +563,9 @@ export function CommentOverlay({
   );
 }
 
-async function sendOne(c: Comment, agentId: string | null) {
+async function sendOne(c: Comment, agentId: AgentSessionId | null) {
   if (!agentId) {
-    toastInfo("No active agent in this worktree");
+    toastInfo("Pick an agent to send to");
     return;
   }
   try {
@@ -573,25 +580,80 @@ async function sendOne(c: Comment, agentId: string | null) {
 function CommentWidget({
   comment,
   queued,
-  canSend,
+  worktreeId,
+  activeAgentId,
   onToggleQueue,
   onResolve,
   onDelete,
   onUpdateText,
-  onSend,
+  onSendTo,
 }: {
   comment: Comment;
   queued: boolean;
-  canSend: boolean;
+  worktreeId: WorktreeId;
+  activeAgentId: AgentSessionId | null;
   onToggleQueue: () => void;
   onResolve: () => void;
   onDelete: () => void;
   onUpdateText: (text: string) => void;
-  onSend: () => void;
+  onSendTo: (agentId: AgentSessionId) => void | Promise<void>;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(comment.text);
   const resolved = comment.resolvedAt !== null;
+
+  const lastSendTarget = useUiStore(
+    (s) => s.lastSendTargetByWorktree[worktreeId] ?? null,
+  );
+  const setLastSendTarget = useUiStore((s) => s.setLastSendTarget);
+
+  // Lazily fetched when the picker opens; cached in component state so
+  // reopening the same widget's picker doesn't re-shell unless the user
+  // explicitly refreshes (closing and reopening clears nothing — we
+  // keep the list until the widget unmounts).
+  const [agents, setAgents] = useState<AgentSession[] | null>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const chevronRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (!pickerOpen) return;
+    let cancelled = false;
+    listAgentsForWorktree(worktreeId)
+      .then((list) => {
+        if (cancelled) return;
+        setAgents(
+          list.filter(
+            (a) =>
+              a.status.kind === "running" || a.status.kind === "starting",
+          ),
+        );
+      })
+      .catch(() => {
+        if (!cancelled) setAgents([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [pickerOpen, worktreeId]);
+
+  // Resolve the target the main Send button routes to. Sticky last-pick
+  // wins if it's still alive in `agents`; otherwise fall back to the
+  // currently-active tab. `agents` is null until the picker has been
+  // opened at least once — before that we trust the stored target / active.
+  const effectiveTarget: AgentSessionId | null = (() => {
+    if (lastSendTarget) {
+      if (!agents || agents.some((a) => a.id === lastSendTarget)) {
+        return lastSendTarget;
+      }
+    }
+    return activeAgentId;
+  })();
+
+  async function sendToTarget(agentId: AgentSessionId) {
+    setLastSendTarget(worktreeId, agentId);
+    setPickerOpen(false);
+    await onSendTo(agentId);
+  }
 
   function save() {
     const t = draft.trim();
@@ -627,14 +689,40 @@ function CommentWidget({
         </span>
         <span className="flex items-center gap-1">
           {!resolved && (
-            <button
-              onClick={onSend}
-              disabled={!canSend}
-              title={canSend ? "Send to active agent" : "No active agent"}
-              className="rounded border border-neutral-800 px-1.5 py-0.5 text-[11px] text-neutral-300 hover:border-emerald-800 hover:text-emerald-300 disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              Send
-            </button>
+            <span className="relative inline-flex">
+              <button
+                onClick={() =>
+                  effectiveTarget && void sendToTarget(effectiveTarget)
+                }
+                disabled={!effectiveTarget}
+                title={
+                  effectiveTarget
+                    ? "Send to selected agent"
+                    : "No agents running in this worktree"
+                }
+                className="rounded-l border border-r-0 border-neutral-800 px-1.5 py-0.5 text-[11px] text-neutral-300 hover:border-emerald-800 hover:text-emerald-300 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                Send
+              </button>
+              <button
+                ref={chevronRef}
+                onClick={() => setPickerOpen((v) => !v)}
+                title="Pick agent to send to"
+                className="rounded-r border border-neutral-800 px-1 py-0.5 text-[11px] text-neutral-400 hover:border-emerald-800 hover:text-emerald-300"
+              >
+                ▾
+              </button>
+              {pickerOpen && chevronRef.current && (
+                <SendTargetPopover
+                  anchor={chevronRef.current}
+                  agents={agents}
+                  activeAgentId={activeAgentId}
+                  selectedAgentId={effectiveTarget}
+                  onPick={sendToTarget}
+                  onClose={() => setPickerOpen(false)}
+                />
+              )}
+            </span>
           )}
           {!resolved && (
             <button
@@ -701,6 +789,119 @@ function CommentWidget({
       </div>
     </div>
   );
+}
+
+function SendTargetPopover({
+  anchor,
+  agents,
+  activeAgentId,
+  selectedAgentId,
+  onPick,
+  onClose,
+}: {
+  anchor: HTMLElement;
+  agents: AgentSession[] | null;
+  activeAgentId: AgentSessionId | null;
+  selectedAgentId: AgentSessionId | null;
+  onPick: (id: AgentSessionId) => void | Promise<void>;
+  onClose: () => void;
+}) {
+  const labels = useUiStore((s) => s.agentLabelsBySessionId);
+  const ref = useRef<HTMLDivElement>(null);
+  // Portaled to document.body — Monaco's overlay widget container has
+  // `overflow: auto` and sibling widgets stack on top, so an in-place
+  // popover would be clipped or hidden behind the next code line.
+  // Pin to the chevron's viewport rect so it floats above everything.
+  const POPOVER_WIDTH = 288;
+  const rect = anchor.getBoundingClientRect();
+  const top = rect.bottom + 4;
+  const left = Math.max(8, rect.right - POPOVER_WIDTH);
+
+  useEffect(() => {
+    function onDocMouseDown(e: MouseEvent) {
+      const target = e.target as Node;
+      if (ref.current && ref.current.contains(target)) return;
+      if (anchor.contains(target)) return;
+      onClose();
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") onClose();
+    }
+    // Any scroll while the picker is open will misalign it — close
+    // rather than chase the rect on every frame.
+    function onScroll() {
+      onClose();
+    }
+    window.addEventListener("mousedown", onDocMouseDown);
+    window.addEventListener("keydown", onKey);
+    window.addEventListener("scroll", onScroll, true);
+    return () => {
+      window.removeEventListener("mousedown", onDocMouseDown);
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("scroll", onScroll, true);
+    };
+  }, [anchor, onClose]);
+
+  return createPortal(
+    <div
+      ref={ref}
+      style={{ position: "fixed", top, left, width: POPOVER_WIDTH }}
+      className="z-50 rounded-lg border border-neutral-800 bg-neutral-900 shadow-2xl"
+    >
+      <div className="border-b border-neutral-800 px-3 py-2 text-[11px] uppercase tracking-wider text-neutral-500">
+        Send to
+      </div>
+      <div className="max-h-64 overflow-y-auto p-1">
+        {agents === null ? (
+          <div className="px-3 py-2 text-[11px] text-neutral-500">Loading…</div>
+        ) : agents.length === 0 ? (
+          <div className="px-3 py-2 text-[11px] text-neutral-500">
+            No running agents in this worktree
+          </div>
+        ) : (
+          <ul className="flex flex-col gap-0.5">
+            {agents.map((a) => (
+              <li key={a.id}>
+                <button
+                  onClick={() => void onPick(a.id)}
+                  className={cn(
+                    "flex w-full items-start gap-2 rounded px-2 py-1 text-left text-xs hover:bg-neutral-950",
+                    selectedAgentId === a.id && "bg-blue-950/40",
+                  )}
+                >
+                  <span className="min-w-0 flex-1">
+                    <div className="truncate text-neutral-100">
+                      {labels[a.id] ?? sendTargetLabel(a)}
+                      {a.id === activeAgentId && (
+                        <span className="ml-1 text-[10px] text-neutral-500">
+                          (active tab)
+                        </span>
+                      )}
+                    </div>
+                    <div className="truncate font-mono text-[10px] text-neutral-500">
+                      {a.argv.join(" ")}
+                    </div>
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+function sendTargetLabel(a: AgentSession): string {
+  switch (a.backend) {
+    case "claudeCode":
+      return "Claude Code";
+    case "codex":
+      return "Codex";
+    case "kiro":
+      return "Kiro";
+  }
 }
 
 function CommentComposer({

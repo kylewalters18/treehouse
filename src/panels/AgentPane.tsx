@@ -87,6 +87,15 @@ function backendSupportsAgents(backend: AgentBackendKind): boolean {
   return backend === "claudeCode" || backend === "kiro";
 }
 
+/// Pull the sub-agent name back out of an argv so adopted sessions get
+/// the same `Claude 1 (foo)` label as freshly-launched ones, instead of
+/// just `Claude 1`. Returns the bracketed suffix or "" if no `--agent`.
+function argvAgentSuffix(argv: string[]): string {
+  const i = argv.indexOf("--agent");
+  if (i < 0 || i + 1 >= argv.length) return "";
+  return ` (${argv[i + 1]})`;
+}
+
 function AgentTabs({ worktreeId }: { worktreeId: WorktreeId }) {
   const [tabs, setTabs] = useState<Tab[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -109,6 +118,8 @@ function AgentTabs({ worktreeId }: { worktreeId: WorktreeId }) {
   const [initLoading, setInitLoading] = useState(true);
   const sessionIds = useRef<Map<string, AgentSessionId>>(new Map());
   const setActiveAgent = useUiStore((s) => s.setActiveAgent);
+  const setAgentLabel = useUiStore((s) => s.setAgentLabel);
+  const clearAgentLabel = useUiStore((s) => s.clearAgentLabel);
 
   // Mirror the active tab's session id into the UI store so other parts of
   // the app (notably the inline-comment send button) know which agent
@@ -136,11 +147,13 @@ function AgentTabs({ worktreeId }: { worktreeId: WorktreeId }) {
             (counters.current[s.backend] ?? 0) + 1;
           const localId = crypto.randomUUID();
           sessionIds.current.set(localId, s.id);
+          const label = `${BACKEND_LABELS[s.backend]} ${counters.current[s.backend]}${argvAgentSuffix(s.argv)}`;
+          setAgentLabel(s.id, label);
           return {
             localId,
             mode: { kind: "attach", agentId: s.id },
             backend: s.backend,
-            label: `${BACKEND_LABELS[s.backend]} ${counters.current[s.backend]}`,
+            label,
           };
         });
         setTabs(adopted);
@@ -202,6 +215,7 @@ function AgentTabs({ worktreeId }: { worktreeId: WorktreeId }) {
     const agentId = sessionIds.current.get(localId);
     if (agentId) {
       await killAgent(agentId).catch(() => {});
+      clearAgentLabel(agentId);
     }
     sessionIds.current.delete(localId);
     setTabs((prev) => {
@@ -307,6 +321,7 @@ function AgentTabs({ worktreeId }: { worktreeId: WorktreeId }) {
               visible={tab.localId === activeId}
               onSession={(id) => {
                 sessionIds.current.set(tab.localId, id);
+                setAgentLabel(id, tab.label);
                 // The mirror-to-store effect above only re-runs when
                 // `activeId` changes, not when the session id arrives —
                 // push it directly so other parts of the app (send-queue,
