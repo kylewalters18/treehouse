@@ -165,11 +165,31 @@ function EditorWithComments({
   const [editor, setEditor] = useState<MonacoEditor.IStandaloneCodeEditor | null>(
     null,
   );
-  const onMount: OnMount = (e) => setEditor(e);
+  const [cursorPos, setCursorPos] = useState<{
+    line: number;
+    column: number;
+  } | null>(null);
+  const onMount: OnMount = (e) => {
+    setEditor(e);
+    const pos = e.getPosition();
+    if (pos) setCursorPos({ line: pos.lineNumber, column: pos.column });
+  };
 
   useLspIntegration(editor, worktreeId, path, language);
   useGotoClickHandler(editor, worktreeId, language);
   usePendingReveal(editor, worktreeId, path, content);
+
+  // Mirror Monaco's cursor position into local state so the bottom-right
+  // indicator updates as the user navigates. Monaco fires this for both
+  // keyboard motion and click positioning, so one subscription covers all
+  // sources.
+  useEffect(() => {
+    if (!editor) return;
+    const sub = editor.onDidChangeCursorPosition((e) => {
+      setCursorPos({ line: e.position.lineNumber, column: e.position.column });
+    });
+    return () => sub.dispose();
+  }, [editor]);
 
   return (
     <>
@@ -212,6 +232,14 @@ function EditorWithComments({
           worktreeId={worktreeId}
           filePath={path}
         />
+      )}
+      {cursorPos && (
+        <div
+          className="pointer-events-none absolute bottom-1 right-3 z-20 rounded bg-neutral-900/80 px-1.5 py-0.5 font-mono text-[10px] text-neutral-400"
+          aria-label="Cursor position"
+        >
+          Ln {cursorPos.line}, Col {cursorPos.column}
+        </div>
       )}
     </>
   );
