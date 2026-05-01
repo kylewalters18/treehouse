@@ -45,6 +45,13 @@ export function listRecentWorkspaces(): Promise<RecentWorkspace[]> {
   return invoke<RecentWorkspace[]>("list_recent_workspaces");
 }
 
+/// Open an http/https URL in the host's default browser. Backend
+/// rejects other schemes; treat the rejection as a no-op rather than a
+/// user-visible error.
+export function openExternalUrl(url: string): Promise<void> {
+  return invoke<void>("open_external_url", { url });
+}
+
 export function getSettings(): Promise<Settings> {
   return invoke<Settings>("get_settings");
 }

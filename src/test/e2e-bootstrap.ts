@@ -26,6 +26,7 @@ export function installE2EMocks(): void {
   // these via `window.__e2e.mock(...)` as needed.
   const handlers: Record<string, InvokeHandler> = {
     list_recent_workspaces: async () => [],
+    open_external_url: async () => null,
     get_settings: async () => ({
       syncStrategy: "rebase",
       mergeBackStrategy: "rebaseFf",

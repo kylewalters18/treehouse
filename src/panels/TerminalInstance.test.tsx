@@ -23,9 +23,6 @@ vi.mock("xterm-addon-fit", () => ({
     fit() {}
   },
 }));
-vi.mock("xterm-addon-web-links", () => ({
-  WebLinksAddon: class {},
-}));
 vi.mock("xterm/css/xterm.css", () => ({}));
 
 vi.mock("@/ipc/client", () => ({

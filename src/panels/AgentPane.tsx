@@ -24,7 +24,7 @@ import type {
 } from "@/ipc/types";
 import { cn } from "@/lib/cn";
 import { fitAndPin } from "./xterm-fit";
-import { registerPathLinks } from "./term-path-links";
+import { registerTerminalLinks } from "./term-path-links";
 
 const BACKENDS: { label: string; value: AgentBackendKind }[] = [
   { label: "Claude Code", value: "claudeCode" },
@@ -563,8 +563,9 @@ export function AgentInstance({
     fit.fit();
     termRef.current = term;
     fitRef.current = fit;
-    // Cmd+click on file paths opens them in the editor.
-    const pathLinks = registerPathLinks(term, worktreeId);
+    // Cmd+click on file paths opens them in the editor; on URLs, in
+    // the system browser.
+    const termLinks = registerTerminalLinks(term, worktreeId);
 
     const encoder = new TextEncoder();
     const onEvent = (ev: AgentEvent) => {
@@ -665,7 +666,7 @@ export function AgentInstance({
     return () => {
       disposed = true;
       ro?.disconnect();
-      pathLinks.dispose();
+      termLinks.dispose();
       term.dispose();
       termRef.current = null;
       fitRef.current = null;

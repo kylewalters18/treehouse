@@ -44,6 +44,7 @@ pub fn run() {
             ipc::commands::open_workspace,
             ipc::commands::close_workspace,
             ipc::commands::list_recent_workspaces,
+            ipc::commands::open_external_url,
             ipc::commands::get_settings,
             ipc::commands::update_settings,
             ipc::commands::list_comments,

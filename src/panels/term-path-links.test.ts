@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  combinedLinksForLine,
   linksForLine,
   parsePathWithLineCol,
   resolveToWorktreeRelative,
+  urlLinksForLine,
 } from "./term-path-links";
 
 const FAKE_WORKTREE_ID =
@@ -139,5 +141,82 @@ describe("linksForLine", () => {
       pointerCursor: true,
       underline: true,
     });
+  });
+});
+
+describe("urlLinksForLine", () => {
+  it("matches https and http URLs", () => {
+    expect(
+      urlLinksForLine("see https://example.com/foo", 1).map((l) => l.text),
+    ).toEqual(["https://example.com/foo"]);
+    expect(
+      urlLinksForLine("plain http://localhost:3000", 1).map((l) => l.text),
+    ).toEqual(["http://localhost:3000"]);
+  });
+
+  it("strips trailing punctuation from URLs in prose", () => {
+    // Real terminal output often wraps URLs in punctuation: "see
+    // https://x.com/foo." or "(https://x.com/foo)". The matcher
+    // should drop trailing `.,;:!?)>"'` so the link text is clickable.
+    expect(
+      urlLinksForLine("docs at https://example.com/foo.", 1).map((l) => l.text),
+    ).toEqual(["https://example.com/foo"]);
+    expect(
+      urlLinksForLine("see (https://example.com/foo)", 1).map((l) => l.text),
+    ).toEqual(["https://example.com/foo"]);
+  });
+
+  it("matches multiple URLs on one line", () => {
+    const text =
+      "compare https://a.example/x with https://b.example/y";
+    expect(urlLinksForLine(text, 1).map((l) => l.text)).toEqual([
+      "https://a.example/x",
+      "https://b.example/y",
+    ]);
+  });
+
+  it("does not match non-http schemes", () => {
+    // file://, ftp://, etc — different open semantics and easier to
+    // get wrong; keep the matcher tight and add others on demand.
+    expect(urlLinksForLine("file:///etc/hosts", 1)).toEqual([]);
+    expect(urlLinksForLine("ftp://example.com", 1)).toEqual([]);
+  });
+
+  it("emits underline + pointer-cursor decorations", () => {
+    const links = urlLinksForLine("at https://example.com", 1);
+    expect(links[0].decorations).toEqual({
+      pointerCursor: true,
+      underline: true,
+    });
+  });
+});
+
+describe("combinedLinksForLine", () => {
+  it("URL ranges win over overlapping path matches", () => {
+    // The path matcher's bare-filename branch falsely matches
+    // `example.com/foo` from inside `https://example.com/foo`. The
+    // combined result must drop that path match — clicking on the
+    // URL should hit the URL link, not a phantom file.
+    const text = "see https://example.com/foo";
+    const links = combinedLinksForLine(text, 1, FAKE_WORKTREE_ID);
+    expect(links).toHaveLength(1);
+    expect(links[0].text).toBe("https://example.com/foo");
+  });
+
+  it("paths on a line that also has a URL are still emitted", () => {
+    // Real terminal output: an error message that mentions a doc URL
+    // alongside the offending file. Both should be clickable.
+    const text = "src/foo.ts:42 — see https://docs.example/x";
+    const texts = combinedLinksForLine(text, 1, FAKE_WORKTREE_ID).map(
+      (l) => l.text,
+    );
+    expect(texts).toContain("https://docs.example/x");
+    expect(texts).toContain("src/foo.ts:42");
+  });
+
+  it("returns empty for a line with no matches", () => {
+    expect(combinedLinksForLine("plain text only", 1, FAKE_WORKTREE_ID)).toEqual(
+      [],
+    );
   });
 });

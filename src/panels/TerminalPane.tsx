@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { Terminal } from "xterm";
 import { FitAddon } from "xterm-addon-fit";
-import { WebLinksAddon } from "xterm-addon-web-links";
 import "xterm/css/xterm.css";
 
 import { useUiStore } from "@/stores/ui";
@@ -33,7 +32,7 @@ import {
   type TerminalTab,
 } from "@/stores/terminal-layout";
 import { fitAndPin } from "./xterm-fit";
-import { registerPathLinks } from "./term-path-links";
+import { registerTerminalLinks } from "./term-path-links";
 
 export function TerminalPane() {
   const worktreeId = useUiStore((s) => s.selectedWorktreeId);
@@ -526,10 +525,10 @@ export function createLeafState(
   });
   const fit = new FitAddon();
   term.loadAddon(fit);
-  term.loadAddon(new WebLinksAddon());
   term.open(host);
-  // Cmd+click on file paths opens them in the editor.
-  const pathLinks = registerPathLinks(term, worktreeId);
+  // Cmd+click on file paths opens them in the editor; on URLs, in
+  // the system browser.
+  const termLinks = registerTerminalLinks(term, worktreeId);
 
   const state: LeafState = {
     host,
@@ -537,7 +536,7 @@ export function createLeafState(
     fit,
     sessionId: null,
     resizeObserver: null,
-    pathLinks,
+    pathLinks: termLinks,
     killed: false,
   };
 

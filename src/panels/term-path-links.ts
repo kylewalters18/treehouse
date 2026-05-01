@@ -1,4 +1,5 @@
 import type { IDisposable, ILink, Terminal } from "xterm";
+import { openExternalUrl } from "@/ipc/client";
 import type { WorktreeId } from "@/ipc/types";
 import { useDiffsStore } from "@/stores/diffs";
 import { useWorktreesStore } from "@/stores/worktrees";
@@ -18,7 +19,16 @@ import { useWorktreesStore } from "@/stores/worktrees";
 /// `2.5MB`, version strings). Users with bare filenames can still open
 /// them via the file tree.
 
-export function registerPathLinks(
+/// Single combined link provider for both URLs and paths. xterm
+/// queries providers in registration order and uses the first
+/// non-undefined result per line — registering URL and path as
+/// separate providers means a line containing a URL would suppress
+/// path matches on the same line. One provider that returns the
+/// merged set sidesteps that and lets us strip path matches that
+/// overlap URL ranges (e.g. `example.com/foo` inside
+/// `https://example.com/foo` should belong to the URL link, not a
+/// false-positive path link).
+export function registerTerminalLinks(
   term: Terminal,
   worktreeId: WorktreeId,
 ): IDisposable {
@@ -31,9 +41,33 @@ export function registerPathLinks(
         return;
       }
       const text = line.translateToString(true);
-      callback(linksForLine(text, bufferLineNumber, worktreeId));
+      const links = combinedLinksForLine(text, bufferLineNumber, worktreeId);
+      // Pass `undefined` (not an empty array) when there's nothing —
+      // empty array short-circuits xterm's provider chain so any
+      // future providers wouldn't get a turn.
+      callback(links.length > 0 ? links : undefined);
     },
   });
+}
+
+/// URL and path links for one line, with URL ranges taking
+/// precedence: any path match that overlaps a URL range is dropped.
+export function combinedLinksForLine(
+  text: string,
+  bufferLineNumber: number,
+  worktreeId: WorktreeId,
+): ILink[] {
+  const urls = urlLinksForLine(text, bufferLineNumber);
+  // Build inclusive cell ranges of URL matches so we can filter
+  // overlapping path matches out. `range.start.x` and `range.end.x`
+  // are 1-based and inclusive.
+  const urlRanges = urls.map((u) => [u.range.start.x, u.range.end.x] as const);
+  const paths = linksForLine(text, bufferLineNumber, worktreeId).filter((p) => {
+    const ps = p.range.start.x;
+    const pe = p.range.end.x;
+    return !urlRanges.some(([us, ue]) => ps <= ue && us <= pe);
+  });
+  return [...urls, ...paths];
 }
 
 /// Path matcher. Three alternatives joined by `|`:
@@ -120,6 +154,49 @@ export function resolveToWorktreeRelative(
   }
   if (rawPath.startsWith("./")) return rawPath.slice(2);
   return rawPath;
+}
+
+/// http/https URL matcher. Permissive on the path component but
+/// strict on the scheme — file://, ftp://, etc. have different open
+/// semantics and are easier to get wrong; add on demand. The negative
+/// lookahead `[^\s)]` stops at whitespace or a closing paren so a URL
+/// in `(see https://x.com/foo)` doesn't include the trailing `)`.
+const URL_REGEX = /https?:\/\/[^\s)>"']+/g;
+
+/// Punctuation that's unlikely to be part of a real URL but is common
+/// in trailing position from prose: `https://x.com/foo.` or `https://
+/// x.com/foo!`. We strip these from the right edge before producing
+/// the link.
+const TRAILING_PUNCT = /[.,;:!?]+$/;
+
+export function urlLinksForLine(
+  text: string,
+  bufferLineNumber: number,
+): ILink[] {
+  const links: ILink[] = [];
+  for (const match of text.matchAll(URL_REGEX)) {
+    if (match.index === undefined) continue;
+    let url = match[0];
+    const trim = url.match(TRAILING_PUNCT);
+    if (trim) url = url.slice(0, url.length - trim[0].length);
+    const start = match.index;
+    const end = start + url.length;
+    links.push({
+      range: {
+        start: { x: start + 1, y: bufferLineNumber },
+        end: { x: end, y: bufferLineNumber },
+      },
+      text: url,
+      decorations: { pointerCursor: true, underline: true },
+      activate(event, text) {
+        if (!event.metaKey && !event.ctrlKey) return;
+        void openExternalUrl(text).catch((e) => {
+          console.warn("[term-links] open external failed", text, e);
+        });
+      },
+    });
+  }
+  return links;
 }
 
 async function openPathInEditor(

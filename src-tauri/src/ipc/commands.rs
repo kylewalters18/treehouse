@@ -55,6 +55,34 @@ pub async fn list_recent_workspaces(app: AppHandle) -> AppResult<Vec<RecentWorks
     storage::list_recent(&app).await
 }
 
+/// Open `url` in the host's default handler. Restricted to http/https
+/// — anything else is rejected as a defensive measure, since the
+/// frontend regex already filters but a renderer compromise would
+/// otherwise hand us arbitrary `file://` / `ssh://` / `mailto:`
+/// strings to shell out to.
+#[tauri::command]
+pub async fn open_external_url(url: String) -> AppResult<()> {
+    if !url.starts_with("http://") && !url.starts_with("https://") {
+        return Err(AppError::Unknown(format!(
+            "open_external_url: only http/https schemes are allowed (got: {url})"
+        )));
+    }
+    // macOS-only per project scope. `open` follows the user's default
+    // browser association — same UX as clicking a link in any other
+    // mac app.
+    let status = std::process::Command::new("open")
+        .arg(&url)
+        .status()
+        .map_err(|e| AppError::Unknown(format!("spawn open: {e}")))?;
+    if !status.success() {
+        return Err(AppError::Unknown(format!(
+            "open exited non-zero ({:?}) for {url}",
+            status.code()
+        )));
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn get_settings(app: AppHandle) -> AppResult<Settings> {
     storage::load_settings(&app).await
