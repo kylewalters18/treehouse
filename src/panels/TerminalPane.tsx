@@ -33,6 +33,7 @@ import {
   type TerminalTab,
 } from "@/stores/terminal-layout";
 import { fitAndPin } from "./xterm-fit";
+import { registerPathLinks } from "./term-path-links";
 
 export function TerminalPane() {
   const worktreeId = useUiStore((s) => s.selectedWorktreeId);
@@ -490,6 +491,9 @@ export type LeafState = {
   fit: FitAddon;
   sessionId: TerminalId | null;
   resizeObserver: ResizeObserver | null;
+  /// xterm link provider disposable. Released in `disposeLeafState`
+  /// alongside the terminal so we don't accumulate dead listeners.
+  pathLinks: { dispose: () => void } | null;
   /// Sticky once disposeLeafState runs. Guards the async open/attach
   /// path against doing anything (and against orphaning a PTY) if the
   /// leaf was killed before the IPC resolved.
@@ -524,6 +528,8 @@ export function createLeafState(
   term.loadAddon(fit);
   term.loadAddon(new WebLinksAddon());
   term.open(host);
+  // Cmd+click on file paths opens them in the editor.
+  const pathLinks = registerPathLinks(term, worktreeId);
 
   const state: LeafState = {
     host,
@@ -531,6 +537,7 @@ export function createLeafState(
     fit,
     sessionId: null,
     resizeObserver: null,
+    pathLinks,
     killed: false,
   };
 
@@ -594,6 +601,7 @@ export function createLeafState(
 export function disposeLeafState(state: LeafState) {
   state.killed = true;
   state.resizeObserver?.disconnect();
+  state.pathLinks?.dispose();
   state.term.dispose();
   if (state.sessionId) {
     closeTerminal(state.sessionId).catch(() => {});
@@ -605,6 +613,7 @@ export function disposeLeafState(state: LeafState) {
 function detachLeafState(state: LeafState) {
   state.killed = true;
   state.resizeObserver?.disconnect();
+  state.pathLinks?.dispose();
   state.term.dispose();
 }
 

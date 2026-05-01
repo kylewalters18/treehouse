@@ -20,6 +20,9 @@ vi.mock("xterm", () => ({
     loadAddon() {}
     attachCustomKeyEventHandler() {}
     scrollToBottom() {}
+    registerLinkProvider() {
+      return { dispose() {} };
+    }
   },
 }));
 vi.mock("xterm-addon-fit", () => ({

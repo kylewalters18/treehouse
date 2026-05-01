@@ -13,6 +13,9 @@ vi.mock("xterm", () => ({
     write() {}
     loadAddon() {}
     scrollToBottom() {}
+    registerLinkProvider() {
+      return { dispose() {} };
+    }
   },
 }));
 vi.mock("xterm-addon-fit", () => ({
