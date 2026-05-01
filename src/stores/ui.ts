@@ -14,6 +14,13 @@ type UiState = {
   /// AgentPane-local state, so consumers like SendTargetPopover need
   /// AgentPane to publish the rendered label to share it.
   agentLabelsBySessionId: Record<AgentSessionId, string>;
+  /// User-set agent-tab order per worktree, as a list of session IDs.
+  /// AgentPane writes this when the user drags a tab; on worktree switch
+  /// it remounts and consults this list to lay tabs out in the same
+  /// order. Sessions absent from the list (newly launched, or stored
+  /// state predates the launch) sort to the end in their original
+  /// `started_at` order.
+  agentTabOrderByWorktree: Record<WorktreeId, AgentSessionId[]>;
   selectWorktree: (id: WorktreeId | null) => void;
   toggleFocusMode: () => void;
   setFocusMode: (on: boolean) => void;
@@ -25,6 +32,10 @@ type UiState = {
   ) => void;
   setAgentLabel: (agentId: AgentSessionId, label: string) => void;
   clearAgentLabel: (agentId: AgentSessionId) => void;
+  setAgentTabOrder: (
+    worktreeId: WorktreeId,
+    sessionIds: AgentSessionId[],
+  ) => void;
   reset: () => void;
 };
 
@@ -34,6 +45,7 @@ export const useUiStore = create<UiState>((set) => ({
   worktreeSidebarCollapsed: false,
   activeAgentByWorktree: {},
   agentLabelsBySessionId: {},
+  agentTabOrderByWorktree: {},
   selectWorktree(id) {
     set({ selectedWorktreeId: id });
   },
@@ -72,6 +84,14 @@ export const useUiStore = create<UiState>((set) => ({
       return { agentLabelsBySessionId: next };
     });
   },
+  setAgentTabOrder(worktreeId, sessionIds) {
+    set((s) => ({
+      agentTabOrderByWorktree: {
+        ...s.agentTabOrderByWorktree,
+        [worktreeId]: sessionIds,
+      },
+    }));
+  },
   reset() {
     set({
       selectedWorktreeId: null,
@@ -79,6 +99,7 @@ export const useUiStore = create<UiState>((set) => ({
       worktreeSidebarCollapsed: false,
       activeAgentByWorktree: {},
       agentLabelsBySessionId: {},
+      agentTabOrderByWorktree: {},
     });
   },
 }));
