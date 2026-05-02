@@ -48,3 +48,36 @@ body {
 .monaco-hover-content[role="tooltip"] {
   display: none !important;
 }
+
+/* Shiki-rendered code fences inside the markdown preview. Shiki emits
+ * <pre class="shiki"><code><span>…</span></code></pre> with inline
+ * background/color via CSS variables. We provide the padding +
+ * monospace stack, and force the `prose` defaults for code/pre off so
+ * they don't double-paint the background or override Shiki's colors. */
+.shiki-block {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+    monospace;
+}
+.shiki-block .shiki {
+  margin: 0;
+  padding: 12px 14px;
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre;
+  overflow-x: auto;
+}
+.shiki-block .shiki code {
+  background: transparent;
+  padding: 0;
+  font-family: inherit;
+  color: inherit;
+}
+.prose .shiki-block .shiki,
+.prose .shiki-block .shiki code {
+  /* Override `prose` defaults that put rounded corners + a different
+   * background on bare <pre>/<code>. The wrapper handles the border
+   * and rounding so the inner Shiki block can paint edge-to-edge. */
+  background: var(--shiki-bg, #0e0f10);
+  color: var(--shiki-fg, #BBBEBF);
+  border-radius: 0;
+}
