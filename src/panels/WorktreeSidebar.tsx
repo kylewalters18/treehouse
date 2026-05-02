@@ -294,6 +294,15 @@ export function WorktreeSidebar() {
           value={name}
           onChange={(e) => setName(e.target.value)}
           placeholder="new worktree name"
+          // Worktree names are slugged into branch names (lowercase,
+          // dashes, no autocorrect-y reshaping). Disable the OS/browser
+          // text-assist features that otherwise capitalize the first
+          // letter, autocomplete to dictionary words, or underline
+          // misspellings.
+          autoCapitalize="off"
+          autoCorrect="off"
+          autoComplete="off"
+          spellCheck={false}
           className="flex-1 rounded border border-neutral-800 bg-neutral-950 px-2 py-1 text-xs placeholder:text-neutral-600 focus:border-neutral-700 focus:outline-none"
           disabled={!workspace || creating}
         />
