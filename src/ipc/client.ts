@@ -119,6 +119,19 @@ export function onWorktreesChanged(
   return listen(`workspace://${workspaceId}/worktrees-changed`, handler);
 }
 
+/// Subscribe to step transitions inside `worktree::manager::create`.
+/// Payload is a short human-readable string like "Fetching from origin"
+/// that the sidebar renders verbatim under the spinner.
+export function onWorktreeCreateStep(
+  workspaceId: WorkspaceId,
+  handler: (step: string) => void,
+): Promise<UnlistenFn> {
+  return listen<string>(
+    `workspace://${workspaceId}/worktree-create-step`,
+    (ev) => handler(ev.payload),
+  );
+}
+
 // --- Diffs ---
 
 export function getDiff(worktreeId: WorktreeId): Promise<DiffSet> {

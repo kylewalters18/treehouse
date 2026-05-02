@@ -160,6 +160,7 @@ pub async fn create_worktree(
     state: State<'_, AppState>,
 ) -> AppResult<CreateWorktreeResult> {
     let result = worktree::create(
+        Some(&app),
         workspace_id,
         &name,
         CreateOptions { init_submodules },

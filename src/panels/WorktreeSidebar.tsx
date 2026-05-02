@@ -7,6 +7,7 @@ import { useSettingsStore } from "@/stores/settings";
 import {
   listAgentActivity,
   mergeWorktree,
+  onWorktreeCreateStep,
   onWorktreesChanged,
   syncWorktree,
 } from "@/ipc/client";
@@ -35,6 +36,10 @@ export function WorktreeSidebar() {
 
   const [name, setName] = useState("");
   const [creatingName, setCreatingName] = useState<string | null>(null);
+  // Most recent step the backend reported during create. Reset
+  // alongside `creatingName`. Optional — falls back to a generic
+  // message in the spinner if no step has arrived yet.
+  const [creatingStep, setCreatingStep] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const [mergeTarget, setMergeTarget] = useState<Worktree | null>(null);
   const [syncTarget, setSyncTarget] = useState<Worktree | null>(null);
@@ -55,11 +60,15 @@ export function WorktreeSidebar() {
   useEffect(() => {
     if (!workspace) return;
     refresh(workspace.id);
-    const unlistenPromise = onWorktreesChanged(workspace.id, () =>
+    const unlistenChanged = onWorktreesChanged(workspace.id, () =>
       refresh(workspace.id),
     );
+    const unlistenStep = onWorktreeCreateStep(workspace.id, (step) =>
+      setCreatingStep(step),
+    );
     return () => {
-      unlistenPromise.then((fn) => fn()).catch(() => {});
+      unlistenChanged.then((fn) => fn()).catch(() => {});
+      unlistenStep.then((fn) => fn()).catch(() => {});
     };
   }, [workspace, refresh]);
 
@@ -92,6 +101,7 @@ export function WorktreeSidebar() {
     if (!workspace || !name.trim() || creating) return;
     const trimmed = name.trim();
     setCreatingName(trimmed);
+    setCreatingStep(null);
     try {
       const wt = await createWt(workspace.id, trimmed, {
         initSubmodules: initSubmodulesDefault,
@@ -103,6 +113,7 @@ export function WorktreeSidebar() {
       }
     } finally {
       setCreatingName(null);
+      setCreatingStep(null);
     }
   }
 
@@ -298,10 +309,10 @@ export function WorktreeSidebar() {
       {creatingName && (
         <div className="flex items-center gap-2 border-b border-neutral-900 px-3 py-2 text-[11px] text-neutral-500">
           <Spinner />
-          <span>
-            Creating{" "}
+          <span className="min-w-0 flex-1 truncate">
             <span className="font-mono text-neutral-300">{creatingName}</span>
-            … this can take a moment if the remote is slow to fetch.
+            <span className="mx-1.5 text-neutral-700">·</span>
+            {creatingStep ?? "Starting"}…
           </span>
         </div>
       )}

@@ -96,12 +96,29 @@ pub enum MergeResult {
 /// `name` is a friendly label; it's slugified into the path + branch.
 /// Worktrees adopted from earlier versions may carry an `agent/<slug>` branch
 /// — reconcile handles those transparently.
+///
+/// `app` is `Option<AppHandle>` so non-Tauri unit tests can pass `None`.
+/// When present, step transitions are emitted on
+/// `workspace://{ws}/worktree-create-step` so the sidebar spinner can
+/// show what's currently happening (fetch tends to dominate the wall
+/// time on slow remotes).
 pub async fn create(
+    app: Option<&tauri::AppHandle>,
     workspace_id: WorkspaceId,
     name: &str,
     opts: CreateOptions,
     state: &AppState,
 ) -> AppResult<CreateWorktreeResult> {
+    use tauri::Emitter;
+    let emit_step = |step: &str| {
+        if let Some(app) = app {
+            let _ = app.emit(
+                &crate::ipc::events::worktree_create_step(workspace_id),
+                step,
+            );
+        }
+    };
+
     let ws = state
         .workspaces
         .get(&workspace_id)
@@ -122,9 +139,12 @@ pub async fn create(
     tokio::fs::create_dir_all(&root).await?;
 
     // Fetch so we consider remote refs too. Best-effort: repos without a
-    // remote configured silently no-op.
+    // remote configured silently no-op. This is the slowest step on
+    // a network-bound machine, so name it loudly.
+    emit_step("Fetching from origin");
     let _ = git_ops::fetch_all(&ws.root).await;
 
+    emit_step("Resolving branch");
     let local_exists = git_ops::branch_exists(&ws.root, &branch).await?;
     let remote_exists = git_ops::remote_branch_exists(&ws.root, &branch, "origin")
         .await
@@ -137,17 +157,20 @@ pub async fn create(
 
     let head_sha = if local_exists {
         tracing::info!(%branch, "reusing existing local branch");
+        emit_step(&format!("Adding worktree (existing branch '{branch}')"));
         git_ops::add_existing(&ws.root, &path, &branch).await?;
         git_ops::rev_parse(&ws.root, &branch)
             .await
             .unwrap_or_else(|_| default_sha.clone())
     } else if remote_exists {
         tracing::info!(%branch, "reusing origin/{branch} as new local tracking branch");
+        emit_step(&format!("Adding worktree (tracking origin/{branch})"));
         git_ops::add_tracking(&ws.root, &path, &branch, "origin").await?;
         git_ops::rev_parse(&ws.root, &branch)
             .await
             .unwrap_or_else(|_| default_sha.clone())
     } else {
+        emit_step(&format!("Creating new branch '{branch}'"));
         git_ops::add(&ws.root, &path, &branch, &ws.default_branch).await?;
         default_sha.clone()
     };
@@ -157,6 +180,7 @@ pub async fn create(
     // tip (so behavior is unchanged); for a reused branch that forked
     // from an older default, this avoids showing default's own
     // commits as phantom changes on the worktree's diff.
+    emit_step("Computing diff anchor");
     let base_sha = git_ops::merge_base(&ws.root, &ws.default_branch, &branch)
         .await
         .unwrap_or_else(|_| default_sha.clone());
@@ -178,6 +202,7 @@ pub async fn create(
     // worktree is still usable; the user can rerun the git command manually
     // if it was a transient/auth issue.
     let warning = if opts.init_submodules {
+        emit_step("Initializing submodules");
         match git_ops::update_submodules(&worktree.path).await {
             Ok(()) => None,
             Err(AppError::GitError(msg)) | Err(AppError::Io(msg)) | Err(AppError::Unknown(msg)) => {
@@ -568,7 +593,7 @@ mod tests {
     async fn create_produces_worktree_on_disk_and_in_state() {
         let repo = TempRepo::new();
         let (state, ws_id) = setup(&repo);
-        let wt = create(ws_id, "first", CreateOptions::default(), &state).await.unwrap().worktree;
+        let wt = create(None, ws_id, "first", CreateOptions::default(), &state).await.unwrap().worktree;
 
         assert_eq!(wt.branch, "first");
         assert!(wt.path.exists(), "worktree dir should exist on disk");
@@ -583,9 +608,9 @@ mod tests {
     async fn create_errors_when_worktree_dir_already_exists() {
         let repo = TempRepo::new();
         let (state, ws_id) = setup(&repo);
-        create(ws_id, "same", CreateOptions::default(), &state).await.unwrap().worktree;
+        create(None, ws_id, "same", CreateOptions::default(), &state).await.unwrap().worktree;
         // The first create left a dir on disk; second should refuse.
-        let err = create(ws_id, "same", CreateOptions::default(), &state).await.unwrap_err();
+        let err = create(None, ws_id, "same", CreateOptions::default(), &state).await.unwrap_err();
         assert!(matches!(err, AppError::AlreadyOpen(_)));
     }
 
@@ -617,7 +642,7 @@ mod tests {
         assert_ne!(repo.head(), fork_point, "default should have advanced");
 
         // 3) Adopt `feat` as a worktree.
-        let wt = create(ws_id, "feat", CreateOptions::default(), &state)
+        let wt = create(None, ws_id, "feat", CreateOptions::default(), &state)
             .await
             .unwrap()
             .worktree;
@@ -693,7 +718,7 @@ mod tests {
         let expected_head = repo.head();
         run_in(&repo.root, &["checkout", "-q", "main"]);
 
-        let wt = create(ws_id, "reused", CreateOptions::default(), &state).await.unwrap().worktree;
+        let wt = create(None, ws_id, "reused", CreateOptions::default(), &state).await.unwrap().worktree;
         assert_eq!(wt.head, expected_head, "reused branch's HEAD should carry over");
         assert!(
             wt.path.join("carried-over.txt").exists(),
@@ -705,7 +730,7 @@ mod tests {
     async fn remove_deletes_directory_and_state() {
         let repo = TempRepo::new();
         let (state, ws_id) = setup(&repo);
-        let wt = create(ws_id, "doomed", CreateOptions::default(), &state).await.unwrap().worktree;
+        let wt = create(None, ws_id, "doomed", CreateOptions::default(), &state).await.unwrap().worktree;
         let path = wt.path.clone();
         remove(wt.id, true, &state).await.unwrap();
         assert!(!path.exists());
@@ -742,7 +767,7 @@ mod tests {
     async fn merge_reports_nothing_when_branch_has_no_extra_commits() {
         let repo = TempRepo::new();
         let (state, ws_id) = setup(&repo);
-        let wt = create(ws_id, "empty", CreateOptions::default(), &state).await.unwrap().worktree;
+        let wt = create(None, ws_id, "empty", CreateOptions::default(), &state).await.unwrap().worktree;
         let r = merge(wt.id, MergeBackStrategy::MergeNoFf, None, &state)
             .await
             .unwrap();
@@ -758,7 +783,7 @@ mod tests {
     async fn merge_reports_wrong_branch_when_main_not_on_default() {
         let repo = TempRepo::new();
         let (state, ws_id) = setup(&repo);
-        let wt = create(ws_id, "feature", CreateOptions::default(), &state).await.unwrap().worktree;
+        let wt = create(None, ws_id, "feature", CreateOptions::default(), &state).await.unwrap().worktree;
 
         // Give the worktree a commit so it's ahead of default.
         std::fs::write(wt.path.join("a.txt"), "a\n").unwrap();
@@ -779,7 +804,7 @@ mod tests {
         let repo = TempRepo::new();
         let base = repo.head();
         let (state, ws_id) = setup(&repo);
-        let wt = create(ws_id, "work", CreateOptions::default(), &state).await.unwrap().worktree;
+        let wt = create(None, ws_id, "work", CreateOptions::default(), &state).await.unwrap().worktree;
 
         std::fs::write(wt.path.join("x.txt"), "x\n").unwrap();
         run_in(&wt.path, &["add", "x.txt"]);
@@ -801,7 +826,7 @@ mod tests {
         let repo = TempRepo::new();
         let base = repo.head();
         let (state, ws_id) = setup(&repo);
-        let wt = create(ws_id, "squashy", CreateOptions::default(), &state).await.unwrap().worktree;
+        let wt = create(None, ws_id, "squashy", CreateOptions::default(), &state).await.unwrap().worktree;
 
         for (name, body) in [("a.txt", "a\n"), ("b.txt", "b\n"), ("c.txt", "c\n")] {
             std::fs::write(wt.path.join(name), body).unwrap();
@@ -830,7 +855,7 @@ mod tests {
         let repo = TempRepo::new();
         let base = repo.head();
         let (state, ws_id) = setup(&repo);
-        let wt = create(ws_id, "linear", CreateOptions::default(), &state).await.unwrap().worktree;
+        let wt = create(None, ws_id, "linear", CreateOptions::default(), &state).await.unwrap().worktree;
 
         for (name, body) in [("a.txt", "a\n"), ("b.txt", "b\n")] {
             std::fs::write(wt.path.join(name), body).unwrap();
@@ -867,7 +892,7 @@ mod tests {
     async fn sync_reports_already_up_to_date_when_nothing_behind() {
         let repo = TempRepo::new();
         let (state, ws_id) = setup(&repo);
-        let wt = create(ws_id, "fresh", CreateOptions::default(), &state).await.unwrap().worktree;
+        let wt = create(None, ws_id, "fresh", CreateOptions::default(), &state).await.unwrap().worktree;
         let r = sync_with_default(wt.id, SyncStrategy::Rebase, &state)
             .await
             .unwrap();
@@ -878,7 +903,7 @@ mod tests {
     async fn sync_dirty_refuses_to_merge_over_uncommitted() {
         let repo = TempRepo::new();
         let (state, ws_id) = setup(&repo);
-        let wt = create(ws_id, "dirty", CreateOptions::default(), &state).await.unwrap().worktree;
+        let wt = create(None, ws_id, "dirty", CreateOptions::default(), &state).await.unwrap().worktree;
         // Advance main so worktree is behind by one commit.
         repo.commit_file("fromain.txt", "main advance\n", "main +1");
         // Leave uncommitted dirt in the worktree.
@@ -894,7 +919,7 @@ mod tests {
     async fn sync_rebase_advances_base_ref_to_default_head() {
         let repo = TempRepo::new();
         let (state, ws_id) = setup(&repo);
-        let wt = create(ws_id, "sync-rb", CreateOptions::default(), &state).await.unwrap().worktree;
+        let wt = create(None, ws_id, "sync-rb", CreateOptions::default(), &state).await.unwrap().worktree;
         let old_base = wt.base_ref.clone();
 
         // main advances.
