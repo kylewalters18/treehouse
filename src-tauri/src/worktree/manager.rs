@@ -130,27 +130,36 @@ pub async fn create(
         .await
         .unwrap_or(false);
 
-    // base_ref is the comparison anchor for the Changes pane — use
-    // default's current tip so anything on the (new or reused) branch
-    // beyond default shows as pending.
-    let base_sha = git_ops::rev_parse(&ws.root, &ws.default_branch).await?;
+    // Default's current tip — used as the fallback anchor for fresh
+    // branches (where merge-base == default tip) and as the head fallback
+    // if rev-parse on the new branch fails for any reason.
+    let default_sha = git_ops::rev_parse(&ws.root, &ws.default_branch).await?;
 
     let head_sha = if local_exists {
         tracing::info!(%branch, "reusing existing local branch");
         git_ops::add_existing(&ws.root, &path, &branch).await?;
         git_ops::rev_parse(&ws.root, &branch)
             .await
-            .unwrap_or_else(|_| base_sha.clone())
+            .unwrap_or_else(|_| default_sha.clone())
     } else if remote_exists {
         tracing::info!(%branch, "reusing origin/{branch} as new local tracking branch");
         git_ops::add_tracking(&ws.root, &path, &branch, "origin").await?;
         git_ops::rev_parse(&ws.root, &branch)
             .await
-            .unwrap_or_else(|_| base_sha.clone())
+            .unwrap_or_else(|_| default_sha.clone())
     } else {
         git_ops::add(&ws.root, &path, &branch, &ws.default_branch).await?;
-        base_sha.clone()
+        default_sha.clone()
     };
+
+    // Anchor the Changes pane at `merge-base(default, branch)` — the
+    // fork point. For a fresh branch this equals default's current
+    // tip (so behavior is unchanged); for a reused branch that forked
+    // from an older default, this avoids showing default's own
+    // commits as phantom changes on the worktree's diff.
+    let base_sha = git_ops::merge_base(&ws.root, &ws.default_branch, &branch)
+        .await
+        .unwrap_or_else(|_| default_sha.clone());
 
     let worktree = Worktree {
         id: WorktreeId::new(),
@@ -478,12 +487,19 @@ pub async fn reconcile(workspace_id: WorkspaceId, state: &AppState) -> AppResult
         } else {
             entry.head.clone()
         };
+        // Anchor at the fork point — `merge-base(default, branch)` —
+        // not at the worktree's own head. base_ref = head would
+        // collapse the Changes pane to "uncommitted only" and lose
+        // every committed contribution the branch already has.
+        let base_ref = git_ops::merge_base(&ws.root, &ws.default_branch, &branch)
+            .await
+            .unwrap_or_else(|_| head.clone());
         let worktree = Worktree {
             id: WorktreeId::new(),
             workspace_id,
             path: entry.path,
             branch,
-            base_ref: head.clone(),
+            base_ref,
             head,
             dirty: false,
             is_main_clone: false,
@@ -571,6 +587,94 @@ mod tests {
         // The first create left a dir on disk; second should refuse.
         let err = create(ws_id, "same", CreateOptions::default(), &state).await.unwrap_err();
         assert!(matches!(err, AppError::AlreadyOpen(_)));
+    }
+
+    #[tokio::test]
+    async fn create_anchors_base_ref_at_merge_base_when_default_has_advanced() {
+        // Regression: a branch forked from an old default tip, then
+        // default advances independently. Diff anchor must be the
+        // fork point — not the current default tip — so the Changes
+        // pane shows only what THIS branch contributes, not the
+        // default-side commits the branch hasn't pulled in.
+        //
+        // Without this fix, base_ref = default's current tip and the
+        // diff renders default's own commits as phantom changes (or
+        // reversed deletions) on the branch.
+        let repo = TempRepo::new();
+        let (state, ws_id) = setup(&repo);
+        let fork_point = repo.head();
+
+        // 1) Fork a branch off the initial commit and put a commit
+        //    on it that touches `feat.txt`.
+        run_in(&repo.root, &["branch", "feat", "main"]);
+        run_in(&repo.root, &["checkout", "-q", "feat"]);
+        repo.commit_file("feat.txt", "feat content\n", "feat work");
+        let feat_tip = repo.head();
+
+        // 2) Advance default with an unrelated commit on `main`.
+        run_in(&repo.root, &["checkout", "-q", "main"]);
+        repo.commit_file("default.txt", "default work\n", "default advance");
+        assert_ne!(repo.head(), fork_point, "default should have advanced");
+
+        // 3) Adopt `feat` as a worktree.
+        let wt = create(ws_id, "feat", CreateOptions::default(), &state)
+            .await
+            .unwrap()
+            .worktree;
+        assert_eq!(wt.head, feat_tip);
+        assert_eq!(
+            wt.base_ref, fork_point,
+            "base_ref should anchor at merge-base(main, feat), not default's tip",
+        );
+    }
+
+    #[tokio::test]
+    async fn reconcile_anchors_base_ref_at_merge_base_for_adopted_worktree() {
+        // Same regression as above but exercised through `reconcile`,
+        // which is what runs on workspace open against pre-existing
+        // worktrees on disk. Previously set `base_ref = head`, which
+        // collapsed the Changes pane to "uncommitted only" and lost
+        // every committed contribution the branch had made.
+        let repo = TempRepo::new();
+        let (state, ws_id) = setup(&repo);
+        let fork_point = repo.head();
+
+        // Fork a branch and put a commit on it (so head != fork_point).
+        run_in(&repo.root, &["branch", "feat", "main"]);
+        run_in(&repo.root, &["checkout", "-q", "feat"]);
+        repo.commit_file("feat.txt", "feat content\n", "feat work");
+        let feat_tip = repo.head();
+        run_in(&repo.root, &["checkout", "-q", "main"]);
+        // Default also advances so merge-base != head AND merge-base
+        // != default's tip — both bugs are observable.
+        repo.commit_file("default.txt", "x\n", "default advance");
+
+        // Create the worktree on disk via raw `git worktree add` so
+        // reconcile is what discovers it (not `manager::create`).
+        let wt_path = git_ops::worktrees_root_for(&repo.root).join("feat");
+        std::fs::create_dir_all(wt_path.parent().unwrap()).unwrap();
+        run_in(
+            &repo.root,
+            &[
+                "worktree",
+                "add",
+                wt_path.to_str().unwrap(),
+                "feat",
+            ],
+        );
+
+        reconcile(ws_id, &state).await.unwrap();
+        let adopted = state
+            .worktrees
+            .iter()
+            .find(|e| e.value().branch == "feat")
+            .map(|e| e.value().clone())
+            .expect("reconcile should have adopted the feat worktree");
+        assert_eq!(adopted.head, feat_tip);
+        assert_eq!(
+            adopted.base_ref, fork_point,
+            "adopted worktree should anchor at merge-base, not at its own head",
+        );
     }
 
     #[tokio::test]

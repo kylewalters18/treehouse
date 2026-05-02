@@ -124,6 +124,19 @@ pub async fn rev_parse(repo_root: &Path, rev: &str) -> AppResult<String> {
     Ok(stdout.trim().to_string())
 }
 
+/// `git merge-base <a> <b>` — the most recent common ancestor of two refs.
+/// This is the right `base_ref` anchor for the Changes pane: diffing against
+/// it shows only what `<b>` has contributed since forking from `<a>`,
+/// regardless of how far `<a>` has advanced or how stale the branch is.
+/// Falls back to `b`'s sha if no common ancestor exists (orphan branches),
+/// which collapses the Changes pane to "no changes" rather than blowing up.
+pub async fn merge_base(repo_root: &Path, a: &str, b: &str) -> AppResult<String> {
+    match git(repo_root, ["merge-base", a, b]).await {
+        Ok(stdout) => Ok(stdout.trim().to_string()),
+        Err(_) => rev_parse(repo_root, b).await,
+    }
+}
+
 /// `true` if the given git workdir has any staged or unstaged changes, tracked
 /// or untracked.
 pub async fn has_changes(repo_root: &Path) -> AppResult<bool> {
