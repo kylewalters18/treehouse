@@ -30,6 +30,15 @@ vi.mock("xterm-addon-fit", () => ({
     fit() {}
   },
 }));
+vi.mock("xterm-addon-search", () => ({
+  SearchAddon: class {
+    activate() {}
+    dispose() {}
+    findNext() {}
+    findPrevious() {}
+    clearDecorations() {}
+  },
+}));
 vi.mock("xterm/css/xterm.css", () => ({}));
 
 vi.mock("@/ipc/client", () => ({

@@ -13,9 +13,19 @@ vi.mock("xterm", () => ({
     write() {}
     loadAddon() {}
     scrollToBottom() {}
+    attachCustomKeyEventHandler() {}
     registerLinkProvider() {
       return { dispose() {} };
     }
+  },
+}));
+vi.mock("xterm-addon-search", () => ({
+  SearchAddon: class {
+    activate() {}
+    dispose() {}
+    findNext() {}
+    findPrevious() {}
+    clearDecorations() {}
   },
 }));
 vi.mock("xterm-addon-fit", () => ({

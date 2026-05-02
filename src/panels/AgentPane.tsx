@@ -25,6 +25,7 @@ import type {
 import { cn } from "@/lib/cn";
 import { fitAndPin } from "./xterm-fit";
 import { registerTerminalLinks } from "./term-path-links";
+import { attachTerminalSearch } from "./term-search";
 
 const BACKENDS: { label: string; value: AgentBackendKind }[] = [
   { label: "Claude Code", value: "claudeCode" },
@@ -566,6 +567,8 @@ export function AgentInstance({
     // Cmd+click on file paths opens them in the editor; on URLs, in
     // the system browser.
     const termLinks = registerTerminalLinks(term, worktreeId);
+    // Cmd+F overlay search.
+    const search = attachTerminalSearch(term, host);
 
     const encoder = new TextEncoder();
     const onEvent = (ev: AgentEvent) => {
@@ -633,6 +636,7 @@ export function AgentInstance({
         // xterm's keydown handling but the hidden-textarea browser default
         // would still fire, inserting a stray `\n` that confuses the TUI.
         term.attachCustomKeyEventHandler((ev) => {
+          if (search.tryHandleKey(ev)) return false;
           if (ev.type === "keydown" && ev.key === "Enter" && ev.shiftKey) {
             ev.preventDefault();
             if (agentIdRef.current) {
@@ -667,6 +671,7 @@ export function AgentInstance({
       disposed = true;
       ro?.disconnect();
       termLinks.dispose();
+      search.dispose();
       term.dispose();
       termRef.current = null;
       fitRef.current = null;

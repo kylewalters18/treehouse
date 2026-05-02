@@ -33,6 +33,7 @@ import {
 } from "@/stores/terminal-layout";
 import { fitAndPin } from "./xterm-fit";
 import { registerTerminalLinks } from "./term-path-links";
+import { attachTerminalSearch } from "./term-search";
 
 export function TerminalPane() {
   const worktreeId = useUiStore((s) => s.selectedWorktreeId);
@@ -529,6 +530,20 @@ export function createLeafState(
   // Cmd+click on file paths opens them in the editor; on URLs, in
   // the system browser.
   const termLinks = registerTerminalLinks(term, worktreeId);
+  // Cmd+F overlay search.
+  const search = attachTerminalSearch(term, host);
+  // Chain into the term's custom key handler so Cmd+F opens the
+  // search bar before xterm consumes the keystroke.
+  term.attachCustomKeyEventHandler((ev) => {
+    if (search.tryHandleKey(ev)) return false;
+    return true;
+  });
+  const linksDisposable = {
+    dispose() {
+      termLinks.dispose();
+      search.dispose();
+    },
+  };
 
   const state: LeafState = {
     host,
@@ -536,7 +551,7 @@ export function createLeafState(
     fit,
     sessionId: null,
     resizeObserver: null,
-    pathLinks: termLinks,
+    pathLinks: linksDisposable,
     killed: false,
   };
 
