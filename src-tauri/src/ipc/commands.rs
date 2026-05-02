@@ -4,7 +4,7 @@ use tauri::ipc::Channel;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::agent::{self, AgentBackendKind, AgentEvent, AgentSession, WorktreeActivity};
-use crate::diff::{self, DiffSet};
+use crate::diff::{self, DiffMode, DiffSet};
 use crate::fs_api::{self, FileContent, TreeEntry};
 use crate::lsp::{self, LspConfig, LspEvent, LspServerSession};
 use crate::storage::{self, Comment, RecentWorkspace, Settings};
@@ -518,22 +518,45 @@ pub async fn list_files(
 #[tauri::command]
 pub async fn get_diff(
     worktree_id: WorktreeId,
+    mode: Option<DiffMode>,
     state: State<'_, AppState>,
 ) -> AppResult<DiffSet> {
-    if let Some(cached) = state.diffs.get(&worktree_id) {
-        return Ok(cached.clone());
-    }
+    let mode = mode.unwrap_or_default();
     let wt = state
         .worktrees
         .get(&worktree_id)
         .ok_or_else(|| AppError::Unknown(format!("unknown worktree: {worktree_id}")))?
         .clone();
+
+    // Branch view uses the cached diff written by `fs_watch` so a
+    // fresh tab open is a hot path. Uncommitted view always
+    // computes — the anchor (HEAD) can move between fs events
+    // (e.g. agent commits) and we don't want to serve a stale
+    // pre-commit diff.
+    if matches!(mode, DiffMode::Branch) {
+        if let Some(cached) = state.diffs.get(&worktree_id) {
+            return Ok(cached.clone());
+        }
+    }
+
+    let anchor = match mode {
+        DiffMode::Branch => wt.base_ref.clone(),
+        DiffMode::Uncommitted => crate::worktree::git_ops::rev_parse(&wt.path, "HEAD")
+            .await
+            .unwrap_or_else(|_| wt.head.clone()),
+    };
+
+    let wt_path = wt.path.clone();
+    let wt_id = wt.id;
     let computed = tokio::task::spawn_blocking(move || {
-        diff::compute::compute(wt.id, &wt.path, &wt.base_ref)
+        diff::compute::compute(wt_id, &wt_path, &anchor)
     })
     .await
     .map_err(|e| AppError::Unknown(format!("diff task join: {e}")))??;
-    state.diffs.insert(worktree_id, computed.clone());
+
+    if matches!(mode, DiffMode::Branch) {
+        state.diffs.insert(worktree_id, computed.clone());
+    }
     Ok(computed)
 }
 

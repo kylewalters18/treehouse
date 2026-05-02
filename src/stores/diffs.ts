@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import * as ipc from "@/ipc/client";
-import type { DiffSet, WorktreeId } from "@/ipc/types";
+import type { DiffMode, DiffSet, WorktreeId } from "@/ipc/types";
 
 type DiffView = "diff" | "file" | "preview";
 
@@ -16,11 +16,16 @@ type DiffsState = {
   error: Record<WorktreeId, string | null>;
   selectedFile: Record<WorktreeId, string | null>;
   view: Record<WorktreeId, DiffView>;
+  /// Per-worktree diff anchor — `branch` (default) or `uncommitted`.
+  /// `uncommitted` runs `git diff HEAD..workdir`; `branch` runs the
+  /// merge-base-anchored "PR-style" diff.
+  mode: Record<WorktreeId, DiffMode>;
   pendingReveal: Record<WorktreeId, PendingReveal | null>;
   fetch: (worktreeId: WorktreeId) => Promise<void>;
   set: (worktreeId: WorktreeId, diff: DiffSet) => void;
   selectFile: (worktreeId: WorktreeId, path: string | null) => void;
   setView: (worktreeId: WorktreeId, view: DiffView) => void;
+  setMode: (worktreeId: WorktreeId, mode: DiffMode) => Promise<void>;
   setPendingReveal: (
     worktreeId: WorktreeId,
     reveal: PendingReveal | null,
@@ -41,14 +46,16 @@ export const useDiffsStore = create<DiffsState>((set, get) => ({
   error: {},
   selectedFile: {},
   view: {},
+  mode: {},
   pendingReveal: {},
   async fetch(worktreeId) {
+    const mode = get().mode[worktreeId] ?? "branch";
     set((s) => ({
       loading: { ...s.loading, [worktreeId]: true },
       error: { ...s.error, [worktreeId]: null },
     }));
     try {
-      const d = await ipc.getDiff(worktreeId);
+      const d = await ipc.getDiff(worktreeId, mode);
       set((s) => ({
         byWorktree: { ...s.byWorktree, [worktreeId]: d },
         loading: { ...s.loading, [worktreeId]: false },
@@ -82,6 +89,10 @@ export const useDiffsStore = create<DiffsState>((set, get) => ({
   setView(worktreeId, view) {
     set((s) => ({ view: { ...s.view, [worktreeId]: view } }));
   },
+  async setMode(worktreeId, mode) {
+    set((s) => ({ mode: { ...s.mode, [worktreeId]: mode } }));
+    await get().fetch(worktreeId);
+  },
   setPendingReveal(worktreeId, reveal) {
     set((s) => ({
       pendingReveal: { ...s.pendingReveal, [worktreeId]: reveal },
@@ -94,6 +105,7 @@ export const useDiffsStore = create<DiffsState>((set, get) => ({
       error: {},
       selectedFile: {},
       view: {},
+      mode: {},
       pendingReveal: {},
     });
   },

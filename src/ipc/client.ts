@@ -8,6 +8,7 @@ import type {
   BackendAgent,
   Comment,
   CreateWorktreeResult,
+  DiffMode,
   DiffSet,
   FileContent,
   LspConfig,
@@ -134,8 +135,11 @@ export function onWorktreeCreateStep(
 
 // --- Diffs ---
 
-export function getDiff(worktreeId: WorktreeId): Promise<DiffSet> {
-  return invoke<DiffSet>("get_diff", { worktreeId });
+export function getDiff(
+  worktreeId: WorktreeId,
+  mode?: DiffMode,
+): Promise<DiffSet> {
+  return invoke<DiffSet>("get_diff", { worktreeId, mode });
 }
 
 export function onDiffUpdated(

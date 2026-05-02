@@ -82,3 +82,17 @@ pub enum DiffLine {
 /// Hard cap: if a diff exceeds these, we return a summary with no hunks.
 pub const MAX_FILES: usize = 2000;
 pub const MAX_LINES: u32 = 500_000;
+
+/// Which view of the worktree's changes the user is asking for.
+/// `Branch` is the default — everything since `merge-base(default,
+/// branch)`, the GitHub PR-style "what would land if I merged this"
+/// view. `Uncommitted` shows just `HEAD..workdir` — the agent's
+/// most recent batch of edits, easier to review in isolation.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, TS, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub enum DiffMode {
+    #[default]
+    Branch,
+    Uncommitted,
+}

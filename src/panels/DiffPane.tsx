@@ -39,17 +39,29 @@ function DiffView({ worktreeId }: { worktreeId: WorktreeId }) {
   const error = useDiffsStore((s) => s.error[worktreeId]);
   const selectedFile = useDiffsStore((s) => s.selectedFile[worktreeId] ?? null);
   const view = useDiffsStore((s) => s.view[worktreeId] ?? "diff");
+  const mode = useDiffsStore((s) => s.mode[worktreeId] ?? "branch");
   const fetchDiff = useDiffsStore((s) => s.fetch);
   const setDiff = useDiffsStore((s) => s.set);
   const selectFile = useDiffsStore((s) => s.selectFile);
   const setView = useDiffsStore((s) => s.setView);
+  const setMode = useDiffsStore((s) => s.setMode);
   const [treeRefresh, setTreeRefresh] = useState(0);
   const [showIgnored, setShowIgnored] = useState(false);
 
   useEffect(() => {
     fetchDiff(worktreeId);
     const p = onDiffUpdated(worktreeId, (d) => {
-      setDiff(worktreeId, d);
+      // The fs_watch payload is always branch-view; using it directly
+      // when the user has flipped to uncommitted mode would
+      // overwrite their view. Read the current mode at fire time and
+      // either accept the payload or re-fetch.
+      const mode =
+        useDiffsStore.getState().mode[worktreeId] ?? "branch";
+      if (mode === "branch") {
+        setDiff(worktreeId, d);
+      } else {
+        void fetchDiff(worktreeId);
+      }
       setTreeRefresh((n) => n + 1);
     });
     return () => {
@@ -100,6 +112,38 @@ function DiffView({ worktreeId }: { worktreeId: WorktreeId }) {
               <span className="text-rose-400">-{diff.stats.deletions}</span>
             </span>
           )}
+        </div>
+        {/* Diff anchor toggle. Branch = merge-base..workdir (default,
+            full PR-style view). Uncommitted = HEAD..workdir, useful
+            for reviewing the agent's most recent batch before
+            committing. */}
+        <div className="flex shrink-0 border-b border-neutral-900 p-1.5">
+          <div className="flex w-full overflow-hidden rounded border border-neutral-800 text-[11px]">
+            <button
+              onClick={() => void setMode(worktreeId, "branch")}
+              className={cn(
+                "flex-1 px-2 py-1 transition",
+                mode === "branch"
+                  ? "bg-neutral-800 text-neutral-100"
+                  : "text-neutral-500 hover:bg-neutral-900",
+              )}
+              title="All changes since the branch forked from default"
+            >
+              Branch
+            </button>
+            <button
+              onClick={() => void setMode(worktreeId, "uncommitted")}
+              className={cn(
+                "flex-1 border-l border-neutral-800 px-2 py-1 transition",
+                mode === "uncommitted"
+                  ? "bg-neutral-800 text-neutral-100"
+                  : "text-neutral-500 hover:bg-neutral-900",
+              )}
+              title="Just HEAD..workdir — the next commit's worth of changes"
+            >
+              Uncommitted
+            </button>
+          </div>
         </div>
         <div className="max-h-[40%] shrink-0 overflow-y-auto border-b border-neutral-900">
           {!diff || diff.files.length === 0 ? (
