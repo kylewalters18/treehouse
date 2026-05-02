@@ -52,7 +52,13 @@ export function AgentPane() {
       </div>
     );
   }
-  // Main-clone case: Workspace.tsx omits this pane entirely.
+  // Main clone: agents don't run here, but we still mount an empty
+  // pane so the panel-group layout stays stable when switching
+  // between main and a worktree (otherwise react-resizable-panels
+  // redistributes widths every flip and the sidebar drifts).
+  if (worktree.isMainClone) {
+    return <div className="h-full border-l border-neutral-800" />;
+  }
   return <AgentTabs key={worktreeId} worktreeId={worktreeId} />;
 }
 

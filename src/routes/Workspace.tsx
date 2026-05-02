@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useRef } from "react";
 import {
   PanelGroup,
   Panel,
@@ -28,12 +28,6 @@ export function Workspace() {
   const toggleFocusMode = useUiStore((s) => s.toggleFocusMode);
   const sidebarCollapsed = useUiStore((s) => s.worktreeSidebarCollapsed);
   const toggleSidebar = useUiStore((s) => s.toggleWorktreeSidebar);
-  const worktrees = useWorktreesStore((s) => s.worktrees);
-  const selectedWorktreeId = useUiStore((s) => s.selectedWorktreeId);
-  const hideAgent = useMemo(() => {
-    const sel = worktrees.find((w) => w.id === selectedWorktreeId);
-    return sel?.isMainClone ?? false;
-  }, [worktrees, selectedWorktreeId]);
   const sidebarPanelRef = useRef<ImperativePanelHandle>(null);
 
   // Reflect store state onto the Panel imperatively. Keeping state in the
@@ -43,9 +37,6 @@ export function Workspace() {
   // `focusMode` is in the deps because toggling it swaps which PanelGroup
   // (and therefore which Panel) is mounted — the ref points at a fresh
   // Panel at its default size, so we need to re-assert the collapsed state.
-  // (main-clone vs. worktree switches previously did the same thing via
-  // `hideAgent`, but they now share a single PanelGroup — see the
-  // Panel ids below — so the ref stays stable across those.)
   //
   // The rAF defer is because react-resizable-panels' imperative API doesn't
   // take effect if called before the newly-mounted Panel has registered with
@@ -162,7 +153,7 @@ export function Workspace() {
             <WorktreeSidebar />
           </Panel>
           <PanelResizeHandle className="w-px bg-neutral-800 hover:bg-neutral-700" />
-          <Panel id="center" order={2} defaultSize={hideAgent ? 82 : 48}>
+          <Panel id="center" order={2} defaultSize={48}>
             <PanelGroup direction="vertical" autoSaveId="center-normal">
               <Panel defaultSize={60}>
                 <DiffPane />
@@ -173,14 +164,16 @@ export function Workspace() {
               </Panel>
             </PanelGroup>
           </Panel>
-          {!hideAgent && (
-            <>
-              <PanelResizeHandle className="w-px bg-neutral-800 hover:bg-neutral-700" />
-              <Panel id="agent" order={3} defaultSize={34} minSize={20}>
-                <AgentPane />
-              </Panel>
-            </>
-          )}
+          <PanelResizeHandle className="w-px bg-neutral-800 hover:bg-neutral-700" />
+          {/* Agent panel stays mounted on main clone too — AgentPane
+              renders an empty placeholder when on the main clone, but
+              the panel group's widths stay stable across main/worktree
+              switches that way. Conditionally removing this Panel
+              triggered react-resizable-panels' proportional reflow,
+              which drifted the sidebar's width on every flip. */}
+          <Panel id="agent" order={3} defaultSize={34} minSize={20}>
+            <AgentPane />
+          </Panel>
         </PanelGroup>
       )}
     </div>
