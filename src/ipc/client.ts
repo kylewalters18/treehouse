@@ -164,6 +164,13 @@ export function listTree(
   return invoke<TreeEntry[]>("list_tree", { worktreeId, dir, showIgnored });
 }
 
+/// Recursive flat list of files in the worktree, gitignore-aware.
+/// Used by the Cmd+P fuzzy file finder. Worktree-relative paths,
+/// forward-slash separated, lex-sorted.
+export function listFiles(worktreeId: WorktreeId): Promise<string[]> {
+  return invoke<string[]>("list_files", { worktreeId });
+}
+
 /// Read a file's content at a specific git ref via `git show <ref>:<path>`.
 /// Returns "" if the path didn't exist at that ref.
 export function readBlobAtRef(

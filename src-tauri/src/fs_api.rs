@@ -1,12 +1,21 @@
 use std::path::{Path, PathBuf};
 
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
+use ignore::WalkBuilder;
 use serde::Serialize;
 use ts_rs::TS;
 
 use crate::state::AppState;
 use crate::util::errors::{AppError, AppResult};
 use crate::util::ids::WorktreeId;
+
+/// Cap the recursive file list at a number that the frontend's fuzzy
+/// matcher can scan in well under one frame even on a hot path. The
+/// largest open-source repos at the time of writing top out around
+/// 200k files; this keeps Cmd+P responsive on those without a
+/// background indexer. If a repo blows past it, the list is
+/// truncated and the user sees fewer results — better than freezing.
+const MAX_LIST_FILES: usize = 100_000;
 
 #[derive(Debug, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -160,6 +169,84 @@ pub async fn list_tree(
             .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
     });
     Ok(entries)
+}
+
+/// Recursive flat list of all files in the worktree, gitignore- and
+/// builtin-ignore-aware. Returns worktree-relative, forward-slash-
+/// separated paths sorted lexicographically. Used by the Cmd+P
+/// "Go to file" finder; the frontend does fuzzy matching over the
+/// returned slice.
+///
+/// Hidden files (`.git`, `.cache`, etc.) and the patterns in
+/// `BUILTIN_IGNORES` are filtered the same way `list_tree` filters
+/// them so the finder doesn't surface noise like vendored deps,
+/// build outputs, or platform metadata.
+pub async fn list_files(
+    worktree_id: WorktreeId,
+    state: &AppState,
+) -> AppResult<Vec<String>> {
+    let wt = state
+        .worktrees
+        .get(&worktree_id)
+        .ok_or_else(|| AppError::Unknown(format!("unknown worktree: {worktree_id}")))?
+        .clone();
+    let root = wt.path.clone();
+
+    // `WalkBuilder` honors `.gitignore`, `.git/info/exclude`, and
+    // global git excludes. We layer our `BUILTIN_IGNORES` on top via
+    // a single `add_custom_ignore_filename` would be cleaner, but
+    // since these are just glob patterns we feed them through a
+    // separate `Gitignore` and check each entry — keeps parity with
+    // `list_tree` which uses the same approach.
+    let builtin = build_ignore(&root)?;
+
+    // Walk on a blocking thread — `ignore::WalkBuilder` is sync.
+    let root_for_walk = root.clone();
+    let files = tokio::task::spawn_blocking(move || -> Vec<String> {
+        let walker = WalkBuilder::new(&root_for_walk)
+            .hidden(true)       // skip dotfiles unless re-added by .gitignore
+            .git_ignore(true)
+            .git_global(true)
+            .git_exclude(true)
+            .build();
+        let mut out: Vec<String> = Vec::new();
+        for result in walker {
+            if out.len() >= MAX_LIST_FILES {
+                break;
+            }
+            let entry = match result {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+            let path = entry.path();
+            // The walker's first yield is the root itself; skip it.
+            if path == root_for_walk {
+                continue;
+            }
+            let ft = match entry.file_type() {
+                Some(ft) => ft,
+                None => continue,
+            };
+            if !ft.is_file() {
+                continue;
+            }
+            if is_ignored(&builtin, &root_for_walk, path, false) {
+                continue;
+            }
+            let rel = path
+                .strip_prefix(&root_for_walk)
+                .unwrap_or(path)
+                .to_string_lossy()
+                .replace(std::path::MAIN_SEPARATOR, "/");
+            out.push(rel);
+        }
+        out.sort();
+        out
+    })
+    .await
+    .map_err(|e| AppError::Unknown(format!("list_files join: {e}")))?;
+
+    Ok(files)
 }
 
 fn build_ignore(root: &Path) -> AppResult<Gitignore> {

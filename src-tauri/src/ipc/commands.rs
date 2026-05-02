@@ -508,6 +508,14 @@ pub async fn list_tree(
 }
 
 #[tauri::command]
+pub async fn list_files(
+    worktree_id: WorktreeId,
+    state: State<'_, AppState>,
+) -> AppResult<Vec<String>> {
+    fs_api::list_files(worktree_id, &state).await
+}
+
+#[tauri::command]
 pub async fn get_diff(
     worktree_id: WorktreeId,
     state: State<'_, AppState>,

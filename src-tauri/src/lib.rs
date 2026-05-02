@@ -58,6 +58,7 @@ pub fn run() {
             ipc::commands::read_file,
             ipc::commands::read_blob_at_ref,
             ipc::commands::list_tree,
+            ipc::commands::list_files,
             ipc::commands::open_terminal,
             ipc::commands::pty_write,
             ipc::commands::pty_resize,
