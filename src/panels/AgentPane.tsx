@@ -1,31 +1,31 @@
-import { useEffect, useRef, useState } from "react";
-import { Terminal } from "xterm";
-import { FitAddon } from "xterm-addon-fit";
+import { useEffect, useMemo, useRef, useState } from "react";
 import "xterm/css/xterm.css";
 
 import { useSettingsStore } from "@/stores/settings";
 import { useUiStore } from "@/stores/ui";
 import { useWorktreesStore } from "@/stores/worktrees";
 import {
-  agentResize,
-  agentWrite,
-  attachAgent,
   killAgent,
-  launchAgent,
   listAgentsForWorktree,
   listBackendAgents,
 } from "@/ipc/client";
 import type {
   AgentBackendKind,
-  AgentEvent,
   AgentSessionId,
   BackendAgent,
   WorktreeId,
 } from "@/ipc/types";
 import { cn } from "@/lib/cn";
 import { fitAndPin } from "./xterm-fit";
-import { registerTerminalLinks } from "./term-path-links";
-import { attachTerminalSearch } from "./term-search";
+import {
+  createAgentLeafState,
+  disposeAgentLeafState,
+  getAgentLeafStates,
+  reconcileAgentLeafStates,
+  rekeyAgentLeafState,
+  type AgentLeafMode,
+  type AgentLeafState,
+} from "./agent-leaf-state";
 
 const BACKENDS: { label: string; value: AgentBackendKind }[] = [
   { label: "Claude Code", value: "claudeCode" },
@@ -64,14 +64,10 @@ export function AgentPane() {
 
 type Tab = {
   localId: string;
-  mode: Mode;
+  mode: AgentLeafMode;
   backend: AgentBackendKind;
   label: string;
 };
-
-type Mode =
-  | { kind: "launch"; backend: AgentBackendKind; argv?: string[] }
-  | { kind: "attach"; agentId: AgentSessionId };
 
 /// Build an argv that pre-selects a sub-agent on the backend's CLI.
 /// `null` agentName = use the backend default (no `--agent` flag).
@@ -107,6 +103,10 @@ function argvAgentSuffix(argv: string[]): string {
 function AgentTabs({ worktreeId }: { worktreeId: WorktreeId }) {
   const [tabs, setTabs] = useState<Tab[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
+  /// xterm + host elements survive AgentTabs unmount/remount so scroll
+  /// position, scrollback, selection, and search state aren't lost on
+  /// worktree switch. Mirrors TerminalPane's `leafStatesByWorktree`.
+  const leafStates = useMemo(() => getAgentLeafStates(worktreeId), [worktreeId]);
   const defaultBackend = useSettingsStore((s) => s.settings.defaultAgentBackend);
   const [backend, setBackend] = useState<AgentBackendKind>(defaultBackend);
   const [agentName, setAgentName] = useState<string | null>(null);
@@ -191,6 +191,13 @@ function AgentTabs({ worktreeId }: { worktreeId: WorktreeId }) {
 
         const existing = await listAgentsForWorktree(worktreeId);
         if (cancelled) return;
+        // Drop pool entries whose agent died while we were elsewhere,
+        // plus any pre-session orphans from an in-flight launch whose
+        // AgentTabs got unmounted before onSession could rekey.
+        reconcileAgentLeafStates(
+          worktreeId,
+          new Set(existing.map((s) => s.id)),
+        );
         // Phase 1: assign labels in `started_at` order so an agent's
         // number reflects its identity, not its current display
         // position. Without this split, dragging "Claude 3" to the
@@ -326,10 +333,21 @@ function AgentTabs({ worktreeId }: { worktreeId: WorktreeId }) {
 
   async function closeTab(localId: string) {
     const agentId = sessionIds.current.get(localId);
-    if (agentId) {
+    // Pool entry is keyed by sessionId once known, falls back to
+    // localId for in-flight launches whose onSession hasn't fired.
+    const poolKey = agentId ?? localId;
+    const state = leafStates.get(poolKey);
+    if (state) {
+      // disposeAgentLeafState handles killAgent internally — guarded by
+      // sessionId so it's a no-op for pre-session entries.
+      disposeAgentLeafState(state);
+      leafStates.delete(poolKey);
+    } else if (agentId) {
+      // Defensive: tab existed but never made it into the pool
+      // (e.g. slot never rendered). Kill the PTY directly.
       await killAgent(agentId).catch(() => {});
-      clearAgentLabel(agentId);
     }
+    if (agentId) clearAgentLabel(agentId);
     sessionIds.current.delete(localId);
     setTabs((prev) => {
       const next = prev.filter((t) => t.localId !== localId);
@@ -489,213 +507,138 @@ function AgentTabs({ worktreeId }: { worktreeId: WorktreeId }) {
               : "Pick a backend and click + Launch"}
           </div>
         )}
-        {tabs.map((tab) => (
-          <div
-            key={tab.localId}
-            className={cn(
-              "absolute inset-0",
-              tab.localId !== activeId && "pointer-events-none",
-            )}
-            style={{
-              visibility: tab.localId === activeId ? "visible" : "hidden",
-            }}
-          >
-            <AgentInstance
-              worktreeId={worktreeId}
-              mode={tab.mode}
-              visible={tab.localId === activeId}
-              onSession={(id) => {
-                sessionIds.current.set(tab.localId, id);
-                setAgentLabel(id, tab.label);
-                // The mirror-to-store effect above only re-runs when
-                // `activeId` changes, not when the session id arrives —
-                // push it directly so other parts of the app (send-queue,
-                // per-comment Send) see the agent immediately.
-                if (tab.localId === activeId) {
-                  setActiveAgent(worktreeId, id);
-                }
-                // A just-launched tab was missing from the persisted
-                // order while its session ID was unknown; now that we
-                // have it, refresh so a worktree round-trip preserves
-                // the new tab's position too. `syncTabOrder` reads the
-                // tabs ref so it sees the current array even when the
-                // surrounding closure is stale.
-                syncTabOrder();
+        {tabs.map((tab) => {
+          // Pool entries are keyed by sessionId once we have one and
+          // localId in the meantime. Adoption tabs already arrive in
+          // attach mode, so their first slot mount keys by sessionId
+          // directly. Launch tabs key by localId, then flip below.
+          const poolKey =
+            tab.mode.kind === "attach" ? tab.mode.agentId : tab.localId;
+          return (
+            <div
+              key={tab.localId}
+              className={cn(
+                "absolute inset-0",
+                tab.localId !== activeId && "pointer-events-none",
+              )}
+              style={{
+                visibility: tab.localId === activeId ? "visible" : "hidden",
               }}
-            />
-          </div>
-        ))}
+            >
+              <AgentLeafSlot
+                worktreeId={worktreeId}
+                mode={tab.mode}
+                poolKey={poolKey}
+                visible={tab.localId === activeId}
+                leafStates={leafStates}
+                onSession={(id) => {
+                  sessionIds.current.set(tab.localId, id);
+                  setAgentLabel(id, tab.label);
+                  // Re-key the pool entry from localId → sessionId so
+                  // the next mount (after a worktree switch and adopt
+                  // pass) finds it under `mode.agentId`. Then flip the
+                  // tab's mode to attach so this very render's slot
+                  // also looks up the stable key going forward.
+                  rekeyAgentLeafState(worktreeId, tab.localId, id);
+                  setTabs((prev) =>
+                    prev.map((t) =>
+                      t.localId === tab.localId
+                        ? { ...t, mode: { kind: "attach", agentId: id } }
+                        : t,
+                    ),
+                  );
+                  // The mirror-to-store effect above only re-runs when
+                  // `activeId` changes, not when the session id arrives
+                  // — push it directly so other parts of the app
+                  // (send-queue, per-comment Send) see the agent
+                  // immediately.
+                  if (tab.localId === activeId) {
+                    setActiveAgent(worktreeId, id);
+                  }
+                  // A just-launched tab was missing from the persisted
+                  // order while its session ID was unknown; now that we
+                  // have it, refresh so a worktree round-trip preserves
+                  // the new tab's position too. `syncTabOrder` reads
+                  // the tabs ref so it sees the current array even when
+                  // the surrounding closure is stale.
+                  syncTabOrder();
+                }}
+              />
+            </div>
+          );
+        })}
       </div>
     </div>
   );
 }
 
-export function AgentInstance({
+/// Slot view for one agent tab. The xterm + its host element live in
+/// `leafStates` — a module-level pool keyed first by the React tab's
+/// `localId` (during in-flight launch) and re-keyed to `AgentSessionId`
+/// once `onSession` fires. The slot just attaches the pooled host into
+/// its DOM div on mount and detaches on unmount, so worktree switches
+/// don't blow away scroll position, scrollback, selection, or search
+/// state.
+export function AgentLeafSlot({
   worktreeId,
   mode,
+  poolKey,
   visible,
+  leafStates,
   onSession,
 }: {
   worktreeId: WorktreeId;
-  mode: Mode;
+  mode: AgentLeafMode;
+  poolKey: string;
   visible: boolean;
+  leafStates: Map<string, AgentLeafState>;
   onSession: (id: AgentSessionId) => void;
 }) {
-  const hostRef = useRef<HTMLDivElement>(null);
-  const termRef = useRef<Terminal | null>(null);
-  const fitRef = useRef<FitAddon | null>(null);
-  const agentIdRef = useRef<AgentSessionId | null>(null);
+  const slotRef = useRef<HTMLDivElement>(null);
   const [error, setError] = useState<string | null>(null);
 
+  // Attach this leaf's persistent host element into our slot. On
+  // unmount (worktree switch / poolKey re-key after onSession), detach
+  // but DON'T dispose — the state stays in the pool and the next mount
+  // for the same key will reattach it intact.
+  //
+  // Deps are scoped to poolKey on purpose: the effect must run exactly
+  // once per slot lifetime (per pool identity), not on every parent re-
+  // render. Including the mode object or the freshly-bound `onSession`
+  // in deps would re-run the effect on every ancestor render, briefly
+  // detaching the xterm host from the DOM during cleanup → reattach.
   useEffect(() => {
-    const host = hostRef.current;
-    if (!host) return;
-
-    const term = new Terminal({
-      fontFamily:
-        'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace',
-      fontSize: 13,
-      theme: {
-        background: "#121314",
-        foreground: "#BBBEBF",
-        cursor: "#BBBEBF",
-      },
-      cursorBlink: true,
-      scrollback: 20_000,
-      allowProposedApi: true,
-    });
-    const fit = new FitAddon();
-    term.loadAddon(fit);
-    term.open(host);
-    fit.fit();
-    termRef.current = term;
-    fitRef.current = fit;
-    // Cmd+click on file paths opens them in the editor; on URLs, in
-    // the system browser.
-    const termLinks = registerTerminalLinks(term, worktreeId);
-    // Cmd+F overlay search.
-    const search = attachTerminalSearch(term, host);
-
-    const encoder = new TextEncoder();
-    const onEvent = (ev: AgentEvent) => {
-      if (ev.kind === "data") {
-        term.write(new Uint8Array(ev.bytes));
-      } else if (ev.kind === "status") {
-        if (ev.status.kind === "exited" || ev.status.kind === "crashed") {
-          const suffix =
-            ev.status.kind === "exited"
-              ? ev.status.code !== null
-                ? ` (code ${ev.status.code})`
-                : ""
-              : `: ${ev.status.message}`;
-          term.write(
-            `\r\n\x1b[38;2;140;140;140m[agent ${ev.status.kind}${suffix}]\x1b[0m\r\n`,
-          );
-        }
-      }
-    };
-
-    let ro: ResizeObserver | null = null;
-    let disposed = false;
-
-    (async () => {
-      try {
-        let id: AgentSessionId;
-        if (mode.kind === "launch") {
-          const s = await launchAgent(
-            worktreeId,
-            mode.backend,
-            term.cols,
-            term.rows,
-            onEvent,
-            mode.argv,
-          );
-          id = s.id;
-          // Cleanup may have fired while launchAgent was in flight —
-          // worktree switch mid-launch, or React StrictMode's
-          // mount-unmount-mount cycle in dev. The session is alive on
-          // the Rust side; kill it now so it doesn't reappear as a
-          // duplicate tab on next worktree visit.
-          if (disposed) {
-            await killAgent(id).catch(() => {});
-            return;
-          }
-        } else {
-          const s = await attachAgent(mode.agentId, onEvent);
-          id = s.id;
-          if (disposed) return;
-        }
-        agentIdRef.current = id;
-        onSession(id);
-
-        term.onData((data) => {
-          if (agentIdRef.current) {
-            agentWrite(agentIdRef.current, encoder.encode(data)).catch(() => {});
-          }
-        });
-        // xterm collapses Shift+Enter to plain `\r` by default, so agents
-        // submit instead of inserting a newline. Intercept and emit the
-        // alt+enter sequence (ESC + CR) — the convention readline /
-        // Ink-based TUIs (Claude Code, Codex) respect as "literal
-        // newline" regardless of continuation-mode state.
-        // preventDefault is load-bearing: returning false suppresses
-        // xterm's keydown handling but the hidden-textarea browser default
-        // would still fire, inserting a stray `\n` that confuses the TUI.
-        term.attachCustomKeyEventHandler((ev) => {
-          if (search.tryHandleKey(ev)) return false;
-          if (ev.type === "keydown" && ev.key === "Enter" && ev.shiftKey) {
-            ev.preventDefault();
-            if (agentIdRef.current) {
-              agentWrite(
-                agentIdRef.current,
-                encoder.encode("\x1b\r"),
-              ).catch(() => {});
-            }
-            return false;
-          }
-          return true;
-        });
-        term.onResize(({ cols, rows }) => {
-          if (agentIdRef.current) {
-            agentResize(agentIdRef.current, cols, rows).catch(() => {});
-          }
-        });
-        ro = new ResizeObserver(() => {
-          fitAndPin(fit, term);
-        });
-        ro.observe(host);
-      } catch (e: unknown) {
-        const msg =
-          e && typeof e === "object" && "message" in e
-            ? String((e as { message: unknown }).message)
-            : String(e);
-        setError(msg);
-      }
-    })();
-
+    const slot = slotRef.current;
+    if (!slot) return;
+    let state = leafStates.get(poolKey);
+    if (!state) {
+      state = createAgentLeafState(worktreeId, mode, onSession);
+      leafStates.set(poolKey, state);
+    }
+    slot.appendChild(state.host);
+    setError(state.error);
+    state.errorListeners.add(setError);
+    try {
+      state.fit.fit();
+    } catch {}
     return () => {
-      disposed = true;
-      ro?.disconnect();
-      termLinks.dispose();
-      search.dispose();
-      term.dispose();
-      termRef.current = null;
-      fitRef.current = null;
-      agentIdRef.current = null;
-      // NOTE: we do NOT killAgent on unmount. Worktree switches should keep
-      // agents running; only explicit tab-close kills. The parent handles
-      // that via closeTab → killAgent before removing the tab.
+      state.errorListeners.delete(setError);
+      if (state.host.parentNode === slot) {
+        slot.removeChild(state.host);
+      }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [worktreeId]);
+  }, [poolKey]);
 
   useEffect(() => {
     if (!visible) return;
-    const fit = fitRef.current;
-    const term = termRef.current;
-    if (fit && term) fitAndPin(fit, term);
-    if (term) term.focus();
-  }, [visible]);
+    const state = leafStates.get(poolKey);
+    if (!state) return;
+    try {
+      fitAndPin(state.fit, state.term);
+    } catch {}
+    state.term.focus();
+  }, [visible, poolKey, leafStates]);
 
   return (
     <div className="flex h-full w-full flex-col">
@@ -709,7 +652,7 @@ export function AgentInstance({
           have to NOT influence this container, or its ResizeObserver loops
           infinitely — `absolute` decouples child size from parent layout. */}
       <div className="relative flex-1">
-        <div ref={hostRef} className="absolute inset-0 p-2" />
+        <div ref={slotRef} className="absolute inset-0" />
       </div>
     </div>
   );

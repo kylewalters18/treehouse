@@ -4,6 +4,7 @@ import type { Worktree, WorkspaceId, WorktreeId } from "@/ipc/types";
 import { asMessage } from "@/lib/errors";
 import { toastError, toastInfo } from "@/stores/toasts";
 import { useEditorViewStateStore } from "@/stores/editor-view-state";
+import { clearAgentLeafStatesForWorktree } from "@/panels/agent-leaf-state";
 
 type WorktreesState = {
   worktrees: Worktree[];
@@ -64,6 +65,9 @@ export const useWorktreesStore = create<WorktreesState>((set, get) => ({
       // the in-memory map doesn't accumulate entries for paths that
       // no longer exist.
       useEditorViewStateStore.getState().clearForWorktree(worktreeId);
+      // Same for the agent xterm pool — kill any pooled sessions and
+      // dispose their xterms so the removed worktree doesn't leak.
+      clearAgentLeafStatesForWorktree(worktreeId);
     } catch (e: unknown) {
       toastError("Failed to remove worktree", asMessage(e));
     }

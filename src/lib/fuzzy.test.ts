@@ -46,7 +46,7 @@ describe("fuzzyScore", () => {
 describe("fuzzyFilter", () => {
   const files = [
     "src/panels/AgentPane.tsx",
-    "src/panels/AgentInstance.test.tsx",
+    "src/panels/AgentLeafSlot.test.tsx",
     "src/panels/MarkdownPreview.tsx",
     "src/lib/agent.ts",
     "package.json",
@@ -62,7 +62,7 @@ describe("fuzzyFilter", () => {
     const r = fuzzyFilter(files, "agent", (s) => s, 5);
     // `src/lib/agent.ts` has the basename `agent.ts` — its filename
     // starts with the query exactly, so it should outrank both
-    // `AgentPane.tsx` and `AgentInstance.test.tsx`.
+    // `AgentPane.tsx` and `AgentLeafSlot.test.tsx`.
     expect(r[0].item).toBe("src/lib/agent.ts");
   });
 
