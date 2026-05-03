@@ -507,9 +507,13 @@ export function createLeafState(
 ): LeafState {
   const host = document.createElement("div");
   host.style.position = "absolute";
-  host.style.inset = "0";
-  host.style.padding = "8px";
-  host.style.boxSizing = "border-box";
+  // 8px breathing room around the terminal — applied as `inset` rather
+  // than `padding` because xterm-addon-fit reads padding from
+  // `terminal.element` (no padding), not from its parent (this host).
+  // With `padding: 8px; box-sizing: border-box`, fit() saw the full
+  // host height and over-counted rows by one — the bottom line ended
+  // up clipped under the padding-bottom.
+  host.style.inset = "8px";
 
   const term = new Terminal({
     fontFamily:
