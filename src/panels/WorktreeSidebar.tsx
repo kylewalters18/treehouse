@@ -365,11 +365,19 @@ export function WorktreeSidebar() {
                 className={cn(
                   "group relative flex cursor-pointer items-start px-3 py-2 hover:bg-neutral-900/50",
                   selectedId === w.id && "bg-neutral-900",
-                  dim && "opacity-60",
                 )}
                 onClick={() => selectWorktree(w.id)}
               >
-                <div className="flex min-w-0 flex-1 items-start gap-2">
+                {/* Dim the row CONTENT but not the row itself — `opacity` <1
+                    creates a stacking context, and applying it to the <li>
+                    traps RowMenu's dropdown inside that context: sibling
+                    rows below paint over the popup and swallow its clicks. */}
+                <div
+                  className={cn(
+                    "flex min-w-0 flex-1 items-start gap-2",
+                    dim && "opacity-60",
+                  )}
+                >
                   <StatusDot
                     activity={activity[w.id]?.activity ?? "inactive"}
                     className="mt-1.5"
