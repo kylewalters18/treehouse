@@ -32,6 +32,7 @@ import {
   resolveDefinition,
 } from "@/lsp/manager";
 import { useDiffsStore } from "@/stores/diffs";
+import { useEditorViewStateStore } from "@/stores/editor-view-state";
 import { inferLanguage } from "./editor-language";
 
 export { inferLanguage };
@@ -190,6 +191,34 @@ function EditorWithComments({
     });
     return () => sub.dispose();
   }, [editor]);
+
+  // Restore Monaco view state (scroll + cursor + selections + folds)
+  // when the (worktreeId, path) key first becomes mountable, save it
+  // back when that key changes or the editor unmounts. Worktree
+  // round-trips and worktree-internal file switches both go through
+  // this — the user lands where they were instead of at the top of
+  // the file.
+  //
+  // `pendingReveal` (cross-file LSP goto) takes precedence: when set
+  // it positions the cursor + scrolls explicitly, so we skip the
+  // restore in that case to avoid fighting it.
+  useEffect(() => {
+    if (!editor) return;
+    const pending = useDiffsStore.getState().pendingReveal[worktreeId];
+    const targetingThisFile = pending && pending.path === path;
+    if (!targetingThisFile) {
+      const saved = useEditorViewStateStore
+        .getState()
+        .get(worktreeId, path, "file");
+      if (saved) editor.restoreViewState(saved);
+    }
+    return () => {
+      const state = editor.saveViewState();
+      useEditorViewStateStore
+        .getState()
+        .save(worktreeId, path, "file", state);
+    };
+  }, [editor, worktreeId, path]);
 
   return (
     <>

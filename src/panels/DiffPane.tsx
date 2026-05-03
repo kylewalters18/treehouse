@@ -9,6 +9,7 @@ import { onDiffUpdated, readBlobAtRef, readFile } from "@/ipc/client";
 import type { FileDiff, FileStatus, WorktreeId } from "@/ipc/types";
 import { cn } from "@/lib/cn";
 import { CommentOverlay, EditorPane } from "./EditorPane";
+import { useEditorViewStateStore } from "@/stores/editor-view-state";
 import { FileTree } from "./FileTree";
 import { MarkdownPreview, isMarkdownPath } from "./MarkdownPreview";
 import { inferLanguage } from "./editor-language";
@@ -405,6 +406,24 @@ function DiffEditorView({
     });
     setModifiedEditor(diffEditor.getModifiedEditor());
   };
+
+  // Restore Monaco view state on the modified-side editor for a
+  // worktree round-trip; save back on key change / unmount. Keyed
+  // separately from the file-view editor (different content shape)
+  // so the diff doesn't try to scroll to the file's line offset.
+  useEffect(() => {
+    if (!modifiedEditor) return;
+    const saved = useEditorViewStateStore
+      .getState()
+      .get(worktreeId, file.path, "diff");
+    if (saved) modifiedEditor.restoreViewState(saved);
+    return () => {
+      const state = modifiedEditor.saveViewState();
+      useEditorViewStateStore
+        .getState()
+        .save(worktreeId, file.path, "diff", state);
+    };
+  }, [modifiedEditor, worktreeId, file.path]);
 
   useEffect(() => {
     if (file.binary) {

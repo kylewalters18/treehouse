@@ -3,6 +3,7 @@ import * as ipc from "@/ipc/client";
 import type { Worktree, WorkspaceId, WorktreeId } from "@/ipc/types";
 import { asMessage } from "@/lib/errors";
 import { toastError, toastInfo } from "@/stores/toasts";
+import { useEditorViewStateStore } from "@/stores/editor-view-state";
 
 type WorktreesState = {
   worktrees: Worktree[];
@@ -59,6 +60,10 @@ export const useWorktreesStore = create<WorktreesState>((set, get) => ({
       set({
         worktrees: get().worktrees.filter((w) => w.id !== worktreeId),
       });
+      // Drop saved editor view states for this worktree's files so
+      // the in-memory map doesn't accumulate entries for paths that
+      // no longer exist.
+      useEditorViewStateStore.getState().clearForWorktree(worktreeId);
     } catch (e: unknown) {
       toastError("Failed to remove worktree", asMessage(e));
     }
