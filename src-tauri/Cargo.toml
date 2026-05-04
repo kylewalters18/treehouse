@@ -1,6 +1,6 @@
 [package]
 name = "treehouse"
-version = "0.3.0"
+version = "0.4.0"
 description = "Agentic development environment (ADE) with parallel worktree agents"
 authors = ["Kyle Walters"]
 edition = "2021"
