@@ -81,3 +81,32 @@ body {
   color: var(--shiki-fg, #BBBEBF);
   border-radius: 0;
 }
+
+/* xterm scrollbar — terminal and agent panes. Defining
+ * ::-webkit-scrollbar pseudo-elements opts the viewport out of
+ * macOS overlay scrollbars (the thin auto-hiding kind that's
+ * effectively un-grabbable) and into a persistent styled
+ * scrollbar the user can actually drag to skim scrollback. */
+.xterm-viewport::-webkit-scrollbar {
+  width: 12px;
+}
+.xterm-viewport::-webkit-scrollbar-track {
+  background: transparent;
+}
+.xterm-viewport::-webkit-scrollbar-thumb {
+  background-color: rgba(255, 255, 255, 0.14);
+  border-radius: 6px;
+  /* Transparent border + padding-box clip = visually thinner thumb
+   * inside the wider hit-target column. Easier to grab without
+   * dominating the gutter. */
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+.xterm-viewport::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(255, 255, 255, 0.28);
+  background-clip: padding-box;
+}
+.xterm-viewport::-webkit-scrollbar-thumb:active {
+  background-color: rgba(255, 255, 255, 0.4);
+  background-clip: padding-box;
+}
