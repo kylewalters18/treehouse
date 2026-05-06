@@ -79,6 +79,31 @@ describe("resolveToWorktreeRelative", () => {
       resolveToWorktreeRelative("/Users/me/Code/repo-other/x.ts", root),
     ).toBeNull();
   });
+
+  it("expands `~/` against the provided home dir before the prefix check", () => {
+    const home = "/Users/me";
+    expect(
+      resolveToWorktreeRelative("~/Code/repo/src/foo.ts", root, home),
+    ).toBe("src/foo.ts");
+    // Tolerate a trailing slash on the home dir without producing `//`.
+    expect(
+      resolveToWorktreeRelative("~/Code/repo/src/foo.ts", root, `${home}/`),
+    ).toBe("src/foo.ts");
+  });
+
+  it("returns null for `~/` paths outside the worktree", () => {
+    expect(
+      resolveToWorktreeRelative("~/.zshrc", root, "/Users/me"),
+    ).toBeNull();
+  });
+
+  it("without a home dir, `~/` paths fall through and don't resolve", () => {
+    // No home dir provided (or lookup failed) → `~/foo` isn't expanded
+    // and isn't absolute, so it's treated as a relative path that
+    // happens to start with `~/`. Resolves to `~/foo` — the EditorPane
+    // will fail to read it, which is the desired graceful-degrade.
+    expect(resolveToWorktreeRelative("~/.zshrc", root)).toBe("~/.zshrc");
+  });
 });
 
 describe("linksForLine", () => {
@@ -142,6 +167,56 @@ describe("linksForLine", () => {
       underline: true,
     });
   });
+
+  it("matches paths with `+` in directory or file names (e.g. C++)", () => {
+    expect(
+      linksForLine(
+        "/Users/me/Code/C++/main.cpp:10:3 - error",
+        1,
+        FAKE_WORKTREE_ID,
+      ).map((l) => l.text),
+    ).toEqual(["/Users/me/Code/C++/main.cpp:10:3"]);
+    expect(
+      linksForLine("see src/c++/foo.cpp", 1, FAKE_WORKTREE_ID).map(
+        (l) => l.text,
+      ),
+    ).toEqual(["src/c++/foo.cpp"]);
+  });
+
+  it("matches paths with `@` (scoped npm packages)", () => {
+    expect(
+      linksForLine(
+        "node_modules/@types/node/index.d.ts",
+        1,
+        FAKE_WORKTREE_ID,
+      ).map((l) => l.text),
+    ).toEqual(["node_modules/@types/node/index.d.ts"]);
+  });
+
+  it("matches paths with non-ASCII letters", () => {
+    expect(
+      linksForLine("/Users/me/Café/foo.ts", 1, FAKE_WORKTREE_ID).map(
+        (l) => l.text,
+      ),
+    ).toEqual(["/Users/me/Café/foo.ts"]);
+    expect(
+      linksForLine("see src/файлы/x.rs", 1, FAKE_WORKTREE_ID).map(
+        (l) => l.text,
+      ),
+    ).toEqual(["src/файлы/x.rs"]);
+  });
+
+  it("matches `~/`-prefixed home paths", () => {
+    expect(
+      linksForLine("see ~/Code/repo/foo.ts:42", 1, FAKE_WORKTREE_ID).map(
+        (l) => l.text,
+      ),
+    ).toEqual(["~/Code/repo/foo.ts:42"]);
+    // Single segment after ~/ (dotfiles) — common in shell prompts.
+    expect(
+      linksForLine("edit ~/.zshrc", 1, FAKE_WORKTREE_ID).map((l) => l.text),
+    ).toEqual(["~/.zshrc"]);
+  });
 });
 
 describe("urlLinksForLine", () => {
@@ -188,6 +263,14 @@ describe("urlLinksForLine", () => {
       pointerCursor: true,
       underline: true,
     });
+  });
+
+  it("matches URLs that contain `+` in the path or query", () => {
+    expect(
+      urlLinksForLine("see https://google.com/search?q=C++", 1).map(
+        (l) => l.text,
+      ),
+    ).toEqual(["https://google.com/search?q=C++"]);
   });
 });
 

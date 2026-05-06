@@ -1,3 +1,4 @@
+import { homeDir } from "@tauri-apps/api/path";
 import type { IDisposable, ILink, Terminal } from "xterm";
 import { openExternalUrl } from "@/ipc/client";
 import type { WorktreeId } from "@/ipc/types";
@@ -71,20 +72,26 @@ export function combinedLinksForLine(
 }
 
 /// Path matcher. Three alternatives joined by `|`:
-///   1. Absolute:               `/word(/word)*`
+///   1. Absolute or `~/`:       `(/|~/)word(/word)*`
 ///   2. Relative with a `/`:    `(\./|../)?word(/word)+`
-///   3. Bare filename + ext:    `word.alpha\w*`
+///   3. Bare filename + ext:    `word.letter\w*`
 /// Each may carry a trailing `:line` or `:line:col`. Word chars are
-/// `[\w.-]` so `node_modules`, `kebab-case`, `.dotfile`, `.tsx`, etc.
-/// all flow through.
+/// `[\p{L}\p{N}_.+@-]` (the `u` flag turns `\p{L}\p{N}` into "any
+/// unicode letter / digit") so `node_modules`, `kebab-case`,
+/// `.dotfile`, `.tsx`, `C++`, `@types/node`, `Café/foo.ts`, etc. all
+/// flow through.
 ///
 /// The bare-filename branch deliberately requires the extension to
-/// start with an ALPHA character — this rejects version strings like
+/// start with a LETTER (`\p{L}`) — this rejects version strings like
 /// `2.5.1` and decimals like `0.42` while still catching every
 /// realistic source-file extension (`ts`, `py`, `rs`, `go`, `md`,
 /// `json`, etc.).
+///
+/// The `~/` prefix is matched here so links visually highlight; the
+/// activate path expands `~` against the user's home dir before
+/// resolving against the worktree root (see `openPathInEditor`).
 const PATH_REGEX =
-  /(?:\/[\w.-]+(?:\/[\w.-]+)*|(?:\.{1,2}\/)?[\w.-]+(?:\/[\w.-]+)+|[\w-]+\.[a-zA-Z]\w*)(?::\d+(?::\d+)?)?/g;
+  /(?:(?:\/|~\/)[\p{L}\p{N}_.+@-]+(?:\/[\p{L}\p{N}_.+@-]+)*|(?:\.{1,2}\/)?[\p{L}\p{N}_.+@-]+(?:\/[\p{L}\p{N}_.+@-]+)+|[\p{L}\p{N}_+@-]+\.\p{L}[\p{L}\p{N}_]*)(?::\d+(?::\d+)?)?/gu;
 
 export function linksForLine(
   text: string,
@@ -136,24 +143,38 @@ export function parsePathWithLineCol(raw: string): {
   };
 }
 
-/// Resolve a (possibly absolute, possibly with leading `./`) path to a
-/// worktree-relative form. Returns `null` for absolute paths that
-/// aren't under the worktree — the EditorPane reads files relative to
-/// the worktree root, so out-of-tree paths can't be opened from here.
+/// Resolve a (possibly absolute, possibly with leading `./` or `~/`)
+/// path to a worktree-relative form. Returns `null` for absolute paths
+/// that aren't under the worktree — the EditorPane reads files
+/// relative to the worktree root, so out-of-tree paths can't be opened
+/// from here.
+///
+/// When `homeDirPath` is provided, leading `~/` is expanded to it
+/// before the under-worktree check; without it, `~/`-paths fall
+/// through and almost certainly fail the prefix check (returned as
+/// `null`), which matches the "not in this worktree" semantic.
 export function resolveToWorktreeRelative(
   rawPath: string,
   worktreePath: string,
+  homeDirPath?: string | null,
 ): string | null {
-  if (rawPath.startsWith("/")) {
+  let path = rawPath;
+  if (homeDirPath && path.startsWith("~/")) {
+    const home = homeDirPath.endsWith("/")
+      ? homeDirPath.slice(0, -1)
+      : homeDirPath;
+    path = home + path.slice(1);
+  }
+  if (path.startsWith("/")) {
     const root = worktreePath.endsWith("/")
       ? worktreePath
       : worktreePath + "/";
-    if (rawPath === worktreePath) return "";
-    if (!rawPath.startsWith(root)) return null;
-    return rawPath.slice(root.length);
+    if (path === worktreePath) return "";
+    if (!path.startsWith(root)) return null;
+    return path.slice(root.length);
   }
-  if (rawPath.startsWith("./")) return rawPath.slice(2);
-  return rawPath;
+  if (path.startsWith("./")) return path.slice(2);
+  return path;
 }
 
 /// http/https URL matcher. Permissive on the path component but
@@ -199,6 +220,19 @@ export function urlLinksForLine(
   return links;
 }
 
+/// Cached home dir lookup. Tauri's `homeDir()` round-trips to Rust;
+/// the value is invariant across a session, so we hold the Promise
+/// once and let every caller await the same resolution. On failure we
+/// cache `null` rather than retrying — the worst case is `~/`-paths
+/// stop opening, which is a graceful degrade.
+let homeDirPromise: Promise<string | null> | null = null;
+function getHomeDir(): Promise<string | null> {
+  if (!homeDirPromise) {
+    homeDirPromise = homeDir().catch(() => null);
+  }
+  return homeDirPromise;
+}
+
 async function openPathInEditor(
   raw: string,
   worktreeId: WorktreeId,
@@ -208,7 +242,8 @@ async function openPathInEditor(
     .getState()
     .worktrees.find((w) => w.id === worktreeId);
   if (!worktree) return;
-  const rel = resolveToWorktreeRelative(path, worktree.path);
+  const home = path.startsWith("~/") ? await getHomeDir() : null;
+  const rel = resolveToWorktreeRelative(path, worktree.path, home);
   if (rel === null) return;
   const diffs = useDiffsStore.getState();
   diffs.setView(worktreeId, "file");
