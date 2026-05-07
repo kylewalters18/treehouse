@@ -84,6 +84,55 @@ export function FileTree({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showIgnored]);
 
+  // Reveal the selected file: expand each ancestor directory (idempotent;
+  // never collapses anything the user already opened) and load any not-yet-
+  // loaded ancestors so the row appears in the DOM.
+  useEffect(() => {
+    if (!selectedPath) return;
+    const parts = selectedPath.split("/");
+    const ancestors: string[] = [""];
+    for (let i = 0; i < parts.length - 1; i++) {
+      ancestors.push(parts.slice(0, i + 1).join("/"));
+    }
+    setExpanded((prev) => {
+      let changed = false;
+      const next = new Set(prev);
+      for (const a of ancestors) {
+        if (!next.has(a)) {
+          next.add(a);
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+    for (const a of ancestors) {
+      if (!children.has(a)) void loadDir(a);
+    }
+  }, [selectedPath, children, loadDir]);
+
+  // Once the selected row exists in the DOM, scroll it into view (centered)
+  // if it isn't already fully visible. Re-runs whenever `children` updates so
+  // it picks up the row after its parent directories finish loading.
+  const treeRef = useRef<HTMLUListElement>(null);
+  useEffect(() => {
+    if (!selectedPath) return;
+    const root = treeRef.current;
+    if (!root) return;
+    const el = root.querySelector<HTMLElement>(
+      `[data-path="${CSS.escape(selectedPath)}"]`,
+    );
+    if (!el) return;
+    const scroller = findScrollableAncestor(el);
+    if (!scroller) {
+      el.scrollIntoView({ block: "center" });
+      return;
+    }
+    const elRect = el.getBoundingClientRect();
+    const sRect = scroller.getBoundingClientRect();
+    const fullyVisible = elRect.top >= sRect.top && elRect.bottom <= sRect.bottom;
+    if (!fullyVisible) el.scrollIntoView({ block: "center" });
+  }, [selectedPath, children]);
+
   function toggle(dir: string) {
     setExpanded((prev) => {
       const next = new Set(prev);
@@ -113,7 +162,7 @@ export function FileTree({
   }
 
   return (
-    <ul className="py-1">
+    <ul ref={treeRef} className="py-1">
       {rootEntries.map((e) => (
         <TreeNode
           key={e.path}
@@ -129,6 +178,18 @@ export function FileTree({
       ))}
     </ul>
   );
+}
+
+function findScrollableAncestor(el: HTMLElement): HTMLElement | null {
+  let p: HTMLElement | null = el.parentElement;
+  while (p) {
+    const overflowY = getComputedStyle(p).overflowY;
+    if (overflowY === "auto" || overflowY === "scroll" || overflowY === "overlay") {
+      return p;
+    }
+    p = p.parentElement;
+  }
+  return null;
 }
 
 function TreeNode({
@@ -176,6 +237,7 @@ function TreeNode({
   return (
     <li>
       <button
+        data-path={entry.path}
         onClick={() => (entry.isDir ? onToggle(entry.path) : onSelect(entry.path))}
         className={cn(
           "relative flex w-full items-center gap-1 py-0.5 pr-2 text-left text-[11px] transition-colors",
