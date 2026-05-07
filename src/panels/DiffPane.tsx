@@ -47,7 +47,8 @@ function DiffView({ worktreeId }: { worktreeId: WorktreeId }) {
   const setView = useDiffsStore((s) => s.setView);
   const setMode = useDiffsStore((s) => s.setMode);
   const [treeRefresh, setTreeRefresh] = useState(0);
-  const [showIgnored, setShowIgnored] = useState(false);
+  const showIgnored = useUiStore((s) => s.showIgnored);
+  const setShowIgnored = useUiStore((s) => s.setShowIgnored);
 
   useEffect(() => {
     fetchDiff(worktreeId);
@@ -199,7 +200,7 @@ function DiffView({ worktreeId }: { worktreeId: WorktreeId }) {
         <div className="flex shrink-0 items-center justify-between gap-2 border-b border-neutral-900 px-3 py-2 text-[11px] uppercase tracking-wider text-neutral-500">
           <span>Files</span>
           <button
-            onClick={() => setShowIgnored((v) => !v)}
+            onClick={() => setShowIgnored(!showIgnored)}
             title={
               showIgnored
                 ? "Hide gitignored files"

@@ -510,9 +510,10 @@ pub async fn list_tree(
 #[tauri::command]
 pub async fn list_files(
     worktree_id: WorktreeId,
+    show_ignored: Option<bool>,
     state: State<'_, AppState>,
 ) -> AppResult<Vec<String>> {
-    fs_api::list_files(worktree_id, &state).await
+    fs_api::list_files(worktree_id, show_ignored.unwrap_or(false), &state).await
 }
 
 #[tauri::command]

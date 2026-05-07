@@ -171,18 +171,18 @@ pub async fn list_tree(
     Ok(entries)
 }
 
-/// Recursive flat list of all files in the worktree, gitignore- and
-/// builtin-ignore-aware. Returns worktree-relative, forward-slash-
-/// separated paths sorted lexicographically. Used by the Cmd+P
-/// "Go to file" finder; the frontend does fuzzy matching over the
-/// returned slice.
+/// Recursive flat list of all files in the worktree. Returns
+/// worktree-relative, forward-slash-separated paths sorted
+/// lexicographically. Used by the Cmd+P "Go to file" finder; the
+/// frontend does fuzzy matching over the returned slice.
 ///
-/// Hidden files (`.git`, `.cache`, etc.) and the patterns in
-/// `BUILTIN_IGNORES` are filtered the same way `list_tree` filters
-/// them so the finder doesn't surface noise like vendored deps,
-/// build outputs, or platform metadata.
+/// Hidden dotfiles/dotdirs (e.g. `.kiro`, `.claude`, `.gitignore`)
+/// are surfaced — only `BUILTIN_IGNORES` (`.git`, `node_modules`,
+/// `target`, …) are unconditionally filtered. `show_ignored` toggles
+/// whether `.gitignore` rules apply, mirroring the tree's UI toggle.
 pub async fn list_files(
     worktree_id: WorktreeId,
+    show_ignored: bool,
     state: &AppState,
 ) -> AppResult<Vec<String>> {
     let wt = state
@@ -192,22 +192,19 @@ pub async fn list_files(
         .clone();
     let root = wt.path.clone();
 
-    // `WalkBuilder` honors `.gitignore`, `.git/info/exclude`, and
-    // global git excludes. We layer our `BUILTIN_IGNORES` on top via
-    // a single `add_custom_ignore_filename` would be cleaner, but
-    // since these are just glob patterns we feed them through a
-    // separate `Gitignore` and check each entry — keeps parity with
-    // `list_tree` which uses the same approach.
-    let builtin = build_ignore(&root)?;
+    // `BUILTIN_IGNORES` always applies — surfacing `.git/` or
+    // `node_modules/` in a fuzzy finder is never useful, even when
+    // the user has asked to see gitignored entries.
+    let builtin = build_ignore_builtin_only(&root)?;
 
     // Walk on a blocking thread — `ignore::WalkBuilder` is sync.
     let root_for_walk = root.clone();
     let files = tokio::task::spawn_blocking(move || -> Vec<String> {
         let walker = WalkBuilder::new(&root_for_walk)
-            .hidden(true)       // skip dotfiles unless re-added by .gitignore
-            .git_ignore(true)
-            .git_global(true)
-            .git_exclude(true)
+            .hidden(false)      // surface dotfiles like `.kiro`, `.claude`
+            .git_ignore(!show_ignored)
+            .git_global(!show_ignored)
+            .git_exclude(!show_ignored)
             .build();
         let mut out: Vec<String> = Vec::new();
         for result in walker {
@@ -252,6 +249,19 @@ pub async fn list_files(
 fn build_ignore(root: &Path) -> AppResult<Gitignore> {
     let mut builder = GitignoreBuilder::new(root);
     let _ = builder.add(root.join(".gitignore"));
+    for pat in BUILTIN_IGNORES {
+        let _ = builder.add_line(None, pat);
+    }
+    builder
+        .build()
+        .map_err(|e| AppError::Unknown(format!("gitignore build: {e}")))
+}
+
+/// Just the `BUILTIN_IGNORES` patterns — no project `.gitignore`. Used
+/// by `list_files`, where `.gitignore` is handled by `WalkBuilder` so
+/// it can be toggled, but `BUILTIN_IGNORES` should always apply.
+fn build_ignore_builtin_only(root: &Path) -> AppResult<Gitignore> {
+    let mut builder = GitignoreBuilder::new(root);
     for pat in BUILTIN_IGNORES {
         let _ = builder.add_line(None, pat);
     }

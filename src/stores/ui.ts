@@ -5,6 +5,10 @@ type UiState = {
   selectedWorktreeId: WorktreeId | null;
   focusMode: boolean;
   worktreeSidebarCollapsed: boolean;
+  /// Workspace-wide toggle: when true, gitignored entries are surfaced
+  /// in the file tree (dimmed) and the Cmd+P fuzzy finder. Default off.
+  /// `BUILTIN_IGNORES` (`.git`, `node_modules`, …) always applies.
+  showIgnored: boolean;
   /// Which agent tab is currently active per worktree. AgentPane writes
   /// it as the user clicks tabs; comment-send code reads it to route
   /// payloads to the right session.
@@ -26,6 +30,7 @@ type UiState = {
   setFocusMode: (on: boolean) => void;
   toggleWorktreeSidebar: () => void;
   setWorktreeSidebarCollapsed: (on: boolean) => void;
+  setShowIgnored: (on: boolean) => void;
   setActiveAgent: (
     worktreeId: WorktreeId,
     agentId: AgentSessionId | null,
@@ -43,6 +48,7 @@ export const useUiStore = create<UiState>((set) => ({
   selectedWorktreeId: null,
   focusMode: false,
   worktreeSidebarCollapsed: false,
+  showIgnored: false,
   activeAgentByWorktree: {},
   agentLabelsBySessionId: {},
   agentTabOrderByWorktree: {},
@@ -60,6 +66,9 @@ export const useUiStore = create<UiState>((set) => ({
   },
   setWorktreeSidebarCollapsed(on) {
     set({ worktreeSidebarCollapsed: on });
+  },
+  setShowIgnored(on) {
+    set({ showIgnored: on });
   },
   setActiveAgent(worktreeId, agentId) {
     set((s) => ({
@@ -97,6 +106,7 @@ export const useUiStore = create<UiState>((set) => ({
       selectedWorktreeId: null,
       focusMode: false,
       worktreeSidebarCollapsed: false,
+      showIgnored: false,
       activeAgentByWorktree: {},
       agentLabelsBySessionId: {},
       agentTabOrderByWorktree: {},

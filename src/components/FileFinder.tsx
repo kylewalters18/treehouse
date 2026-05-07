@@ -14,6 +14,7 @@ import { listFiles, onDiffUpdated } from "@/ipc/client";
 import type { WorktreeId } from "@/ipc/types";
 import { fuzzyFilter } from "@/lib/fuzzy";
 import { useDiffsStore } from "@/stores/diffs";
+import { useUiStore } from "@/stores/ui";
 import { cn } from "@/lib/cn";
 
 const MAX_RESULTS = 100;
@@ -35,6 +36,7 @@ export function FileFinder({
   const setView = useDiffsStore((s) => s.setView);
   const selectFile = useDiffsStore((s) => s.selectFile);
   const setPendingReveal = useDiffsStore((s) => s.setPendingReveal);
+  const showIgnored = useUiStore((s) => s.showIgnored);
   // Marks the cached list as stale on `diff_updated`; we refetch on
   // the next open. Avoids re-walking on every fs event.
   const dirty = useRef(false);
@@ -61,7 +63,7 @@ export function FileFinder({
     inputRef.current?.focus();
     if (files !== null && !dirty.current) return;
     let cancelled = false;
-    void listFiles(worktreeId).then((list) => {
+    void listFiles(worktreeId, showIgnored).then((list) => {
       if (cancelled) return;
       setFiles(list);
       dirty.current = false;
@@ -69,14 +71,15 @@ export function FileFinder({
     return () => {
       cancelled = true;
     };
-  }, [open, worktreeId, files]);
+  }, [open, worktreeId, files, showIgnored]);
 
-  // Reset the cached list when the user switches to a different
-  // worktree — the previous list isn't relevant.
+  // Reset the cached list when the user switches worktrees OR flips
+  // the show-ignored toggle — the previous list isn't relevant in
+  // either case (different walk inputs).
   useEffect(() => {
     setFiles(null);
     dirty.current = false;
-  }, [worktreeId]);
+  }, [worktreeId, showIgnored]);
 
   const results = useMemo(() => {
     if (files === null) return [];
