@@ -508,6 +508,11 @@ function DiffEditorView({
         onMount={onMount}
         options={{
           readOnly: true,
+          // The default `renderValidationDecorations: "editable"` hides
+          // squiggles in read-only mode. We want LSP markers (clangd /
+          // rust-analyzer) visible in the diff so review surfaces what
+          // the language server thinks of the new side.
+          renderValidationDecorations: "on",
           renderSideBySide: false,
           minimap: { enabled: false },
           glyphMargin: true,

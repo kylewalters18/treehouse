@@ -231,6 +231,10 @@ function EditorWithComments({
         path={path}
         options={{
           readOnly: true,
+          // The default `renderValidationDecorations: "editable"` hides
+          // squiggles when `readOnly` is set. Force them on so LSP
+          // markers (clangd, rust-analyzer, …) stay visible.
+          renderValidationDecorations: "on",
           minimap: { enabled: false },
           fontFamily:
             'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace',

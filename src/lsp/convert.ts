@@ -6,6 +6,8 @@
 import { Uri } from "monaco-editor";
 import type * as monaco from "monaco-editor";
 import type {
+  CodeAction as LspCodeAction,
+  Command as LspCommand,
   CompletionItem,
   CompletionItemKind as LspCompletionItemKind,
   Diagnostic,
@@ -35,7 +37,13 @@ export function lspRangeToMonaco(r: Range): monaco.IRange {
 export function lspSeverityToMarker(
   sev: DiagnosticSeverity | undefined,
 ): monaco.MarkerSeverity {
-  // 1=Error, 2=Warning, 3=Information, 4=Hint — map to Monaco's 8/4/2/1.
+  // 1=Error, 2=Warning, 3=Information, 4=Hint → Monaco's 8/4/2/2.
+  // Monaco renders MarkerSeverity.Hint (1) as a fixed `...` SVG pinned
+  // at the marker's start (`no-repeat bottom left`), regardless of
+  // range width. clangd publishes most clang-tidy modernize-/readability-
+  // checks at LSP Hint with full-token ranges, and the `...` rendering
+  // hides that range — fold Hint into Info so we get the standard
+  // wavy underline across the full source range.
   switch (sev) {
     case 1:
       return 8 as monaco.MarkerSeverity;
@@ -44,7 +52,7 @@ export function lspSeverityToMarker(
     case 3:
       return 2 as monaco.MarkerSeverity;
     case 4:
-      return 1 as monaco.MarkerSeverity;
+      return 2 as monaco.MarkerSeverity;
     default:
       return 8 as monaco.MarkerSeverity;
   }
@@ -134,6 +142,62 @@ const COMPLETION_KIND_MAP: Record<number, monaco.languages.CompletionItemKind> =
   24: 11 as monaco.languages.CompletionItemKind, // Operator
   25: 24 as monaco.languages.CompletionItemKind, // TypeParameter
 };
+
+/// Round-trip a Monaco `IMarkerData` (built earlier from a published LSP
+/// diagnostic) back to an LSP `Diagnostic`. Needed when calling
+/// `textDocument/codeAction`: clangd uses `context.diagnostics` to filter
+/// to the fixes attached to the diagnostics under the cursor, so we must
+/// pass them through with stable ranges/codes/sources.
+export function markerToLspDiagnostic(
+  m: monaco.editor.IMarkerData,
+): Diagnostic {
+  // Monaco severity 8/4/2/1 → LSP 1/2/3/4. The reverse mapping isn't
+  // perfect because we collapse Hint → Info on the way in (see
+  // `lspSeverityToMarker`); for code-action context this is fine since
+  // clangd only matches by range + source + code, not severity.
+  const sev: DiagnosticSeverity =
+    m.severity === 8 ? 1 : m.severity === 4 ? 2 : m.severity === 2 ? 3 : 4;
+  // Monaco's marker `code` can be either a bare string/number or
+  // `{ value, target }` (the linked-code form). LSP only takes the
+  // primitive form, so unwrap if needed.
+  const code: string | number | undefined =
+    typeof m.code === "object" && m.code !== null ? m.code.value : m.code;
+  return {
+    range: {
+      start: { line: m.startLineNumber - 1, character: m.startColumn - 1 },
+      end: { line: m.endLineNumber - 1, character: m.endColumn - 1 },
+    },
+    severity: sev,
+    message: m.message,
+    source: m.source,
+    code,
+  };
+}
+
+/// Convert an LSP `CodeAction` (or bare `Command`) into a Monaco
+/// `CodeAction`. The editor is mounted read-only (write-back is post-MVP),
+/// so we strip the `edit` field and mark each action as `disabled` with
+/// a short reason — Monaco still renders the title in the lightbulb menu
+/// so the user can see what fixes clangd is suggesting, but selecting
+/// one won't mutate the model.
+export function codeActionToMonaco(
+  action: LspCodeAction | LspCommand,
+): monaco.languages.CodeAction {
+  const READ_ONLY_REASON = "Editor is read-only — preview only";
+  // A bare LSP `Command` (legacy path) has `command: string`; a
+  // `CodeAction` has `command?: Command` plus a `title`. Tell them apart
+  // by whether `command` is a string.
+  if ("command" in action && typeof action.command === "string") {
+    return { title: action.title, disabled: READ_ONLY_REASON };
+  }
+  const ca = action as LspCodeAction;
+  return {
+    title: ca.title,
+    kind: ca.kind,
+    isPreferred: ca.isPreferred,
+    disabled: READ_ONLY_REASON,
+  };
+}
 
 export function completionItemToMonaco(
   item: CompletionItem,

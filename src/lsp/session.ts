@@ -88,6 +88,25 @@ const CLIENT_CAPABILITIES: ClientCapabilities = {
       },
     },
     publishDiagnostics: { relatedInformation: true },
+    codeAction: {
+      dynamicRegistration: false,
+      codeActionLiteralSupport: {
+        codeActionKind: {
+          valueSet: [
+            "",
+            "quickfix",
+            "refactor",
+            "refactor.extract",
+            "refactor.inline",
+            "refactor.rewrite",
+            "source",
+            "source.organizeImports",
+          ],
+        },
+      },
+      isPreferredSupport: true,
+      disabledSupport: true,
+    },
   },
   workspace: {
     workspaceFolders: true,

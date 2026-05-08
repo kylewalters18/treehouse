@@ -34,12 +34,16 @@ import {
 } from "./session";
 import { useLspStore } from "@/stores/lsp";
 import {
+  codeActionToMonaco,
   completionItemToMonaco,
   hoverToMonaco,
   lspLocationToMonaco,
+  markerToLspDiagnostic,
   monacoPositionToLsp,
 } from "./convert";
 import type {
+  CodeAction as LspCodeAction,
+  Command as LspCommand,
   CompletionItem,
   CompletionList,
   Hover,
@@ -68,6 +72,7 @@ if (typeof window !== "undefined") {
           definition: !!s.capabilities.definitionProvider,
           completion: !!s.capabilities.completionProvider,
           signatureHelp: !!s.capabilities.signatureHelpProvider,
+          codeAction: !!s.capabilities.codeActionProvider,
         },
         openedUris: Array.from(s.openedUris),
         monacoToLsp: Object.fromEntries(s.monacoToLspUri),
@@ -408,6 +413,48 @@ export function ensureLanguageProviders(languageId: string): void {
       return {
         suggestions: items.map((i) => completionItemToMonaco(i, range)),
         incomplete: !Array.isArray(result) && result.isIncomplete,
+      };
+    },
+  });
+
+  MonacoLanguages.registerCodeActionProvider(languageId, {
+    // Surface clangd / clang-tidy fix-its in the lightbulb menu. Actions
+    // come back with `disabled` set so Monaco renders the title but
+    // refuses to apply — the editor is read-only (write-back is post-MVP)
+    // and we'd rather show what's available than no-op silently. Once
+    // write-back lands the `disabled` flag drops and we can pass through
+    // edits/commands as Monaco expects.
+    provideCodeActions: async (model, range, context) => {
+      const found = findSessionForModelUri(model.uri.toString(), languageId);
+      if (!found || !found.session.capabilities.codeActionProvider) {
+        return { actions: [], dispose: () => {} };
+      }
+      const result = (await found.session.connection.sendRequest(
+        "textDocument/codeAction",
+        {
+          textDocument: { uri: found.lspUri },
+          range: {
+            start: {
+              line: range.startLineNumber - 1,
+              character: range.startColumn - 1,
+            },
+            end: {
+              line: range.endLineNumber - 1,
+              character: range.endColumn - 1,
+            },
+          },
+          context: {
+            diagnostics: context.markers.map(markerToLspDiagnostic),
+            only: context.only ? [context.only] : undefined,
+          },
+        },
+      )) as Array<LspCodeAction | LspCommand> | null;
+      if (!result || result.length === 0) {
+        return { actions: [], dispose: () => {} };
+      }
+      return {
+        actions: result.map(codeActionToMonaco),
+        dispose: () => {},
       };
     },
   });
