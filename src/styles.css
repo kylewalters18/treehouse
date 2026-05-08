@@ -41,11 +41,13 @@ body {
 
 /* Suppress Monaco's keybinding tooltip on action-bar buttons — the
  * "(Escape)" / "Previous Match (⇧⏎)" hints that flicker over the find
- * widget when you mouse around its toolbar. These are tooltip-style
- * hovers (`role="tooltip"`); the editor's code-content hover (LSP type
- * info, hover docs) is rendered without that role and is unaffected. */
-.monaco-hover[role="tooltip"],
-.monaco-hover-content[role="tooltip"] {
+ * widget when you mouse around its toolbar. The find-widget tooltips
+ * are rendered by `platform/hover/HoverWidget`, which adds a
+ * `.workbench-hover` class to the outer `.monaco-hover`; the editor's
+ * code-content hover (LSP type info, hover docs) uses the base
+ * `HoverWidget` and lacks that class — scoping to `.workbench-hover`
+ * keeps LSP hovers visible. */
+.monaco-hover.workbench-hover[role="tooltip"] {
   display: none !important;
 }
 
