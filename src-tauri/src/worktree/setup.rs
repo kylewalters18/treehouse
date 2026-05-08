@@ -265,14 +265,38 @@ pub async fn run_inline(
         let label = step.name.clone();
         tracing::info!(name = %label, command = %step.command, "running hook step");
         let mut cmd = tokio::process::Command::new(&step.command);
-        cmd.args(&step.args).current_dir(cwd);
+        cmd.args(&step.args)
+            .current_dir(cwd)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true);
         for (k, v) in &step.env {
             cmd.env(k, v);
         }
-        let spawn = cmd.output();
-        let result = match tokio::time::timeout(timeout_per_step, spawn).await {
+        let child = match cmd.spawn() {
+            Ok(c) => c,
+            Err(e) => {
+                let reason = format!("spawn failed: {e}");
+                tracing::warn!(name = %label, "{}", reason);
+                summary.failed.push(HookFailure {
+                    name: label,
+                    reason,
+                });
+                continue;
+            }
+        };
+        let result = match tokio::time::timeout(
+            timeout_per_step,
+            child.wait_with_output(),
+        )
+        .await
+        {
             Ok(r) => r,
             Err(_) => {
+                // On timeout the `wait_with_output` future is dropped
+                // — but `kill_on_drop` on the Command builder ensures
+                // the child gets SIGKILLed rather than orphaned.
                 let reason = format!("timed out after {:?}", timeout_per_step);
                 tracing::warn!(name = %label, "{}", reason);
                 summary.failed.push(HookFailure {
@@ -314,7 +338,11 @@ pub async fn run_inline(
                 });
             }
             Err(e) => {
-                let reason = format!("spawn failed: {e}");
+                // Spawn failures are caught above; this arm is the
+                // narrower "child started but `wait_with_output`
+                // couldn't complete" case (e.g. an I/O error reading
+                // its pipes).
+                let reason = format!("wait failed: {e}");
                 tracing::warn!(name = %label, "{}", reason);
                 summary.failed.push(HookFailure {
                     name: label,

@@ -14,8 +14,10 @@ use super::{git_ops, Worktree};
 
 /// Cap any single `on_destroy` step at this duration. Cleanup is
 /// best-effort; a hung `docker rm` shouldn't block worktree removal
-/// indefinitely.
-const DESTROY_HOOK_TIMEOUT: Duration = Duration::from_secs(30);
+/// indefinitely. 2 min covers normal teardowns (docker-compose down
+/// with several services, kubectl deletes with finalizers, slow
+/// shutdown lifecycle hooks); past that something's actually stuck.
+const DESTROY_HOOK_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Tunable knobs for `create`. Pass `Default::default()` for "old" behavior.
 #[derive(Debug, Clone, Copy, Default)]
