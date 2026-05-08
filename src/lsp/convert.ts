@@ -11,6 +11,7 @@ import type {
   CompletionItem,
   CompletionItemKind as LspCompletionItemKind,
   Diagnostic,
+  DiagnosticRelatedInformation,
   DiagnosticSeverity,
   Hover,
   Location,
@@ -70,6 +71,27 @@ export function diagnosticToMarker(d: Diagnostic): monaco.editor.IMarkerData {
     startColumn: d.range.start.character + 1,
     endLineNumber: d.range.end.line + 1,
     endColumn: d.range.end.character + 1,
+    // Map LSP `relatedInformation` to Monaco's `IRelatedInformation`
+    // so clang-tidy's "consider using X" / "see also …" follow-ups
+    // render under the primary diagnostic in the marker hover, each
+    // line a clickable link to the source location. URIs come pre-
+    // translated by the path-mapping middleware, so files inside the
+    // worktree resolve to a Monaco model and navigate; URIs outside
+    // (system headers etc.) stay readable but don't navigate.
+    relatedInformation: d.relatedInformation?.map(relatedInfoToMonaco),
+  };
+}
+
+function relatedInfoToMonaco(
+  ri: DiagnosticRelatedInformation,
+): monaco.editor.IRelatedInformation {
+  return {
+    resource: Uri.parse(ri.location.uri),
+    message: ri.message,
+    startLineNumber: ri.location.range.start.line + 1,
+    startColumn: ri.location.range.start.character + 1,
+    endLineNumber: ri.location.range.end.line + 1,
+    endColumn: ri.location.range.end.character + 1,
   };
 }
 
