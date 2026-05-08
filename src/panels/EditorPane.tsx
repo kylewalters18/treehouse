@@ -17,6 +17,7 @@ import {
   useCommentsStore,
 } from "@/stores/comments";
 import { useLspStore } from "@/stores/lsp";
+import { useNavigationStore } from "@/stores/navigation";
 import { useSettingsStore } from "@/stores/settings";
 import { useUiStore } from "@/stores/ui";
 import { useWorkspaceStore } from "@/stores/workspace";
@@ -184,14 +185,23 @@ function EditorWithComments({
   // Mirror Monaco's cursor position into local state so the bottom-right
   // indicator updates as the user navigates. Monaco fires this for both
   // keyboard motion and click positioning, so one subscription covers all
-  // sources.
+  // sources. Same handler feeds the back/forward navigation history —
+  // small moves update the current entry in place; big jumps push.
+  const recordNav = useNavigationStore((s) => s.record);
   useEffect(() => {
     if (!editor) return;
+    // Seed history with the file's initial cursor position so the very
+    // first cross-file jump has somewhere to go back *to*.
+    const initial = editor.getPosition();
+    if (initial) {
+      recordNav(worktreeId, path, initial.lineNumber, initial.column);
+    }
     const sub = editor.onDidChangeCursorPosition((e) => {
       setCursorPos({ line: e.position.lineNumber, column: e.position.column });
+      recordNav(worktreeId, path, e.position.lineNumber, e.position.column);
     });
     return () => sub.dispose();
-  }, [editor]);
+  }, [editor, worktreeId, path, recordNav]);
 
   // Restore Monaco view state (scroll + cursor + selections + folds)
   // when the (worktreeId, path) key first becomes mountable, save it

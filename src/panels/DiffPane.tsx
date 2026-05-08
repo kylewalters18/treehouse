@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { DiffEditor, type DiffOnMount } from "@monaco-editor/react";
 import type { editor as MonacoEditor } from "monaco-editor";
 import { useUiStore } from "@/stores/ui";
 import { useWorktreesStore } from "@/stores/worktrees";
 import { useDiffsStore } from "@/stores/diffs";
 import { useLspStore } from "@/stores/lsp";
+import { useNavigationStore } from "@/stores/navigation";
 import { onDiffUpdated, readBlobAtRef, readFile } from "@/ipc/client";
 import type { FileDiff, FileStatus, WorktreeId } from "@/ipc/types";
 import { cn } from "@/lib/cn";
@@ -229,6 +230,7 @@ function DiffView({ worktreeId }: { worktreeId: WorktreeId }) {
       </aside>
       <section className="flex flex-1 flex-col overflow-hidden">
         <div className="flex shrink-0 items-center gap-1 border-b border-neutral-800 bg-neutral-950 px-2 py-1 text-[11px]">
+          <NavButtons worktreeId={worktreeId} />
           <TabButton
             active={view === "diff"}
             onClick={() => setView(worktreeId, "diff")}
@@ -341,6 +343,135 @@ function FocusToggle() {
     >
       {focusMode ? "⤡" : "⤢"}
     </button>
+  );
+}
+
+/// Browser-style back / forward through the per-worktree cursor-
+/// position history, plus a dropdown trigger that lists every file
+/// in the stack (deduped to the most-recent entry per file) for
+/// click-to-jump. Selectors derive `canBack` / `canForward` from
+/// `byWorktree` directly so the buttons re-render when the index
+/// moves.
+function NavButtons({ worktreeId }: { worktreeId: WorktreeId }) {
+  const stack = useNavigationStore((s) => s.byWorktree[worktreeId]);
+  const back = useNavigationStore((s) => s.back);
+  const forward = useNavigationStore((s) => s.forward);
+  const jumpTo = useNavigationStore((s) => s.jumpTo);
+  const canBack = !!stack && stack.index > 0;
+  const canForward = !!stack && stack.index < stack.entries.length - 1;
+  const hasHistory = !!stack && stack.entries.length > 0;
+
+  // Dedup by path, keeping the most-recent entry's index per file.
+  // Walk newest → oldest so the first hit per path is the freshest.
+  // The Map preserves insertion order, so iteration yields entries
+  // in newest-first order — what the dropdown wants.
+  const recentFiles = useMemo<{ path: string; index: number }[]>(() => {
+    if (!stack) return [];
+    const seen = new Map<string, number>();
+    for (let i = stack.entries.length - 1; i >= 0; i--) {
+      const e = stack.entries[i];
+      if (!seen.has(e.path)) seen.set(e.path, i);
+    }
+    return Array.from(seen, ([path, index]) => ({ path, index }));
+  }, [stack]);
+
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    function onDocClick(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") setOpen(false);
+    }
+    window.addEventListener("mousedown", onDocClick);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousedown", onDocClick);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  return (
+    <div ref={ref} className="relative mr-1 flex items-center gap-0.5">
+      <button
+        onClick={() => back(worktreeId)}
+        disabled={!canBack}
+        title="Go back (⌘[)"
+        aria-label="Go back"
+        className={cn(
+          "rounded px-1.5 py-0.5 text-[11px] text-neutral-400 hover:bg-neutral-900 hover:text-neutral-200",
+          !canBack && "cursor-not-allowed opacity-30 hover:bg-transparent hover:text-neutral-400",
+        )}
+      >
+        ←
+      </button>
+      <button
+        onClick={() => forward(worktreeId)}
+        disabled={!canForward}
+        title="Go forward (⌘])"
+        aria-label="Go forward"
+        className={cn(
+          "rounded px-1.5 py-0.5 text-[11px] text-neutral-400 hover:bg-neutral-900 hover:text-neutral-200",
+          !canForward && "cursor-not-allowed opacity-30 hover:bg-transparent hover:text-neutral-400",
+        )}
+      >
+        →
+      </button>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        disabled={!hasHistory}
+        title="File history"
+        aria-label="File history"
+        className={cn(
+          "rounded px-1.5 py-0.5 text-[11px] leading-none text-neutral-400 hover:bg-neutral-900 hover:text-neutral-200",
+          open && "bg-neutral-800 text-neutral-100",
+          !hasHistory && "cursor-not-allowed opacity-30 hover:bg-transparent hover:text-neutral-400",
+        )}
+      >
+        ▼
+      </button>
+      {open && hasHistory && (
+        <div className="absolute left-0 top-full z-30 mt-1 max-h-72 w-80 overflow-auto rounded-md border border-neutral-800 bg-neutral-900 shadow-2xl">
+          {recentFiles.map(({ path, index }) => {
+            const isCurrent = index === stack!.index;
+            const entry = stack!.entries[index];
+            const slash = path.lastIndexOf("/");
+            const dir = slash >= 0 ? path.slice(0, slash) : "";
+            const base = slash >= 0 ? path.slice(slash + 1) : path;
+            return (
+              <button
+                key={`${path}:${index}`}
+                onClick={() => {
+                  jumpTo(worktreeId, index);
+                  setOpen(false);
+                }}
+                className={cn(
+                  "flex w-full items-center gap-2 px-2 py-1 text-left text-[11px] hover:bg-neutral-800",
+                  isCurrent
+                    ? "border-l-2 border-blue-500 bg-blue-950/30 pl-1.5"
+                    : "border-l-2 border-transparent",
+                )}
+                title={path}
+              >
+                <span className="min-w-0 flex-1 truncate font-mono">
+                  <span className="text-neutral-100">{base}</span>
+                  {dir && (
+                    <span className="ml-1.5 text-neutral-500">{dir}</span>
+                  )}
+                </span>
+                <span className="shrink-0 font-mono text-[10px] tabular-nums text-neutral-500">
+                  Ln {entry.line}, Col {entry.column}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
   );
 }
 

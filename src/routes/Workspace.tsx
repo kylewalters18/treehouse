@@ -9,6 +9,7 @@ import { useWorkspaceStore } from "@/stores/workspace";
 import { useWorktreesStore } from "@/stores/worktrees";
 import { useDiffsStore } from "@/stores/diffs";
 import { useLspStore } from "@/stores/lsp";
+import { useNavigationStore } from "@/stores/navigation";
 import { useUiStore } from "@/stores/ui";
 import { WorktreeSidebar } from "@/panels/WorktreeSidebar";
 import { DiffPane } from "@/panels/DiffPane";
@@ -103,6 +104,16 @@ export function Workspace() {
         // is a follow-up.
         e.preventDefault();
         toggleProblemsTab();
+      } else if (e.key === "[" || e.key === "]") {
+        // ⌘[ / ⌘] — browser-style back / forward through the
+        // per-worktree cursor-position history. No-op when no
+        // worktree is selected (main-clone view) or the stack
+        // can't move in that direction.
+        if (!selectedWorktreeId) return;
+        e.preventDefault();
+        const nav = useNavigationStore.getState();
+        if (e.key === "[") nav.back(selectedWorktreeId);
+        else nav.forward(selectedWorktreeId);
       }
     }
     window.addEventListener("keydown", onKey);
