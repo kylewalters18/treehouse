@@ -623,6 +623,30 @@ export function CommentOverlay({
                 text,
               });
             }}
+            onSaveAndSend={async (text) => {
+              setComposerLine(null);
+              const c = await addComment({
+                workspaceRoot,
+                branch,
+                filePath,
+                line: desc.line,
+                text,
+              });
+              // No agent attached to this worktree → save still
+              // landed; just toast so the user knows the send half
+              // didn't fire. `sendOne` would otherwise toast the
+              // same thing on a null id, but bypassing it here also
+              // skips the resolve.
+              if (!c) return;
+              if (!activeAgentId) {
+                toastInfo(
+                  "Comment saved",
+                  "No active agent in this worktree to send to.",
+                );
+                return;
+              }
+              await sendOne(c, activeAgentId);
+            }}
             onCancel={() => setComposerLine(null)}
           />,
           e.domNode,
@@ -961,16 +985,22 @@ function sendTargetLabel(a: AgentSession): string {
 
 function CommentComposer({
   onSave,
+  onSaveAndSend,
   onCancel,
 }: {
   onSave: (text: string) => void;
+  /// Save the comment AND immediately fire it off to the active
+  /// agent — bound to ⌘⇧↵. Falls back to plain save if the parent
+  /// reports there's no agent to target (e.g. you have no running
+  /// agents in this worktree).
+  onSaveAndSend: (text: string) => void;
   onCancel: () => void;
 }) {
   const [text, setText] = useState("");
   return (
     <div className="rounded border border-blue-800 bg-neutral-950">
       <div className="border-b border-neutral-900 px-2 py-1 text-[11px] text-neutral-500">
-        New comment · ⌘↵ to save · Esc to cancel
+        New comment · ⌘↵ save · ⌘⇧↵ save & send · Esc cancel
       </div>
       <div className="px-2 py-1">
         <textarea
@@ -981,8 +1011,13 @@ function CommentComposer({
             if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
               e.preventDefault();
               const t = text.trim();
-              if (t) onSave(t);
-              else onCancel();
+              if (!t) {
+                onCancel();
+              } else if (e.shiftKey) {
+                onSaveAndSend(t);
+              } else {
+                onSave(t);
+              }
             } else if (e.key === "Escape") {
               e.preventDefault();
               onCancel();
