@@ -452,8 +452,16 @@ export function ensureLanguageProviders(languageId: string): void {
       if (!result || result.length === 0) {
         return { actions: [], dispose: () => {} };
       }
+      // Reverse the session's monacoToLspUri map so the converter can
+      // rewrite edit-target URIs back into Monaco's namespace. Cached
+      // per-request because the map can change as new files open.
+      const reverse = new Map<string, monaco.Uri>();
+      for (const [muri, luri] of found.session.monacoToLspUri) {
+        reverse.set(luri, Uri.parse(muri));
+      }
+      const monacoFromLsp = (lspUri: string) => reverse.get(lspUri) ?? null;
       return {
-        actions: result.map(codeActionToMonaco),
+        actions: result.map((a) => codeActionToMonaco(a, monacoFromLsp)),
         dispose: () => {},
       };
     },

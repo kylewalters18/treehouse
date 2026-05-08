@@ -6,6 +6,7 @@
 import {
   CompletionRequest,
   DefinitionRequest,
+  DidChangeTextDocumentNotification,
   DidCloseTextDocumentNotification,
   DidOpenTextDocumentNotification,
   ExitNotification,
@@ -21,6 +22,7 @@ import {
   type ProgressToken,
   type PublishDiagnosticsParams,
   type ServerCapabilities,
+  type TextDocumentContentChangeEvent,
   type WorkDoneProgressBegin,
   type WorkDoneProgressCreateParams,
   type WorkDoneProgressEnd,
@@ -54,6 +56,15 @@ export interface LspSession {
   /// `path` prop, which in our editor is worktree-relative). This map
   /// lets us translate at request time.
   monacoToLspUri: Map<string, string>;
+  /// Document version per Monaco URI, bumped on every `didChange`.
+  /// LSP requires monotonically increasing versions so the server can
+  /// reject stale requests; tracked here so reopens of the same doc
+  /// don't reuse a stale counter.
+  documentVersions: Map<string, number>;
+  /// Disposers for the `onDidChangeContent` subscriptions installed by
+  /// `openDocument`. Keyed by Monaco URI; called from `closeDocument`
+  /// so we don't leak listeners (or send `didChange` for closed files).
+  documentChangeDisposers: Map<string, () => void>;
   /// Per-session connection. Keyed objects on this only — disposal kills
   /// the connection cleanly.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -229,6 +240,8 @@ export async function initializeSession(opts: {
     capabilities: result.capabilities,
     openedUris: new Set(),
     monacoToLspUri: new Map(),
+    documentVersions: new Map(),
+    documentChangeDisposers: new Map(),
     connection,
     dispose: async () => {
       try {
@@ -290,8 +303,43 @@ export async function openDocument(
   lspUri: string,
 ): Promise<void> {
   if (session.openedUris.has(lspUri)) return;
+  const monacoUriString = model.uri.toString();
   session.openedUris.add(lspUri);
-  session.monacoToLspUri.set(model.uri.toString(), lspUri);
+  session.monacoToLspUri.set(monacoUriString, lspUri);
+  session.documentVersions.set(monacoUriString, 1);
+
+  // Forward Monaco edits as LSP `didChange` so the server's view of the
+  // file stays in sync as the user types or applies code-action edits.
+  // Without this, diagnostics freeze at open-time positions and drift
+  // away from the live content. Subscribe BEFORE awaiting `didOpen` so
+  // we don't miss a same-tick edit (rare but possible).
+  const sub = model.onDidChangeContent((e) => {
+    const next = (session.documentVersions.get(monacoUriString) ?? 1) + 1;
+    session.documentVersions.set(monacoUriString, next);
+    const contentChanges: TextDocumentContentChangeEvent[] = e.changes.map(
+      (c) => ({
+        range: {
+          start: {
+            line: c.range.startLineNumber - 1,
+            character: c.range.startColumn - 1,
+          },
+          end: {
+            line: c.range.endLineNumber - 1,
+            character: c.range.endColumn - 1,
+          },
+        },
+        text: c.text,
+      }),
+    );
+    void session.connection.sendNotification(
+      DidChangeTextDocumentNotification.type,
+      {
+        textDocument: { uri: lspUri, version: next },
+        contentChanges,
+      },
+    );
+  });
+  session.documentChangeDisposers.set(monacoUriString, () => sub.dispose());
 
   await session.connection.sendNotification(
     DidOpenTextDocumentNotification.type,
@@ -314,6 +362,12 @@ export async function closeDocument(
   if (!lspUri) return;
   session.openedUris.delete(lspUri);
   session.monacoToLspUri.delete(monacoUriString);
+  session.documentVersions.delete(monacoUriString);
+  const disposer = session.documentChangeDisposers.get(monacoUriString);
+  if (disposer) {
+    disposer();
+    session.documentChangeDisposers.delete(monacoUriString);
+  }
 
   await session.connection.sendNotification(
     DidCloseTextDocumentNotification.type,

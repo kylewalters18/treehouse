@@ -19,6 +19,8 @@ import type {
   MarkupContent,
   Position,
   Range,
+  TextEdit,
+  WorkspaceEdit,
 } from "vscode-languageserver-protocol";
 
 export function monacoPositionToLsp(p: monaco.Position): Position {
@@ -174,28 +176,78 @@ export function markerToLspDiagnostic(
   };
 }
 
+/// Translate an LSP `WorkspaceEdit` to Monaco's `WorkspaceEdit` shape.
+/// `monacoFromLsp` resolves an LSP file URI back to the Monaco URI the
+/// model is registered under (the LSP sees absolute `file://` paths;
+/// Monaco may know the file under a worktree-relative model URI).
+/// Edits whose target file we don't have a Monaco URI for are dropped —
+/// Monaco's bulk-edit can't address them anyway. Non-edit document
+/// operations (create/rename/delete) are also skipped; we don't preview
+/// or apply those.
+export function workspaceEditLspToMonaco(
+  edit: WorkspaceEdit,
+  monacoFromLsp: (lspUri: string) => monaco.Uri | null,
+): monaco.languages.WorkspaceEdit | null {
+  const edits: monaco.languages.IWorkspaceTextEdit[] = [];
+  if (edit.changes) {
+    for (const [lspUri, textEdits] of Object.entries(edit.changes)) {
+      const muri = monacoFromLsp(lspUri);
+      if (!muri) continue;
+      for (const e of textEdits) {
+        edits.push({
+          resource: muri,
+          versionId: undefined,
+          textEdit: { range: lspRangeToMonaco(e.range), text: e.newText },
+        });
+      }
+    }
+  }
+  if (edit.documentChanges) {
+    for (const dc of edit.documentChanges) {
+      if (!("textDocument" in dc) || !Array.isArray(dc.edits)) continue;
+      const muri = monacoFromLsp(dc.textDocument.uri);
+      if (!muri) continue;
+      for (const e of dc.edits) {
+        if (!("newText" in e) || !("range" in e)) continue;
+        const te = e as TextEdit;
+        edits.push({
+          resource: muri,
+          versionId: undefined,
+          textEdit: { range: lspRangeToMonaco(te.range), text: te.newText },
+        });
+      }
+    }
+  }
+  if (edits.length === 0) return null;
+  return { edits };
+}
+
 /// Convert an LSP `CodeAction` (or bare `Command`) into a Monaco
-/// `CodeAction`. The editor is mounted read-only (write-back is post-MVP),
-/// so we strip the `edit` field and mark each action as `disabled` with
-/// a short reason — Monaco still renders the title in the lightbulb menu
-/// so the user can see what fixes clangd is suggesting, but selecting
-/// one won't mutate the model.
+/// `CodeAction`. We pass the converted `WorkspaceEdit` through unchanged
+/// so Monaco's lightbulb menu shows its built-in diff peek when the user
+/// arrows through actions. The editor is mounted read-only (write-back
+/// is post-MVP), so pressing Enter on an action will mutate the
+/// in-memory model but not the file on disk; reopening the file
+/// discards the in-memory edit.
 export function codeActionToMonaco(
   action: LspCodeAction | LspCommand,
+  monacoFromLsp: (lspUri: string) => monaco.Uri | null,
 ): monaco.languages.CodeAction {
-  const READ_ONLY_REASON = "Editor is read-only — preview only";
   // A bare LSP `Command` (legacy path) has `command: string`; a
   // `CodeAction` has `command?: Command` plus a `title`. Tell them apart
   // by whether `command` is a string.
   if ("command" in action && typeof action.command === "string") {
-    return { title: action.title, disabled: READ_ONLY_REASON };
+    return { title: action.title };
   }
   const ca = action as LspCodeAction;
+  const monacoEdit = ca.edit
+    ? (workspaceEditLspToMonaco(ca.edit, monacoFromLsp) ?? undefined)
+    : undefined;
   return {
     title: ca.title,
     kind: ca.kind,
     isPreferred: ca.isPreferred,
-    disabled: READ_ONLY_REASON,
+    edit: monacoEdit,
   };
 }
 

@@ -223,6 +223,13 @@ function EditorWithComments({
   return (
     <>
       <Editor
+        // Remount on file switch so @monaco-editor/react disposes the
+        // previous Monaco model. Without `key`, the wrapper holds the
+        // old model around and (with editable mode) propagates content
+        // changes via `executeEdits + forceMoveMarkers`, which lets
+        // diagnostics from the prior file linger on the new file at
+        // shifted positions.
+        key={path}
         height="100%"
         language={language}
         value={content}
@@ -230,11 +237,13 @@ function EditorWithComments({
         onMount={onMount}
         path={path}
         options={{
-          readOnly: true,
-          // The default `renderValidationDecorations: "editable"` hides
-          // squiggles when `readOnly` is set. Force them on so LSP
-          // markers (clangd, rust-analyzer, …) stay visible.
-          renderValidationDecorations: "on",
+          // Intentionally not `readOnly: true`: Monaco gates the code-
+          // action oracle on the editor being editable
+          // (codeActionModel.js:173), so the lightbulb / Cmd+. menu /
+          // diff peek for clang-tidy fix-its only appears when the
+          // editor is editable. Edits made here live only in the
+          // in-memory model — write-back is post-MVP, so reopening the
+          // file restores the on-disk content.
           minimap: { enabled: false },
           fontFamily:
             'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace',
