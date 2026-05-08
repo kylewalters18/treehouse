@@ -15,7 +15,7 @@ import {
   Uri,
 } from "monaco-editor";
 import type * as monaco from "monaco-editor";
-import { lspEnsure, lspKill } from "@/ipc/client";
+import { lspEnsure, lspKillForWorktree } from "@/ipc/client";
 import type { LspConfig, WorktreeId } from "@/ipc/types";
 import {
   ChannelMessageReader,
@@ -235,6 +235,11 @@ export async function closeInSession(
 export async function disposeSessionsForWorktree(
   worktreeId: WorktreeId,
 ): Promise<void> {
+  // Local cleanup: drop entries from our session map and dispose
+  // their JS-side connections. We deliberately don't call the
+  // graceful Shutdown+Exit here — the Rust kill below will SIGKILL
+  // the host child and close stdin, which servers handle cleanly
+  // when they HAVEN'T been put into shutdown state first.
   const toDispose: LspSession[] = [];
   for (const s of sessions.values()) {
     if (s.worktreeId === worktreeId) toDispose.push(s);
@@ -242,15 +247,23 @@ export async function disposeSessionsForWorktree(
   for (const s of toDispose) {
     sessions.delete(s.key);
     try {
-      await s.dispose();
+      s.connection.dispose();
     } catch {
       /* ignore */
     }
-    try {
-      await lspKill(s.serverId);
-    } catch {
-      /* ignore */
-    }
+  }
+  // Authoritative cleanup: ask the Rust side to nuke every server
+  // for this worktree by scanning its own registry. This is the
+  // important step — without it, a JS↔Rust state desync (HMR,
+  // restart races, etc.) leaves a server alive in the registry
+  // that the next `ensureSession` `attach`es to, which manifests
+  // as "already initialized" because we're talking to the SAME
+  // clangd that handled the prior initialize. Mirrors the Settings
+  // toggle's `kill_for_language` path which has always worked.
+  try {
+    await lspKillForWorktree(worktreeId);
+  } catch {
+    /* ignore */
   }
 }
 

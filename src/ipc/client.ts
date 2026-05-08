@@ -354,6 +354,15 @@ export function lspWrite(
   return invoke<void>("lsp_write", { serverId, data: Array.from(data) });
 }
 
+/// Sweep the Rust LSP registry by worktree, killing every server
+/// attached to it regardless of language. Used by "Restart language
+/// servers"; bypasses the JS-tracked serverId set so a desync can't
+/// leave a still-alive server that the next ensureSession attaches
+/// to.
+export function lspKillForWorktree(worktreeId: WorktreeId): Promise<void> {
+  return invoke<void>("lsp_kill_for_worktree", { worktreeId });
+}
+
 export function lspKill(serverId: LspServerId): Promise<void> {
   return invoke<void>("lsp_kill", { serverId });
 }

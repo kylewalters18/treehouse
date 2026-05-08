@@ -680,6 +680,33 @@ pub async fn lsp_resolve_command(command: String) -> AppResult<Option<String>> {
     lsp::config::resolve_command(&command).await
 }
 
+/// Sweep the Rust LSP registry by `worktree_id`, killing every
+/// server attached to that worktree regardless of language. Used by
+/// the renderer's "Restart language servers" command — important
+/// because that path can't rely on per-server `serverId`s the way
+/// `lsp_kill` does (the JS `sessions` map can drift out of sync
+/// with the Rust registry across HMR / restart races, leaving
+/// `lsp_kill` a no-op while the registry holds a still-alive
+/// server that the next `ensureSession` then attaches to). This
+/// IPC is the registry-of-truth equivalent of the Settings toggle's
+/// `kill_for_language` path.
+#[tauri::command]
+pub async fn lsp_kill_for_worktree(
+    worktree_id: WorktreeId,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> AppResult<()> {
+    let workspace_id = state
+        .worktrees
+        .get(&worktree_id)
+        .map(|e| e.value().workspace_id);
+    lsp::supervisor::kill_for_worktree(&state.lsp, worktree_id);
+    if let Some(ws_id) = workspace_id {
+        let _ = app.emit(&events::lsp_servers_changed(ws_id), ());
+    }
+    Ok(())
+}
+
 /// Resolve the post-create hook steps for a worktree. Looks up the
 /// owning workspace, walks the in-repo + user-level config layers,
 /// and substitutes `${WORKTREE_PATH}`, `${WORKTREE_NAME}`,

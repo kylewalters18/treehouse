@@ -9,12 +9,10 @@ import {
   DidChangeTextDocumentNotification,
   DidCloseTextDocumentNotification,
   DidOpenTextDocumentNotification,
-  ExitNotification,
   HoverRequest,
   InitializedNotification,
   InitializeRequest,
   PublishDiagnosticsNotification,
-  ShutdownRequest,
   SignatureHelpRequest,
   WorkDoneProgressCreateRequest,
   type ClientCapabilities,
@@ -251,15 +249,22 @@ export async function initializeSession(opts: {
     pathMapping: opts.pathMapping,
     connection,
     dispose: async () => {
-      try {
-        await connection.sendRequest(ShutdownRequest.type);
-        await connection.sendNotification(ExitNotification.type);
-      } catch {
-        // Server may already be dead — best-effort.
-      }
+      // Deliberately skip the LSP `Shutdown` + `Exit` handshake.
+      // `Shutdown` puts the server into a state where stdin-EOF
+      // doesn't always trigger a clean exit (clangd in particular
+      // sits waiting for the `Exit` notification — and our `Exit`
+      // is fire-and-forget bytes that can get dropped between
+      // `sendNotification` and `connection.dispose()`). The Rust-
+      // side kill that follows this dispose drops stdin and
+      // SIGKILLs the host child anyway, and servers handle a
+      // bare stdin-EOF cleanly when they HAVEN'T been put into
+      // shutdown state. Mirrors the Settings-toggle path which
+      // hard-kills directly via `kill_for_language` and works
+      // reliably for docker-wrapped LSPs where the polite path
+      // leaves orphaned in-container processes.
       connection.dispose();
-      // Surface a cleared progress state on disposal so the UI doesn't
-      // leave "indexing…" hanging after the server exits.
+      // Surface a cleared progress state on disposal so the UI
+      // doesn't leave "indexing…" hanging after the server exits.
       opts.onProgress?.(null);
     },
   };
@@ -290,11 +295,27 @@ function applyDiagnostics(
   const uri = Uri.parse(monacoUriString);
   const model = MonacoEditor.getModel(uri);
   if (!model) return;
-  MonacoEditor.setModelMarkers(
-    model,
-    markerOwner(session),
-    params.diagnostics.map(diagnosticToMarker),
-  );
+  // Rewrite `relatedInformation.resource` from the LSP URI namespace
+  // (absolute `file://` paths Monaco doesn't have models for) back
+  // into whatever URI the model was registered under, so clicking the
+  // note actually navigates. URIs we don't recognize (system headers,
+  // container-only paths) pass through unchanged — the text stays
+  // readable, the click just won't resolve.
+  const lspToMonaco = new Map<string, string>();
+  for (const [muri, luri] of session.monacoToLspUri.entries()) {
+    lspToMonaco.set(luri, muri);
+  }
+  const markers = params.diagnostics.map((d) => {
+    const m = diagnosticToMarker(d);
+    if (m.relatedInformation) {
+      m.relatedInformation = m.relatedInformation.map((r) => {
+        const muri = lspToMonaco.get(r.resource.toString());
+        return muri ? { ...r, resource: Uri.parse(muri) } : r;
+      });
+    }
+    return m;
+  });
+  MonacoEditor.setModelMarkers(model, markerOwner(session), markers);
 }
 
 export function markerOwner(session: LspSession): string {

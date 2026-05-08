@@ -230,9 +230,18 @@ pub fn write_stdin(
 pub fn kill(registry: &LspRegistry, id: LspServerId) {
     if let Some((_, handle)) = registry.inner.remove(&id) {
         // Drop stdin first so servers that honor it (most do) can shut
-        // down cleanly. SIGKILL as a fallback — we don't wait.
+        // down cleanly. SIGKILL as fallback. Wait briefly for the host
+        // child to actually be reaped before returning — otherwise a
+        // tightly-following respawn (e.g. the renderer's "Restart
+        // language servers" path) can race against the still-dying
+        // child's pipes, which manifests for docker-wrapped LSPs as
+        // the new spawn somehow ending up routed to the orphan
+        // (clangd answers "already initialized" because we hit the
+        // same in-container process).
+        let mut child = handle.child.lock();
         drop(handle.writer.lock().take());
-        let _ = handle.child.lock().kill();
+        let _ = child.kill();
+        let _ = child.wait();
         tracing::info!(%id, "killed lsp");
     }
 }

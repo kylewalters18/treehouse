@@ -76,6 +76,7 @@ pub fn run() {
             ipc::commands::lsp_ensure,
             ipc::commands::lsp_write,
             ipc::commands::lsp_kill,
+            ipc::commands::lsp_kill_for_worktree,
             ipc::commands::lsp_list,
             ipc::commands::lsp_list_configs,
             ipc::commands::lsp_save_config,
