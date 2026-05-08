@@ -2,8 +2,12 @@ import type { TerminalId } from "@/ipc/types";
 
 /// How a single terminal pane is launched. `open` starts a fresh shell;
 /// `attach` reattaches to an existing PTY discovered on worktree visit.
+/// When `open` carries `initInput`, those bytes are written into the PTY
+/// stdin once the spawn settles — used by the worktree post-create hook
+/// to drop a setup script into a fresh shell so the user sees it run
+/// live and lands at a normal prompt afterward.
 export type PaneMode =
-  | { kind: "open" }
+  | { kind: "open"; initInput?: string }
   | { kind: "attach"; terminalId: TerminalId };
 
 /// A leaf is one PTY/xterm. A split holds two children (a binary tree),

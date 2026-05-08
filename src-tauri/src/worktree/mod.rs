@@ -1,5 +1,6 @@
 pub mod git_ops;
 pub mod manager;
+pub mod setup;
 pub mod status;
 
 use serde::{Deserialize, Serialize};

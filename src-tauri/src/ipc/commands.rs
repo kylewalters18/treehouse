@@ -666,6 +666,58 @@ pub async fn lsp_resolve_command(command: String) -> AppResult<Option<String>> {
     lsp::config::resolve_command(&command).await
 }
 
+/// Resolve the post-create hook steps for a worktree. Looks up the
+/// owning workspace, walks the in-repo + user-level config layers,
+/// and substitutes `${WORKTREE_PATH}`, `${WORKTREE_NAME}`,
+/// `${BASE_BRANCH}` in command/args/env so the renderer can stitch
+/// together a script string with literal values. Returns an empty
+/// list when no config is present at either layer.
+#[tauri::command]
+pub async fn worktree_setup_steps(
+    worktree_id: WorktreeId,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> AppResult<Vec<worktree::setup::OnCreateStep>> {
+    let wt = state
+        .worktrees
+        .get(&worktree_id)
+        .ok_or_else(|| AppError::Unknown(format!("unknown worktree: {worktree_id}")))?
+        .clone();
+    let ws = state
+        .workspaces
+        .get(&wt.workspace_id)
+        .ok_or_else(|| AppError::Unknown(format!("unknown workspace: {}", wt.workspace_id)))?
+        .clone();
+    let steps = worktree::setup::resolve(&app, &ws.root).await?;
+    let name = wt
+        .path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    Ok(worktree::setup::apply_templates(
+        steps,
+        &wt.path,
+        &name,
+        &wt.base_ref,
+    ))
+}
+
+/// Best-effort marker write so a future "re-run setup" command can
+/// know what's already been done. Failure is non-fatal — the renderer
+/// just logs and continues.
+#[tauri::command]
+pub async fn worktree_mark_setup_ran(
+    worktree_id: WorktreeId,
+    state: State<'_, AppState>,
+) -> AppResult<()> {
+    let wt = state
+        .worktrees
+        .get(&worktree_id)
+        .ok_or_else(|| AppError::Unknown(format!("unknown worktree: {worktree_id}")))?
+        .clone();
+    worktree::setup::mark_ran(&wt.path).await
+}
+
 /// Ensure the per-worktree LSP override file exists (seeded with a
 /// header comment + worked devcontainer example on first call) and
 /// open it in the user's default editor for the file's type. macOS

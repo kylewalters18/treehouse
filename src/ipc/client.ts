@@ -17,6 +17,7 @@ import type {
   LspServerSession,
   MergeResult,
   MergeBackStrategy,
+  OnCreateStep,
   SyncResult,
   SyncStrategy,
   PtyEvent,
@@ -378,6 +379,25 @@ export function lspResolveCommand(command: string): Promise<string | null> {
 /// since editor write-back is post-MVP.
 export function lspOpenOverridesFile(): Promise<void> {
   return invoke<void>("lsp_open_overrides_file");
+}
+
+/// Returns the resolved post-create hook for the worktree's workspace.
+/// Empty array = no hook. `${WORKTREE_PATH}` etc. are already
+/// substituted server-side; the renderer just stitches together a
+/// shell script string with literal values.
+export function worktreeSetupSteps(
+  worktreeId: WorktreeId,
+): Promise<OnCreateStep[]> {
+  return invoke<OnCreateStep[]>("worktree_setup_steps", { worktreeId });
+}
+
+/// Touch `<worktree>/.treehouse/setup-ran` after the post-create hook
+/// completes successfully. Best-effort; failures are logged client-side
+/// but don't surface to the user.
+export function worktreeMarkSetupRan(
+  worktreeId: WorktreeId,
+): Promise<void> {
+  return invoke<void>("worktree_mark_setup_ran", { worktreeId });
 }
 
 export function onLspServersChanged(

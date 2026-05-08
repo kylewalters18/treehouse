@@ -47,3 +47,5 @@ export type { LspServerId } from "./bindings/LspServerId";
 export type { LspServerSession } from "./bindings/LspServerSession";
 export type { LspServerStatus } from "./bindings/LspServerStatus";
 export type { PathMapping } from "./bindings/PathMapping";
+
+export type { OnCreateStep } from "./bindings/OnCreateStep";

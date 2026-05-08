@@ -21,6 +21,7 @@ import type {
   WorktreeId,
 } from "@/ipc/types";
 import { cn } from "@/lib/cn";
+import { runWorktreeSetup } from "@/lib/worktree-setup";
 
 export function WorktreeSidebar() {
   const workspace = useWorkspaceStore((s) => s.workspace);
@@ -35,6 +36,7 @@ export function WorktreeSidebar() {
   const toggleCollapsed = useUiStore((s) => s.toggleWorktreeSidebar);
 
   const [name, setName] = useState("");
+  const [skipSetup, setSkipSetup] = useState(false);
   const [creatingName, setCreatingName] = useState<string | null>(null);
   // Most recent step the backend reported during create. Reset
   // alongside `creatingName`. Optional — falls back to a generic
@@ -110,6 +112,14 @@ export function WorktreeSidebar() {
         setName("");
         inputRef.current?.focus();
         selectWorktree(wt.id);
+        // Run the post-create hook (devcontainer up / npm install / …)
+        // unless the user opted out via the checkbox. Drives a
+        // dedicated "setup" terminal tab so the user sees output live;
+        // failures stay visible in the tab rather than blocking
+        // creation.
+        if (!skipSetup) {
+          void runWorktreeSetup(wt.id);
+        }
       }
     } finally {
       setCreatingName(null);
@@ -287,32 +297,47 @@ export function WorktreeSidebar() {
 
       <form
         onSubmit={onCreate}
-        className="flex gap-2 border-b border-neutral-900 p-3"
+        className="flex flex-col gap-1.5 border-b border-neutral-900 p-3"
       >
-        <input
-          ref={inputRef}
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          placeholder="new worktree name"
-          // Worktree names are slugged into branch names (lowercase,
-          // dashes, no autocorrect-y reshaping). Disable the OS/browser
-          // text-assist features that otherwise capitalize the first
-          // letter, autocomplete to dictionary words, or underline
-          // misspellings.
-          autoCapitalize="off"
-          autoCorrect="off"
-          autoComplete="off"
-          spellCheck={false}
-          className="flex-1 rounded border border-neutral-800 bg-neutral-950 px-2 py-1 text-xs placeholder:text-neutral-600 focus:border-neutral-700 focus:outline-none"
-          disabled={!workspace || creating}
-        />
-        <button
-          type="submit"
-          disabled={!workspace || !name.trim() || creating}
-          className="flex items-center justify-center rounded bg-blue-600 px-3 py-1 text-xs font-medium text-white hover:bg-blue-500 disabled:opacity-50"
+        <div className="flex gap-2">
+          <input
+            ref={inputRef}
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="new worktree name"
+            // Worktree names are slugged into branch names (lowercase,
+            // dashes, no autocorrect-y reshaping). Disable the OS/browser
+            // text-assist features that otherwise capitalize the first
+            // letter, autocomplete to dictionary words, or underline
+            // misspellings.
+            autoCapitalize="off"
+            autoCorrect="off"
+            autoComplete="off"
+            spellCheck={false}
+            className="flex-1 rounded border border-neutral-800 bg-neutral-950 px-2 py-1 text-xs placeholder:text-neutral-600 focus:border-neutral-700 focus:outline-none"
+            disabled={!workspace || creating}
+          />
+          <button
+            type="submit"
+            disabled={!workspace || !name.trim() || creating}
+            className="flex items-center justify-center rounded bg-blue-600 px-3 py-1 text-xs font-medium text-white hover:bg-blue-500 disabled:opacity-50"
+          >
+            {creating ? <Spinner /> : "+"}
+          </button>
+        </div>
+        <label
+          className="flex select-none items-center gap-1.5 text-[11px] text-neutral-500"
+          title="Skip the post-create hook (worktree-setup.toml). Useful when you don't want to spin up the devcontainer / install deps for this worktree."
         >
-          {creating ? <Spinner /> : "+"}
-        </button>
+          <input
+            type="checkbox"
+            checked={skipSetup}
+            onChange={(e) => setSkipSetup(e.target.checked)}
+            disabled={!workspace || creating}
+            className="h-3 w-3"
+          />
+          skip setup hook
+        </label>
       </form>
 
       {creatingName && (

@@ -591,6 +591,20 @@ export function createLeafState(
       state.sessionId = session.id;
       onSession(session.id);
 
+      // If the leaf was opened with a setup script attached, push it
+      // into the PTY stdin once the shell has spawned so the commands
+      // run on first paint and the user lands at a clean prompt
+      // afterward. Used by the worktree post-create hook.
+      if (
+        leaf.mode.kind === "open" &&
+        leaf.mode.initInput &&
+        !state.killed
+      ) {
+        ptyWrite(state.sessionId, encoder.encode(leaf.mode.initInput)).catch(
+          () => {},
+        );
+      }
+
       term.onData((data) => {
         if (state.sessionId && !state.killed) {
           ptyWrite(state.sessionId, encoder.encode(data)).catch(() => {});
