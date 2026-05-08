@@ -104,6 +104,7 @@ fn seeded() -> Vec<LspConfig> {
             enabled: false,
             install_hint: Some(hint.into()),
             env: BTreeMap::new(),
+            path_mapping: None,
         }
     }
     vec![

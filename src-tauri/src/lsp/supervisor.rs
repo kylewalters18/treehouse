@@ -95,6 +95,7 @@ fn spawn(
         argv,
         started_at: now_millis(),
         status: LspServerStatus::Running,
+        path_mapping: config.path_mapping.clone(),
     };
 
     let shared = Arc::new(Mutex::new(LspShared {

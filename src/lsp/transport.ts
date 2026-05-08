@@ -22,7 +22,7 @@ import {
   type MessageConnection,
 } from "vscode-languageserver-protocol";
 import { lspWrite } from "@/ipc/client";
-import type { LspEvent, LspServerId } from "@/ipc/types";
+import type { LspEvent, LspServerId, PathMapping } from "@/ipc/types";
 
 /// Reader: consumes raw byte chunks from the Tauri Channel, reassembles
 /// LSP-framed messages (`Content-Length: N\r\n\r\n<json>`) across chunks,
@@ -134,8 +134,94 @@ export class ChannelMessageWriter extends AbstractMessageWriter implements Messa
 export function createConnection(
   reader: ChannelMessageReader,
   writer: ChannelMessageWriter,
+  pathMapping?: PathMapping | null,
 ): MessageConnection {
-  return createMessageConnection(reader, writer);
+  // Without a path mapping the reader/writer pass messages through
+  // verbatim — same code path as before this feature existed.
+  if (!pathMapping) return createMessageConnection(reader, writer);
+
+  const hostRoot = (pathMapping.hostRoot ?? "").replace(/\/$/, "");
+  const remoteRoot = pathMapping.remoteRoot.replace(/\/$/, "");
+  if (!hostRoot || !remoteRoot) {
+    return createMessageConnection(reader, writer);
+  }
+  const hostPrefix = `file://${hostRoot}`;
+  const remotePrefix = `file://${remoteRoot}`;
+  // Outgoing host → remote so the LSP sees in-container paths;
+  // incoming remote → host so URIs back from the server resolve to
+  // Monaco models the renderer actually has.
+  const toRemote = makeUriSwap(hostPrefix, remotePrefix);
+  const toHost = makeUriSwap(remotePrefix, hostPrefix);
+
+  return createMessageConnection(
+    translatingReader(reader, toHost),
+    translatingWriter(writer, toRemote),
+  );
+}
+
+function makeUriSwap(
+  fromPrefix: string,
+  toPrefix: string,
+): (uri: string) => string {
+  return (uri: string): string => {
+    if (uri === fromPrefix) return toPrefix;
+    if (uri.startsWith(fromPrefix + "/")) {
+      return toPrefix + uri.slice(fromPrefix.length);
+    }
+    return uri;
+  };
+}
+
+/// Recursively rewrite every string in `v` that looks like a `file://`
+/// URI through `swap`. Object KEYS are also rewritten so that
+/// `WorkspaceEdit.changes` (which is keyed by document URI) survives
+/// translation. Anything else is passed through.
+function walkFileUris(v: unknown, swap: (uri: string) => string): unknown {
+  if (typeof v === "string") {
+    return v.startsWith("file://") ? swap(v) : v;
+  }
+  if (Array.isArray(v)) return v.map((x) => walkFileUris(x, swap));
+  if (v && typeof v === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, val] of Object.entries(v)) {
+      const newKey = k.startsWith("file://") ? swap(k) : k;
+      out[newKey] = walkFileUris(val, swap);
+    }
+    return out;
+  }
+  return v;
+}
+
+function translatingReader(
+  inner: ChannelMessageReader,
+  swap: (uri: string) => string,
+): MessageReader {
+  return {
+    listen(cb: DataCallback): Disposable {
+      return inner.listen((msg: Message) => {
+        cb(walkFileUris(msg, swap) as Message);
+      });
+    },
+    onError: inner.onError,
+    onClose: inner.onClose,
+    onPartialMessage: inner.onPartialMessage,
+    dispose: () => inner.dispose(),
+  };
+}
+
+function translatingWriter(
+  inner: ChannelMessageWriter,
+  swap: (uri: string) => string,
+): MessageWriter {
+  return {
+    write(msg: Message): Promise<void> {
+      return inner.write(walkFileUris(msg, swap) as Message);
+    },
+    end: () => inner.end(),
+    onError: inner.onError,
+    onClose: inner.onClose,
+    dispose: () => inner.dispose(),
+  };
 }
 
 /// Helper that wraps an `LspEvent` stream and pipes `Data` bytes into a

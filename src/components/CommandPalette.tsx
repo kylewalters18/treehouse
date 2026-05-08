@@ -9,6 +9,7 @@ import { fuzzyFilter } from "@/lib/fuzzy";
 import { useUiStore } from "@/stores/ui";
 import { useLspStore } from "@/stores/lsp";
 import { disposeSessionsForWorktree } from "@/lsp/manager";
+import { lspOpenOverridesFile } from "@/ipc/client";
 import { toastInfo } from "@/stores/toasts";
 import { cn } from "@/lib/cn";
 import type { WorktreeId } from "@/ipc/types";
@@ -48,6 +49,18 @@ function buildCommands(deps: {
       },
     });
   }
+  // Workspace-agnostic — always available so the user can edit the
+  // overrides file even from the main-clone view.
+  cmds.push({
+    id: "lsp.editOverrides",
+    category: "LSP",
+    title: "Edit worktree overrides",
+    description:
+      "Open worktree_lsp.toml in your default editor (per-worktree LSP overrides)",
+    run: async () => {
+      await lspOpenOverridesFile();
+    },
+  });
   return cmds;
 }
 

@@ -80,6 +80,7 @@ pub fn run() {
             ipc::commands::lsp_list_configs,
             ipc::commands::lsp_save_config,
             ipc::commands::lsp_resolve_command,
+            ipc::commands::lsp_open_overrides_file,
         ])
         .setup(|app| {
             use tauri::Manager;

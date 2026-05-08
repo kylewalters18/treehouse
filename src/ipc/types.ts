@@ -42,6 +42,8 @@ export type { SyncStrategy } from "./bindings/SyncStrategy";
 
 export type { LspConfig } from "./bindings/LspConfig";
 export type { LspEvent } from "./bindings/LspEvent";
+export type { LspOverride } from "./bindings/LspOverride";
 export type { LspServerId } from "./bindings/LspServerId";
 export type { LspServerSession } from "./bindings/LspServerSession";
 export type { LspServerStatus } from "./bindings/LspServerStatus";
+export type { PathMapping } from "./bindings/PathMapping";

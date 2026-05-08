@@ -169,7 +169,13 @@ export async function ensureSession(
     }
 
     const writer = new ChannelMessageWriter(session.id);
-    const connection = createConnection(reader, writer);
+    // `session.pathMapping` reflects the merged (global + per-worktree
+    // override + ${WORKTREE_PATH} substitution) result the Rust side
+    // resolved at spawn time. When set, `createConnection` installs a
+    // URI-translating middleware so file:// URIs flowing in/out of
+    // the JSON-RPC pipe are swapped between host and the LSP's view
+    // of the filesystem.
+    const connection = createConnection(reader, writer, session.pathMapping);
 
     const ready = await initializeSession({
       key,

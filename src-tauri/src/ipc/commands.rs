@@ -572,19 +572,21 @@ pub async fn lsp_ensure(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> AppResult<LspServerSession> {
-    let configs = lsp::config::list(&app).await?;
-    let config = configs
-        .into_iter()
-        .find(|c| c.id == language_id && c.enabled)
-        .ok_or_else(|| {
-            AppError::Unknown(format!("lsp language not enabled: {language_id}"))
-        })?;
-
     let wt = state
         .worktrees
         .get(&worktree_id)
         .ok_or_else(|| AppError::Unknown(format!("unknown worktree: {worktree_id}")))?
         .clone();
+
+    // Resolution layers the per-worktree override (if any) on top of the
+    // global LspConfig, expands `${WORKTREE_PATH}`, and defaults
+    // `path_mapping.host_root` to the worktree path. When no override
+    // exists, this is identical to loading the global config.
+    let config = lsp::overrides::resolve(&app, &wt.path, &language_id)
+        .await?
+        .ok_or_else(|| {
+            AppError::Unknown(format!("lsp language not enabled: {language_id}"))
+        })?;
 
     let file_abs = std::path::PathBuf::from(&file_path);
     let root = lsp::root::resolve(&file_abs, &wt.path, &config.root_markers);
@@ -662,6 +664,22 @@ pub async fn lsp_save_config(
 #[tauri::command]
 pub async fn lsp_resolve_command(command: String) -> AppResult<Option<String>> {
     lsp::config::resolve_command(&command).await
+}
+
+/// Ensure the per-worktree LSP override file exists (seeded with a
+/// header comment + worked devcontainer example on first call) and
+/// open it in the user's default editor for the file's type. macOS
+/// only — `open` selects the right editor based on the user's
+/// default for `.toml`. Bound to a command-palette entry; we don't
+/// edit overrides in-app, write-back is post-MVP.
+#[tauri::command]
+pub async fn lsp_open_overrides_file(app: AppHandle) -> AppResult<()> {
+    let path = lsp::overrides::ensure_file(&app).await?;
+    tokio::process::Command::new("open")
+        .arg(&path)
+        .spawn()
+        .map_err(|e| AppError::Unknown(format!("open {}: {e}", path.display())))?;
+    Ok(())
 }
 
 /// Start the file watcher for a worktree and kick off an initial diff compute.

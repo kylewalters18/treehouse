@@ -371,6 +371,15 @@ export function lspResolveCommand(command: string): Promise<string | null> {
   return invoke<string | null>("lsp_resolve_command", { command });
 }
 
+/// Ensures `worktree_lsp.toml` exists (seeded with a header comment +
+/// devcontainer example on first call) and opens it in the user's
+/// default `.toml` editor. Used by the command-palette "Edit
+/// overrides" entry — we don't have an in-app editor for the file
+/// since editor write-back is post-MVP.
+export function lspOpenOverridesFile(): Promise<void> {
+  return invoke<void>("lsp_open_overrides_file");
+}
+
 export function onLspServersChanged(
   workspaceId: WorkspaceId,
   handler: () => void,

@@ -7,6 +7,7 @@
 //! `vscode-jsonrpc` for framing, so Rust never parses LSP messages.
 
 pub mod config;
+pub mod overrides;
 pub mod registry;
 pub mod root;
 pub mod supervisor;
@@ -17,6 +18,22 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::util::ids::{LspServerId, WorktreeId};
+
+/// Filesystem-prefix translation for an LSP whose process sees a
+/// different filesystem layout than the host (e.g. a containerized
+/// clangd). At session-spawn time we install a JSON-RPC middleware
+/// that swaps `file://${host_root}/…` ↔ `file://${remote_root}/…` on
+/// every URI flowing through the connection. Host_root defaults to
+/// the active worktree's absolute path when unset, so most configs
+/// only need to set `remote_root`.
+#[derive(Debug, Clone, Serialize, Deserialize, TS, Default)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct PathMapping {
+    pub remote_root: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_root: Option<String>,
+}
 
 /// One language's configuration. Persisted in `languages.toml` under the
 /// app config dir. Users flip `enabled`, we spawn; flip back, we kill.
@@ -47,6 +64,11 @@ pub struct LspConfig {
     /// TOML output ordering.
     #[serde(default)]
     pub env: BTreeMap<String, String>,
+    /// When set, install URI translation between host paths and the
+    /// LSP's view of the filesystem. Most useful for containerized
+    /// servers (devcontainer / docker exec / etc.). See `PathMapping`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path_mapping: Option<PathMapping>,
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
@@ -84,6 +106,11 @@ pub struct LspServerSession {
     #[ts(type = "number")]
     pub started_at: u64,
     pub status: LspServerStatus,
+    /// Resolved path translation for this session, if any. Returned to
+    /// the renderer so it can install the URI-swapping JSON-RPC
+    /// middleware on the message connection. `None` means raw pass-through.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path_mapping: Option<PathMapping>,
 }
 
 /// Streamed over a per-session Tauri Channel returned from `lsp_ensure`.
