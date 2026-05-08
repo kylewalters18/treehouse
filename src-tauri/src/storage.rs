@@ -105,7 +105,16 @@ fn now_millis() -> u64 {
 
 // --- Settings ---
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, TS)]
+/// Sorted, deduped list of language ids the user has flipped on in
+/// the cog menu. The IDs match `LspConfig::id` (e.g. `"rust"`,
+/// `"cpp"`); built-in or custom doesn't matter — both share the same
+/// on/off track. Empty list = nothing enabled (matches the previous
+/// behavior, where seeded built-ins shipped `enabled = false`).
+///
+/// Storage is `Vec<String>` rather than `BTreeSet<String>` purely so
+/// JSON round-trips as a flat array — internally we treat it as a
+/// set (sort + dedup at write time).
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase", default)]
 #[ts(export)]
 pub struct Settings {
@@ -123,6 +132,9 @@ pub struct Settings {
     /// Persisted so users who always reach for the same agent don't have
     /// to reselect it on every new session.
     pub default_agent_backend: AgentBackendKind,
+    /// LSP languages the user has flipped on. See struct-level rustdoc.
+    #[serde(default)]
+    pub enabled_lsp_languages: Vec<String>,
 }
 
 impl Default for Settings {
@@ -132,6 +144,7 @@ impl Default for Settings {
             merge_back_strategy: MergeBackStrategy::default(),
             init_submodules: false,
             default_agent_backend: AgentBackendKind::ClaudeCode,
+            enabled_lsp_languages: Vec::new(),
         }
     }
 }

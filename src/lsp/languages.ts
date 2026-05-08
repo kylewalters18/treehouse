@@ -5,13 +5,14 @@ import type { LspConfig } from "@/ipc/types";
 ///
 /// Collision policy (per design doc): first match wins. Users who want a
 /// different server for a filetype must disable the clashing entry in
-/// their `languages.toml`.
+/// the cog menu's Languages list.
 export function findConfigForLanguage(
   configs: LspConfig[],
+  enabledIds: ReadonlySet<string>,
   monacoLanguageId: string,
 ): LspConfig | null {
   for (const c of configs) {
-    if (!c.enabled) continue;
+    if (!enabledIds.has(c.id)) continue;
     if (c.filetypes.includes(monacoLanguageId)) return c;
   }
   return null;

@@ -9,7 +9,10 @@ import { fuzzyFilter } from "@/lib/fuzzy";
 import { useUiStore } from "@/stores/ui";
 import { useLspStore } from "@/stores/lsp";
 import { disposeSessionsForWorktree } from "@/lsp/manager";
-import { lspOpenOverridesFile } from "@/ipc/client";
+import {
+  treehouseConfigOpenFile,
+  treehouseConfigReload,
+} from "@/ipc/client";
 import { toastInfo } from "@/stores/toasts";
 import { cn } from "@/lib/cn";
 import type { WorktreeId } from "@/ipc/types";
@@ -52,21 +55,32 @@ function buildCommands(deps: {
   // Workspace-agnostic — always available so the user can read /
   // edit these from anywhere, including the main-clone view.
   cmds.push({
-    id: "lsp.viewOverrides",
-    category: "LSP",
-    title: "View worktree overrides",
-    description: "Open worktree_lsp.toml in an in-app read-only viewer",
+    id: "settings.view",
+    category: "Settings",
+    title: "View",
+    description:
+      "Open treehouse.toml (LSP overrides, custom languages, worktree hooks, agent status patterns) in an in-app read-only viewer",
     run: () => {
-      useUiStore.getState().openSystemFileViewer("lspOverrides");
+      useUiStore.getState().openSystemFileViewer("treehouseConfig");
     },
   });
   cmds.push({
-    id: "lsp.editOverrides",
-    category: "LSP",
-    title: "Edit worktree overrides",
-    description: "Open worktree_lsp.toml in your default editor",
+    id: "settings.edit",
+    category: "Settings",
+    title: "Edit",
+    description: "Open treehouse.toml in your default editor",
     run: async () => {
-      await lspOpenOverridesFile();
+      await treehouseConfigOpenFile();
+    },
+  });
+  cmds.push({
+    id: "settings.reload",
+    category: "Settings",
+    title: "Reload",
+    description:
+      "Re-read treehouse.toml after editing; running agents pick up the new patterns on the next chunk",
+    run: async () => {
+      await treehouseConfigReload();
     },
   });
   cmds.push({

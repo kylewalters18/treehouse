@@ -36,8 +36,12 @@ pub struct PathMapping {
     pub host_root: Option<String>,
 }
 
-/// One language's configuration. Persisted in `languages.toml` under the
-/// app config dir. Users flip `enabled`, we spawn; flip back, we kill.
+/// One language's configuration. Built-ins are seeded in code (see
+/// `lsp::config::seeded`); user-defined customs live in
+/// `treehouse.toml` under `[[lsp.language]]`. Whether a given language
+/// is on or off (built-in or custom) is a separate concern that lives
+/// in `Settings::enabled_lsp_languages` — flipping the cog-menu
+/// toggle writes through `update_settings`, not this struct.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
@@ -56,8 +60,6 @@ pub struct LspConfig {
     /// up from the opened file toward the worktree root.
     #[serde(default)]
     pub root_markers: Vec<String>,
-    #[serde(default)]
-    pub enabled: bool,
     /// Shown in a toast when `command` isn't on PATH.
     #[serde(default)]
     pub install_hint: Option<String>,

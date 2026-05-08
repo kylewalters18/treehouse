@@ -2,8 +2,12 @@
 import type { PathMapping } from "./PathMapping";
 
 /**
- * One language's configuration. Persisted in `languages.toml` under the
- * app config dir. Users flip `enabled`, we spawn; flip back, we kill.
+ * One language's configuration. Built-ins are seeded in code (see
+ * `lsp::config::seeded`); user-defined customs live in
+ * `treehouse.toml` under `[[lsp.language]]`. Whether a given language
+ * is on or off (built-in or custom) is a separate concern that lives
+ * in `Settings::enabled_lsp_languages` — flipping the cog-menu
+ * toggle writes through `update_settings`, not this struct.
  */
 export type LspConfig = { 
 /**
@@ -23,7 +27,7 @@ filetypes: Array<string>,
  * Filenames to search for when resolving the workspace root, walking
  * up from the opened file toward the worktree root.
  */
-rootMarkers: Array<string>, enabled: boolean, 
+rootMarkers: Array<string>, 
 /**
  * Shown in a toast when `command` isn't on PATH.
  */

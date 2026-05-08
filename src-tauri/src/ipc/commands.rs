@@ -88,13 +88,38 @@ pub async fn get_settings(app: AppHandle) -> AppResult<Settings> {
     storage::load_settings(&app).await
 }
 
+/// Persist new settings. Diffs LSP-language enabled state against
+/// the previous settings: any language flipped from on → off has
+/// its running servers killed across all worktrees, so Monaco isn't
+/// left feeding bytes to a soon-to-be-orphaned process. Languages
+/// flipped on don't need any sync action — they spawn lazily on
+/// the next file open.
 #[tauri::command]
 pub async fn update_settings(
     settings: Settings,
     app: AppHandle,
+    state: State<'_, AppState>,
 ) -> AppResult<Settings> {
-    storage::save_settings(&app, &settings).await?;
-    Ok(settings)
+    let prev = storage::load_settings(&app).await.unwrap_or_default();
+    let prev_set: std::collections::HashSet<&str> = prev
+        .enabled_lsp_languages
+        .iter()
+        .map(|s| s.as_str())
+        .collect();
+    let next_set: std::collections::HashSet<&str> = settings
+        .enabled_lsp_languages
+        .iter()
+        .map(|s| s.as_str())
+        .collect();
+    for lang in prev_set.difference(&next_set) {
+        lsp::supervisor::kill_for_language(&state.lsp, lang);
+    }
+
+    let mut to_save = settings.clone();
+    to_save.enabled_lsp_languages.sort();
+    to_save.enabled_lsp_languages.dedup();
+    storage::save_settings(&app, &to_save).await?;
+    Ok(to_save)
 }
 
 #[tauri::command]
@@ -656,26 +681,6 @@ pub async fn lsp_list_configs(app: AppHandle) -> AppResult<Vec<LspConfig>> {
 }
 
 #[tauri::command]
-pub async fn lsp_save_config(
-    config: LspConfig,
-    app: AppHandle,
-    state: State<'_, AppState>,
-) -> AppResult<Vec<LspConfig>> {
-    // Toggling a language off must tear down any running instances of it;
-    // otherwise Monaco would keep feeding a soon-to-be-orphaned server.
-    let prev = lsp::config::list(&app).await?;
-    let was_enabled = prev
-        .iter()
-        .find(|c| c.id == config.id)
-        .map(|c| c.enabled)
-        .unwrap_or(false);
-    if was_enabled && !config.enabled {
-        lsp::supervisor::kill_for_language(&state.lsp, &config.id);
-    }
-    lsp::config::upsert(&app, config).await
-}
-
-#[tauri::command]
 pub async fn lsp_resolve_command(command: String) -> AppResult<Option<String>> {
     lsp::config::resolve_command(&command).await
 }
@@ -783,27 +788,7 @@ fn resolve_app_file(
                 None => latest_log(&dir),
             }
         }
-        "lspOverrides" => {
-            let dir = app
-                .path()
-                .app_config_dir()
-                .map_err(|e| AppError::Unknown(format!("config dir: {e}")))?;
-            Ok(dir.join("worktree_lsp.toml"))
-        }
-        "workspaceSetup" => {
-            let dir = app
-                .path()
-                .app_config_dir()
-                .map_err(|e| AppError::Unknown(format!("config dir: {e}")))?;
-            Ok(dir.join("workspace_setup.toml"))
-        }
-        "languages" => {
-            let dir = app
-                .path()
-                .app_config_dir()
-                .map_err(|e| AppError::Unknown(format!("config dir: {e}")))?;
-            Ok(dir.join("languages.toml"))
-        }
+        "treehouseConfig" => crate::user_config::config_path(app),
         _ => Err(AppError::Unknown(format!("unknown app file kind: {kind}"))),
     }
 }
@@ -852,15 +837,13 @@ pub struct AppFileContent {
     pub content: String,
 }
 
-/// Read an app-managed system file (logs, override TOMLs) so the
-/// renderer can show it in an in-app Monaco viewer instead of having
-/// to shell out to a separate editor / terminal.
+/// Read an app-managed system file so the renderer can show it in
+/// an in-app Monaco viewer instead of having to shell out to a
+/// separate editor / terminal.
 ///
 /// `kind` discriminates which file:
 /// - `"log"` — most recent `treehouse.log*` (or specific one via `file`)
-/// - `"lspOverrides"` — `worktree_lsp.toml`
-/// - `"workspaceSetup"` — `workspace_setup.toml`
-/// - `"languages"` — `languages.toml`
+/// - `"treehouseConfig"` — unified user config (`treehouse.toml`)
 ///
 /// Missing files are surfaced as an empty-content response with the
 /// path populated, so the renderer can show "no content yet at <path>"
@@ -933,15 +916,33 @@ pub async fn open_logs_folder() -> AppResult<()> {
     Ok(())
 }
 
-/// Ensure the per-worktree LSP override file exists (seeded with a
-/// header comment + worked devcontainer example on first call) and
-/// open it in the user's default editor for the file's type. macOS
-/// only — `open` selects the right editor based on the user's
-/// default for `.toml`. Bound to a command-palette entry; we don't
-/// edit overrides in-app, write-back is post-MVP.
+/// Reload `treehouse.toml`. Used by the "Settings: Reload" command
+/// after the user edits the file out-of-app. Re-reads the agent
+/// status patterns into the registry — reader threads share an
+/// `Arc<RwLock<AgentPatterns>>` and pick up the new list on the
+/// next chunk, so no respawn is needed.
+///
+/// LSP overrides, custom languages, and worktree hooks are read
+/// fresh on each lookup, so they don't need an explicit reload —
+/// the next file open / worktree create / language toggle picks up
+/// the new values automatically.
 #[tauri::command]
-pub async fn lsp_open_overrides_file(app: AppHandle) -> AppResult<()> {
-    let path = lsp::overrides::ensure_file(&app).await?;
+pub async fn treehouse_config_reload(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> AppResult<()> {
+    let p = agent::patterns::load(&app).await?;
+    state.agents.set_patterns(p);
+    Ok(())
+}
+
+/// Ensure `treehouse.toml` exists (seeded with a header comment +
+/// schema reference on first call) and open it in the user's default
+/// editor. macOS only — `open` selects the right editor based on the
+/// user's default for `.toml`.
+#[tauri::command]
+pub async fn treehouse_config_open_file(app: AppHandle) -> AppResult<()> {
+    let path = crate::user_config::ensure_file(&app).await?;
     tokio::process::Command::new("open")
         .arg(&path)
         .spawn()

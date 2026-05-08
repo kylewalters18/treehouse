@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useSettingsStore } from "@/stores/settings";
 import { useLspStore } from "@/stores/lsp";
 import type {
@@ -120,12 +120,28 @@ function LanguagesSection() {
   const [open, setOpen] = useState(false);
   const configs = useLspStore((s) => s.configs);
   const resolved = useLspStore((s) => s.resolved);
-  const save = useLspStore((s) => s.save);
   const load = useLspStore((s) => s.load);
+  const settings = useSettingsStore((s) => s.settings);
+  const setEnabledLanguages = useSettingsStore(
+    (s) => s.setEnabledLspLanguages,
+  );
 
   useEffect(() => {
     if (open && configs.length === 0) void load();
   }, [open, configs.length, load]);
+
+  // Treat the persisted list as a set for O(1) row lookups + mutation.
+  const enabledSet = useMemo(
+    () => new Set(settings.enabledLspLanguages),
+    [settings.enabledLspLanguages],
+  );
+
+  function toggle(id: string, on: boolean) {
+    const next = new Set(enabledSet);
+    if (on) next.add(id);
+    else next.delete(id);
+    void setEnabledLanguages([...next].sort());
+  }
 
   return (
     <div>
@@ -147,8 +163,9 @@ function LanguagesSection() {
             <LanguageRow
               key={c.id}
               config={c}
+              enabled={enabledSet.has(c.id)}
               resolvedPath={resolved[c.command]}
-              onToggle={(enabled) => void save({ ...c, enabled })}
+              onToggle={(on) => toggle(c.id, on)}
             />
           ))}
         </div>
@@ -159,23 +176,25 @@ function LanguagesSection() {
 
 function LanguageRow({
   config,
+  enabled,
   resolvedPath,
   onToggle,
 }: {
   config: LspConfig;
+  enabled: boolean;
   resolvedPath: string | null | undefined;
   onToggle: (enabled: boolean) => void;
 }) {
   const found = resolvedPath !== null && resolvedPath !== undefined;
   const checking = resolvedPath === undefined;
-  const statusColor = !config.enabled
+  const statusColor = !enabled
     ? "bg-neutral-700"
     : checking
       ? "bg-neutral-500"
       : found
         ? "bg-emerald-500"
         : "bg-red-500";
-  const statusLabel = !config.enabled
+  const statusLabel = !enabled
     ? "disabled"
     : checking
       ? "checking…"
@@ -191,7 +210,7 @@ function LanguageRow({
     >
       <input
         type="checkbox"
-        checked={config.enabled}
+        checked={enabled}
         onChange={(e) => onToggle(e.target.checked)}
         className="mt-0.5 accent-blue-600"
       />
@@ -201,7 +220,7 @@ function LanguageRow({
           <div className="font-medium text-neutral-100">{config.displayName}</div>
         </div>
         <div className="truncate font-mono text-[11px] text-neutral-500">
-          {config.enabled ? statusLabel : `${config.command} ${config.args.join(" ")}`.trim()}
+          {enabled ? statusLabel : `${config.command} ${config.args.join(" ")}`.trim()}
         </div>
       </span>
     </label>

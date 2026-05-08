@@ -1,4 +1,5 @@
 pub mod hooks;
+pub mod patterns;
 pub mod supervisor;
 
 use serde::{Deserialize, Serialize};

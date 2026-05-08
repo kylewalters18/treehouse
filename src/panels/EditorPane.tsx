@@ -17,6 +17,7 @@ import {
   useCommentsStore,
 } from "@/stores/comments";
 import { useLspStore } from "@/stores/lsp";
+import { useSettingsStore } from "@/stores/settings";
 import { useUiStore } from "@/stores/ui";
 import { useWorkspaceStore } from "@/stores/workspace";
 import { useWorktreesStore } from "@/stores/worktrees";
@@ -1057,10 +1058,17 @@ function useLspIntegration(
     () => worktrees.find((w) => w.id === worktreeId) ?? null,
     [worktrees, worktreeId],
   );
+  const enabledLspLanguages = useSettingsStore(
+    (s) => s.settings.enabledLspLanguages,
+  );
+  const enabledIds = useMemo(
+    () => new Set(enabledLspLanguages),
+    [enabledLspLanguages],
+  );
 
   useEffect(() => {
     if (!editor || !worktree) return;
-    const config = findConfigForLanguage(configs, language);
+    const config = findConfigForLanguage(configs, enabledIds, language);
     if (!config) return;
 
     // Capture the Monaco model up-front — it may be replaced by the time
@@ -1116,6 +1124,7 @@ function useLspIntegration(
     path,
     language,
     configs,
+    enabledIds,
     worktree,
     restartEpoch,
     hasNotifiedNotFound,

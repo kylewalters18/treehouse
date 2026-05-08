@@ -3,6 +3,17 @@ import type { AgentBackendKind } from "./AgentBackendKind";
 import type { MergeBackStrategy } from "./MergeBackStrategy";
 import type { SyncStrategy } from "./SyncStrategy";
 
+/**
+ * Sorted, deduped list of language ids the user has flipped on in
+ * the cog menu. The IDs match `LspConfig::id` (e.g. `"rust"`,
+ * `"cpp"`); built-in or custom doesn't matter — both share the same
+ * on/off track. Empty list = nothing enabled (matches the previous
+ * behavior, where seeded built-ins shipped `enabled = false`).
+ *
+ * Storage is `Vec<String>` rather than `BTreeSet<String>` purely so
+ * JSON round-trips as a flat array — internally we treat it as a
+ * set (sort + dedup at write time).
+ */
 export type Settings = { 
 /**
  * Default strategy when the user clicks Sync. Defaults to Rebase
@@ -25,4 +36,8 @@ initSubmodules: boolean,
  * Persisted so users who always reach for the same agent don't have
  * to reselect it on every new session.
  */
-defaultAgentBackend: AgentBackendKind, };
+defaultAgentBackend: AgentBackendKind, 
+/**
+ * LSP languages the user has flipped on. See struct-level rustdoc.
+ */
+enabledLspLanguages: Array<string>, };

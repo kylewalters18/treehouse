@@ -7,6 +7,7 @@ mod lsp;
 mod pty;
 mod state;
 mod storage;
+mod user_config;
 mod util;
 mod workspace;
 mod worktree;
@@ -128,9 +129,9 @@ pub fn run() {
             ipc::commands::lsp_kill_for_worktree,
             ipc::commands::lsp_list,
             ipc::commands::lsp_list_configs,
-            ipc::commands::lsp_save_config,
             ipc::commands::lsp_resolve_command,
-            ipc::commands::lsp_open_overrides_file,
+            ipc::commands::treehouse_config_reload,
+            ipc::commands::treehouse_config_open_file,
             ipc::commands::open_logs_folder,
             ipc::commands::read_app_text_file,
             ipc::commands::list_log_files,
@@ -145,6 +146,32 @@ pub fn run() {
             if let Err(e) = state.agents.start_hook_watcher(&handle) {
                 tracing::warn!(?e, "failed to start Claude hook watcher");
             }
+            // First-boot migration: legacy per-feature TOMLs →
+            // unified `treehouse.toml`. Idempotent — only runs when
+            // the unified file is absent and at least one legacy is
+            // present. Renames legacies to `*.toml.bak` on success.
+            // Done before the patterns load below so post-migration
+            // patterns are read from the new location.
+            //
+            // Ordering: settings.json may be rewritten by migrate()
+            // (to fold in legacy `enabled` flags), so this runs
+            // before any subsystem that depends on settings.
+            let handle_for_config = handle.clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(e) = user_config::migrate(&handle_for_config).await {
+                    tracing::warn!(?e, "treehouse.toml migration failed");
+                }
+                match agent::patterns::load(&handle_for_config).await {
+                    Ok(p) => {
+                        let state: tauri::State<AppState> =
+                            handle_for_config.state();
+                        state.agents.set_patterns(p);
+                    }
+                    Err(e) => {
+                        tracing::warn!(?e, "failed to load agent status patterns");
+                    }
+                }
+            });
             Ok(())
         })
         .run(tauri::generate_context!())

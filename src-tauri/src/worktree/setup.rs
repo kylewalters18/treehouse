@@ -9,23 +9,23 @@
 //!
 //! 1. **In-repo** — `<repo_root>/.treehouse/worktree-setup.toml`.
 //!    Lives with the code, so teammates inherit the same setup.
-//! 2. **User-level** — `<app_config>/workspace_setup.toml`, scoped by
-//!    repo absolute path. Per-machine, not committed.
+//! 2. **User-level** — `treehouse.toml` `[[worktree.on_create]]` /
+//!    `[[worktree.on_destroy]]` blocks scoped by `workspace`.
+//!    Per-machine, not committed.
 //!
 //! The first layer that returns any steps wins outright (no merge).
-//! No file at either path = no hook = behavior identical to before.
+//! No config at either layer = no hook = behavior identical to before.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 use ts_rs::TS;
 
 use crate::util::errors::{AppError, AppResult};
 
 const REPO_FILE: &str = ".treehouse/worktree-setup.toml";
-const USER_FILE: &str = "workspace_setup.toml";
 
 /// One command in a hook chain. Used by both `on_create` (executed
 /// in a renderer-mounted terminal tab so the user sees output live)
@@ -63,41 +63,12 @@ struct WorkspaceSetup {
     on_destroy: Vec<HookStep>,
 }
 
-/// User-level file shape: `[[on_create]]` / `[[on_destroy]]` blocks
-/// scoped by `workspace` (repo absolute path). One file holds setup
-/// for every workspace the user has configured.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-struct UserSetupFile {
-    #[serde(rename = "on_create", default)]
-    on_create: Vec<UserSetupEntry>,
-    #[serde(rename = "on_destroy", default)]
-    on_destroy: Vec<UserSetupEntry>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-struct UserSetupEntry {
-    /// Repo absolute path (canonicalized at compare time).
-    workspace: String,
-    name: String,
-    command: String,
-    #[serde(default)]
-    args: Vec<String>,
-    #[serde(default)]
-    env: BTreeMap<String, String>,
-}
-
-fn user_config_path(app: &AppHandle) -> AppResult<PathBuf> {
-    let dir = app
-        .path()
-        .app_config_dir()
-        .map_err(|e| AppError::Unknown(format!("config dir: {e}")))?;
-    Ok(dir.join(USER_FILE))
-}
-
 /// Resolve the requested hook chain for `repo_root`. In-repo wins
 /// outright when present (returns its list, even if empty for the
-/// asked-for hook); otherwise falls through to user-level. Returns
-/// an empty list if neither layer has anything — opt-in by design.
+/// asked-for hook); otherwise falls through to the user-level
+/// `[[worktree.on_create]]` / `[[worktree.on_destroy]]` entries in
+/// `treehouse.toml`. Returns an empty list if neither layer has
+/// anything — opt-in by design.
 pub async fn resolve(
     app: &AppHandle,
     repo_root: &Path,
@@ -144,18 +115,11 @@ async fn read_user(
     repo_root: &Path,
     hook: Hook,
 ) -> AppResult<Vec<HookStep>> {
-    let path = user_config_path(app)?;
-    let s = match tokio::fs::read_to_string(&path).await {
-        Ok(s) => s,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(e) => return Err(AppError::Io(format!("read {}: {e}", path.display()))),
-    };
-    let f: UserSetupFile = toml::from_str(&s)
-        .map_err(|e| AppError::Unknown(format!("parse {}: {e}", path.display())))?;
+    let cfg = crate::user_config::load(app).await?;
     let target = canonicalize(repo_root);
     let entries = match hook {
-        Hook::OnCreate => f.on_create,
-        Hook::OnDestroy => f.on_destroy,
+        Hook::OnCreate => cfg.worktree.on_create,
+        Hook::OnDestroy => cfg.worktree.on_destroy,
     };
     let steps: Vec<HookStep> = entries
         .into_iter()

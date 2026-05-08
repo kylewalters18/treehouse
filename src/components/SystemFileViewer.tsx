@@ -15,9 +15,9 @@ import type { editor as MonacoEditor } from "monaco-editor";
 import {
   type AppFileKind,
   listLogFiles,
-  lspOpenOverridesFile,
   openLogsFolder,
   readAppTextFile,
+  treehouseConfigOpenFile,
 } from "@/ipc/client";
 import { THEME_NAME } from "@/panels/monaco-theme";
 import { defineTreehouseTheme } from "@/panels/monaco-theme";
@@ -154,7 +154,7 @@ export function SystemFileViewer({ open, onClose, kind }: Props) {
           <ToolbarButton
             onClick={() => {
               if (kind === "log") void openLogsFolder();
-              else void lspOpenOverridesFile();
+              else void treehouseConfigOpenFile();
             }}
             title={
               kind === "log"
@@ -240,11 +240,7 @@ function labelFor(kind: AppFileKind): string {
   switch (kind) {
     case "log":
       return "log";
-    case "lspOverrides":
-      return "lsp overrides";
-    case "workspaceSetup":
-      return "workspace setup";
-    case "languages":
-      return "languages";
+    case "treehouseConfig":
+      return "treehouse.toml";
   }
 }

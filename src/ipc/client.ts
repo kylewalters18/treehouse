@@ -380,21 +380,26 @@ export function lspListConfigs(): Promise<LspConfig[]> {
   return invoke<LspConfig[]>("lsp_list_configs");
 }
 
-export function lspSaveConfig(config: LspConfig): Promise<LspConfig[]> {
-  return invoke<LspConfig[]>("lsp_save_config", { config });
-}
-
 export function lspResolveCommand(command: string): Promise<string | null> {
   return invoke<string | null>("lsp_resolve_command", { command });
 }
 
-/// Ensures `worktree_lsp.toml` exists (seeded with a header comment +
-/// devcontainer example on first call) and opens it in the user's
-/// default `.toml` editor. Used by the command-palette "Edit
-/// overrides" entry — we don't have an in-app editor for the file
-/// since editor write-back is post-MVP.
-export function lspOpenOverridesFile(): Promise<void> {
-  return invoke<void>("lsp_open_overrides_file");
+/// Ensure `treehouse.toml` exists (seeded with a header + schema
+/// comment on first call) and open it in the user's default `.toml`
+/// editor. Backs the "Settings: Edit" palette entry; we don't have
+/// an in-app editor for the file since editor write-back is post-MVP.
+export function treehouseConfigOpenFile(): Promise<void> {
+  return invoke<void>("treehouse_config_open_file");
+}
+
+/// Re-read `treehouse.toml` after the user edits it out-of-app and
+/// apply the new agent-status pattern set to all running agents.
+/// Reader threads share the pattern handle, so the change takes
+/// effect on the next PTY chunk — no agent restart needed. LSP
+/// overrides / custom languages / worktree hooks read fresh on each
+/// lookup, so they don't need an explicit reload.
+export function treehouseConfigReload(): Promise<void> {
+  return invoke<void>("treehouse_config_reload");
 }
 
 /// Reveal `~/Library/Logs/com.treehouse.app/` in Finder. Backed by
@@ -405,15 +410,10 @@ export function openLogsFolder(): Promise<void> {
   return invoke<void>("open_logs_folder");
 }
 
-/// Read an app-managed system file (logs, override TOMLs) for the
-/// in-app viewer. `kind` is one of `"log"` / `"lspOverrides"` /
-/// `"workspaceSetup"` / `"languages"`. For `"log"`, optional `file`
+/// Read an app-managed system file for the in-app viewer. `kind` is
+/// one of `"log"` / `"treehouseConfig"`. For `"log"`, optional `file`
 /// picks a specific daily-rotated file (default = newest).
-export type AppFileKind =
-  | "log"
-  | "lspOverrides"
-  | "workspaceSetup"
-  | "languages";
+export type AppFileKind = "log" | "treehouseConfig";
 
 export function readAppTextFile(
   kind: AppFileKind,

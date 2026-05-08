@@ -15,6 +15,7 @@ type SettingsState = {
   setMergeBackStrategy: (s: MergeBackStrategy) => Promise<void>;
   setInitSubmodules: (on: boolean) => Promise<void>;
   setDefaultAgentBackend: (b: AgentBackendKind) => Promise<void>;
+  setEnabledLspLanguages: (ids: string[]) => Promise<void>;
 };
 
 const DEFAULT_SETTINGS: Settings = {
@@ -22,6 +23,7 @@ const DEFAULT_SETTINGS: Settings = {
   mergeBackStrategy: "rebaseFf",
   initSubmodules: false,
   defaultAgentBackend: "claudeCode",
+  enabledLspLanguages: [],
 };
 
 export const useSettingsStore = create<SettingsState>((set, get) => ({
@@ -63,6 +65,19 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     set({ settings: next });
     try {
       await ipc.updateSettings(next);
+    } catch {}
+  },
+  async setEnabledLspLanguages(ids) {
+    const next: Settings = { ...get().settings, enabledLspLanguages: ids };
+    set({ settings: next });
+    try {
+      // Backend diffs against previous settings and kills servers for
+      // languages flipped off, so the JS-side LSP store doesn't need
+      // its own teardown loop.
+      const persisted = await ipc.updateSettings(next);
+      // Backend sorts/dedupes — sync local state to that canonical
+      // form so subsequent diffs in updateSettings stay correct.
+      set({ settings: persisted });
     } catch {}
   },
 }));

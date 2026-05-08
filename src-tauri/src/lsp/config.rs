@@ -1,87 +1,50 @@
-//! Opt-in language config persisted as TOML in `<app_config>/languages.toml`.
+//! Language server definitions: a code-seeded list of built-ins
+//! (`rust-analyzer`, `clangd`, …) plus any user-defined custom
+//! servers loaded from `treehouse.toml`'s `[[lsp.language]]` section.
 //!
-//! On first read the file is seeded with a curated list of common
-//! servers, all `enabled = false`. Users flip entries to opt in. Custom
-//! servers not in the curated list can be appended by editing the file
-//! directly — we just read whatever is there.
+//! The on/off state for any language — built-in or custom — lives in
+//! `Settings::enabled_lsp_languages`, not here. This module is just
+//! "what languages exist."
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
-use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 
-use crate::util::errors::{AppError, AppResult};
+use crate::util::errors::AppResult;
 
 use super::LspConfig;
 
-const LANGUAGES_FILE: &str = "languages.toml";
-
-/// TOML wrapper — `[[language]]` arrays-of-tables produce readable files.
-#[derive(Debug, Serialize, Deserialize, Default)]
-struct LanguagesFile {
-    #[serde(rename = "language", default)]
-    languages: Vec<LspConfig>,
-}
-
-fn config_path(app: &AppHandle) -> AppResult<PathBuf> {
-    let dir = app
-        .path()
-        .app_config_dir()
-        .map_err(|e| AppError::Unknown(format!("config dir: {e}")))?;
-    Ok(dir.join(LANGUAGES_FILE))
-}
-
-/// Read the full list, seeding + writing defaults on first call.
+/// Return the full list of known languages: built-in seeds first,
+/// then user-defined customs from `treehouse.toml`. Customs whose
+/// `id` collides with a built-in win (last-write); lets users
+/// override the seeded `args`/`command` for a built-in by adding an
+/// entry with the same id.
 pub async fn list(app: &AppHandle) -> AppResult<Vec<LspConfig>> {
-    let path = config_path(app)?;
-    match tokio::fs::read_to_string(&path).await {
-        Ok(s) => {
-            let file: LanguagesFile = toml::from_str(&s)
-                .map_err(|e| AppError::Unknown(format!("parse languages.toml: {e}")))?;
-            if file.languages.is_empty() {
-                seed_and_save(app).await
-            } else {
-                Ok(file.languages)
-            }
+    let mut out = seeded();
+    let user = crate::user_config::load(app).await?;
+    for entry in user.lsp.languages {
+        if let Some(existing) = out.iter_mut().find(|c| c.id == entry.id) {
+            *existing = entry;
+        } else {
+            out.push(entry);
         }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => seed_and_save(app).await,
-        Err(e) => Err(AppError::Io(format!("read {}: {e}", path.display()))),
     }
+    Ok(out)
 }
 
-pub async fn save(app: &AppHandle, items: &[LspConfig]) -> AppResult<()> {
-    let path = config_path(app)?;
-    if let Some(dir) = path.parent() {
-        let _ = tokio::fs::create_dir_all(dir).await;
-    }
-    let file = LanguagesFile {
-        languages: items.to_vec(),
-    };
-    let s = toml::to_string_pretty(&file)
-        .map_err(|e| AppError::Unknown(format!("serialize languages: {e}")))?;
-    tokio::fs::write(&path, s)
-        .await
-        .map_err(|e| AppError::Io(format!("write {}: {e}", path.display())))?;
-    Ok(())
+/// IDs of all code-seeded built-ins. Used by the migration step to
+/// distinguish "carry forward as a custom" from "this is just the
+/// seeded copy and we'll re-seed it in code anyway."
+pub fn builtin_ids() -> BTreeSet<&'static str> {
+    seeded().into_iter().map(|c| string_to_static(c.id)).collect()
 }
 
-/// Insert or replace by `id`. Returns the full list post-write.
-pub async fn upsert(app: &AppHandle, config: LspConfig) -> AppResult<Vec<LspConfig>> {
-    let mut items = list(app).await?;
-    if let Some(existing) = items.iter_mut().find(|c| c.id == config.id) {
-        *existing = config;
-    } else {
-        items.push(config);
-    }
-    save(app, &items).await?;
-    Ok(items)
-}
-
-async fn seed_and_save(app: &AppHandle) -> AppResult<Vec<LspConfig>> {
-    let seeded = seeded();
-    save(app, &seeded).await?;
-    Ok(seeded)
+/// Helper: leaks the String into a &'static str. Only called once at
+/// startup by `builtin_ids` callers; the leak is bounded by the
+/// (small, fixed) number of seeded languages.
+fn string_to_static(s: String) -> &'static str {
+    Box::leak(s.into_boxed_str())
 }
 
 fn seeded() -> Vec<LspConfig> {
@@ -101,7 +64,6 @@ fn seeded() -> Vec<LspConfig> {
             args: args.iter().map(|s| s.to_string()).collect(),
             filetypes: filetypes.iter().map(|s| s.to_string()).collect(),
             root_markers: root_markers.iter().map(|s| s.to_string()).collect(),
-            enabled: false,
             install_hint: Some(hint.into()),
             env: BTreeMap::new(),
             path_mapping: None,

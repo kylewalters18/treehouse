@@ -35,7 +35,6 @@ type LspState = {
   restartEpoch: Record<WorktreeId, number>;
 
   load: () => Promise<void>;
-  save: (config: LspConfig) => Promise<void>;
   refreshResolution: () => Promise<void>;
   markNotFoundNotified: (worktreeId: string, languageId: string) => void;
   hasNotifiedNotFound: (worktreeId: string, languageId: string) => boolean;
@@ -64,16 +63,6 @@ export const useLspStore = create<LspState>((set, get) => ({
       void get().refreshResolution();
     } catch (e) {
       set({ error: asMessage(e), loading: false });
-    }
-  },
-
-  async save(config: LspConfig) {
-    try {
-      const configs = await ipc.lspSaveConfig(config);
-      set({ configs });
-      void get().refreshResolution();
-    } catch (e) {
-      set({ error: asMessage(e) });
     }
   },
 
