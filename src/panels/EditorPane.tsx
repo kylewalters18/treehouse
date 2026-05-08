@@ -1011,6 +1011,12 @@ function useLspIntegration(
   const configs = useLspStore((s) => s.configs);
   const hasNotifiedNotFound = useLspStore((s) => s.hasNotifiedNotFound);
   const markNotFoundNotified = useLspStore((s) => s.markNotFoundNotified);
+  // Re-runs the effect after the "Restart language servers" command
+  // disposes the active session — without this dep, the model stays
+  // closed against LSP because none of the other deps changed.
+  const restartEpoch = useLspStore(
+    (s) => s.restartEpoch[worktreeId] ?? 0,
+  );
   const worktrees = useWorktreesStore((s) => s.worktrees);
   const worktree = useMemo(
     () => worktrees.find((w) => w.id === worktreeId) ?? null,
@@ -1076,6 +1082,7 @@ function useLspIntegration(
     language,
     configs,
     worktree,
+    restartEpoch,
     hasNotifiedNotFound,
     markNotFoundNotified,
   ]);

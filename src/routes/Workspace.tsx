@@ -17,6 +17,7 @@ import { AgentPane } from "@/panels/AgentPane";
 import { SettingsMenu } from "@/components/SettingsMenu";
 import { SendQueueButton } from "@/components/SendQueueButton";
 import { FileFinder } from "@/components/FileFinder";
+import { CommandPalette } from "@/components/CommandPalette";
 
 export function Workspace() {
   const workspace = useWorkspaceStore((s) => s.workspace);
@@ -34,6 +35,8 @@ export function Workspace() {
   // Cmd+P "Go to file" picker. Open state lives here so the
   // shortcut works regardless of which pane has focus.
   const [fileFinderOpen, setFileFinderOpen] = useState(false);
+  // Cmd+Shift+P command palette — same global ownership as Cmd+P.
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
 
   // Reflect store state onto the Panel imperatively. Keeping state in the
   // store (not inside the Panel) lets the sidebar content + keyboard shortcut
@@ -67,7 +70,8 @@ export function Workspace() {
 
   // Cmd+\ (Ctrl+\ on Linux/Win) toggles focus mode.
   // Cmd+B toggles the worktree sidebar (VS Code muscle memory).
-  // Cmd+P opens the fuzzy file finder (also VS Code muscle memory).
+  // Cmd+P opens the fuzzy file finder; Cmd+Shift+P opens the command
+  // palette (also VS Code muscle memory).
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       const mod = e.metaKey || e.ctrlKey;
@@ -79,12 +83,17 @@ export function Workspace() {
         e.preventDefault();
         toggleSidebar();
       } else if (e.key === "p" || e.key === "P") {
-        // Skip when on the main clone — the Cmd+P picker would have
-        // no clear "open in editor" target since the diff pane is
-        // showing the main repo's checkout, not a worktree's.
-        if (!selectedWorktreeId) return;
         e.preventDefault();
-        setFileFinderOpen((v) => !v);
+        if (e.shiftKey) {
+          setCommandPaletteOpen((v) => !v);
+        } else {
+          // Skip the file picker on the main clone — the diff pane is
+          // showing the main repo's checkout, not a worktree's, so
+          // there's no clear "open in editor" target. The command
+          // palette stays available regardless.
+          if (!selectedWorktreeId) return;
+          setFileFinderOpen((v) => !v);
+        }
       }
     }
     window.addEventListener("keydown", onKey);
@@ -196,6 +205,10 @@ export function Workspace() {
           onClose={() => setFileFinderOpen(false)}
         />
       )}
+      <CommandPalette
+        open={commandPaletteOpen}
+        onClose={() => setCommandPaletteOpen(false)}
+      />
     </div>
   );
 }

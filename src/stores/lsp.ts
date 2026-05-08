@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import * as ipc from "@/ipc/client";
-import type { LspConfig } from "@/ipc/types";
+import type { LspConfig, WorktreeId } from "@/ipc/types";
 import { asMessage } from "@/lib/errors";
 
 /// Single-line summary of whatever a language server is currently doing
@@ -26,6 +26,13 @@ type LspState = {
   /// Active progress per `${worktreeId}::${languageId}`. Nulled out when
   /// the server reports `end` for its last token or the session disposes.
   progress: Record<string, SessionProgress | null>;
+  /// Bumped by the "Restart language servers" command so
+  /// `useLspIntegration` re-runs and reopens the active file in a
+  /// fresh session. Disposing the session alone doesn't trigger a
+  /// re-open because none of the effect's React deps changed —
+  /// flipping the toggle in Settings works because that mutates
+  /// `configs`, which IS a dep.
+  restartEpoch: Record<WorktreeId, number>;
 
   load: () => Promise<void>;
   save: (config: LspConfig) => Promise<void>;
@@ -37,6 +44,7 @@ type LspState = {
     languageId: string,
     progress: SessionProgress | null,
   ) => void;
+  bumpRestartEpoch: (worktreeId: WorktreeId) => void;
 };
 
 export const useLspStore = create<LspState>((set, get) => ({
@@ -46,6 +54,7 @@ export const useLspStore = create<LspState>((set, get) => ({
   error: null,
   notFoundNotified: new Set(),
   progress: {},
+  restartEpoch: {},
 
   async load() {
     set({ loading: true, error: null });
@@ -97,5 +106,14 @@ export const useLspStore = create<LspState>((set, get) => ({
   setProgress(worktreeId, languageId, progress) {
     const key = `${worktreeId}::${languageId}`;
     set((s) => ({ progress: { ...s.progress, [key]: progress } }));
+  },
+
+  bumpRestartEpoch(worktreeId) {
+    set((s) => ({
+      restartEpoch: {
+        ...s.restartEpoch,
+        [worktreeId]: (s.restartEpoch[worktreeId] ?? 0) + 1,
+      },
+    }));
   },
 }));
