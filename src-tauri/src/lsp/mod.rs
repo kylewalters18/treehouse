@@ -30,8 +30,9 @@ use crate::util::ids::{LspServerId, WorktreeId};
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
 pub struct PathMapping {
+    #[serde(alias = "remote_root")]
     pub remote_root: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "host_root")]
     pub host_root: Option<String>,
 }
 
@@ -67,7 +68,11 @@ pub struct LspConfig {
     /// When set, install URI translation between host paths and the
     /// LSP's view of the filesystem. Most useful for containerized
     /// servers (devcontainer / docker exec / etc.). See `PathMapping`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "path_mapping"
+    )]
     pub path_mapping: Option<PathMapping>,
 }
 

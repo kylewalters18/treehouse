@@ -29,7 +29,7 @@ import {
   type WorkDoneProgressReport,
 } from "vscode-languageserver-protocol";
 import { editor as MonacoEditor, Uri } from "monaco-editor";
-import type { LspServerId, WorktreeId } from "@/ipc/types";
+import type { LspServerId, PathMapping, WorktreeId } from "@/ipc/types";
 import { diagnosticToMarker } from "./convert";
 
 export type SessionKey = string; // `${worktreeId}::${languageId}`
@@ -65,6 +65,11 @@ export interface LspSession {
   /// `openDocument`. Keyed by Monaco URI; called from `closeDocument`
   /// so we don't leak listeners (or send `didChange` for closed files).
   documentChangeDisposers: Map<string, () => void>;
+  /// Resolved host↔remote path translation, if any. Mirrored from the
+  /// Rust-returned `LspServerSession.path_mapping` so debug surfaces
+  /// (and any future per-session UI) can confirm the URI middleware
+  /// is actually installed.
+  pathMapping: PathMapping | null;
   /// Per-session connection. Keyed objects on this only — disposal kills
   /// the connection cleanly.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -149,6 +154,7 @@ export async function initializeSession(opts: {
   languageId: string;
   serverId: LspServerId;
   rootUri: string;
+  pathMapping: PathMapping | null;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   connection: any;
   /// Called whenever the session's aggregate progress state changes.
@@ -242,6 +248,7 @@ export async function initializeSession(opts: {
     monacoToLspUri: new Map(),
     documentVersions: new Map(),
     documentChangeDisposers: new Map(),
+    pathMapping: opts.pathMapping,
     connection,
     dispose: async () => {
       try {

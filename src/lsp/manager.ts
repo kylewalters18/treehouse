@@ -67,6 +67,7 @@ if (typeof window !== "undefined") {
         languageId: s.languageId,
         serverId: s.serverId,
         rootUri: s.rootUri,
+        pathMapping: s.pathMapping,
         capabilities: {
           hover: !!s.capabilities.hoverProvider,
           definition: !!s.capabilities.definitionProvider,
@@ -183,6 +184,7 @@ export async function ensureSession(
       languageId,
       serverId: session.id,
       rootUri: session.rootUri,
+      pathMapping: session.pathMapping ?? null,
       connection,
       onProgress: (progress) => {
         useLspStore

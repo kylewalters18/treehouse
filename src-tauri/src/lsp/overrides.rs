@@ -45,9 +45,13 @@ const SEED_HEADER: &str = "\
 # in command/args/env values is expanded to the worktree's absolute
 # host path at runtime.
 #
-# `path_mapping` installs a JSON-RPC middleware that swaps file:// URIs
+# Field names use camelCase to match `languages.toml`:
+# `pathMapping`, `remoteRoot`, `hostRoot`. snake_case (`path_mapping`,
+# `remote_root`, `host_root`) is also accepted as an alias.
+#
+# `pathMapping` installs a JSON-RPC middleware that swaps file:// URIs
 # between host and the LSP's view of the filesystem — useful for
-# containerized servers. `host_root` defaults to the worktree path.
+# containerized servers. `hostRoot` defaults to the worktree path.
 #
 # Example: clangd inside a devcontainer.
 #
@@ -56,8 +60,8 @@ const SEED_HEADER: &str = "\
 # language = \"cpp\"
 # command = \"devcontainer\"
 # args = [\"exec\", \"--workspace-folder\", \"${WORKTREE_PATH}\", \"clangd\"]
-# [override.path_mapping]
-# remote_root = \"/workspaces/repo\"
+# [override.pathMapping]
+# remoteRoot = \"/workspaces/repo\"
 ";
 
 /// Partial language config. Anything `None` inherits from the global
@@ -79,7 +83,11 @@ pub struct LspOverride {
     pub args: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub env: Option<BTreeMap<String, String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "path_mapping"
+    )]
     pub path_mapping: Option<PathMapping>,
 }
 
