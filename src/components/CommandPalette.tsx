@@ -49,16 +49,34 @@ function buildCommands(deps: {
       },
     });
   }
-  // Workspace-agnostic — always available so the user can edit the
-  // overrides file even from the main-clone view.
+  // Workspace-agnostic — always available so the user can read /
+  // edit these from anywhere, including the main-clone view.
+  cmds.push({
+    id: "lsp.viewOverrides",
+    category: "LSP",
+    title: "View worktree overrides",
+    description: "Open worktree_lsp.toml in an in-app read-only viewer",
+    run: () => {
+      useUiStore.getState().openSystemFileViewer("lspOverrides");
+    },
+  });
   cmds.push({
     id: "lsp.editOverrides",
     category: "LSP",
     title: "Edit worktree overrides",
-    description:
-      "Open worktree_lsp.toml in your default editor (per-worktree LSP overrides)",
+    description: "Open worktree_lsp.toml in your default editor",
     run: async () => {
       await lspOpenOverridesFile();
+    },
+  });
+  cmds.push({
+    id: "logs.view",
+    category: "Logs",
+    title: "View log",
+    description:
+      "Open the latest daily-rotated treehouse.log in an in-app viewer",
+    run: () => {
+      useUiStore.getState().openSystemFileViewer("log");
     },
   });
   return cmds;

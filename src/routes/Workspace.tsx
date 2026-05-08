@@ -18,6 +18,7 @@ import { SettingsMenu } from "@/components/SettingsMenu";
 import { SendQueueButton } from "@/components/SendQueueButton";
 import { FileFinder } from "@/components/FileFinder";
 import { CommandPalette } from "@/components/CommandPalette";
+import { SystemFileViewer } from "@/components/SystemFileViewer";
 
 export function Workspace() {
   const workspace = useWorkspaceStore((s) => s.workspace);
@@ -209,6 +210,18 @@ export function Workspace() {
         open={commandPaletteOpen}
         onClose={() => setCommandPaletteOpen(false)}
       />
+      <SystemFileViewerMount />
     </div>
   );
+}
+
+/// Render the system-file viewer modal driven by the UI store.
+/// Pulled out so the store subscription lives in its own component
+/// and a viewer-state change doesn't re-render the whole Workspace
+/// tree.
+function SystemFileViewerMount() {
+  const kind = useUiStore((s) => s.systemFileViewer);
+  const close = useUiStore((s) => s.closeSystemFileViewer);
+  if (!kind) return null;
+  return <SystemFileViewer open={true} onClose={close} kind={kind} />;
 }

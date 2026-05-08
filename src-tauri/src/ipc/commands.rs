@@ -760,6 +760,179 @@ pub async fn worktree_mark_setup_ran(
     worktree::setup::mark_ran(&wt.path).await
 }
 
+/// One of the system files we let the renderer surface in-app.
+/// `kind` is a flat string so the IPC stays JSON-friendly; the
+/// renderer just passes one of these literals.
+fn resolve_app_file(
+    app: &AppHandle,
+    kind: &str,
+    file: Option<&str>,
+) -> AppResult<PathBuf> {
+    match kind {
+        "log" => {
+            let dir = log_dir().ok_or_else(|| AppError::Unknown("HOME not set".into()))?;
+            match file {
+                Some(name) => {
+                    if name.contains('/') || name.contains("..") {
+                        return Err(AppError::Unknown(format!(
+                            "log file name has path components: {name}"
+                        )));
+                    }
+                    Ok(dir.join(name))
+                }
+                None => latest_log(&dir),
+            }
+        }
+        "lspOverrides" => {
+            let dir = app
+                .path()
+                .app_config_dir()
+                .map_err(|e| AppError::Unknown(format!("config dir: {e}")))?;
+            Ok(dir.join("worktree_lsp.toml"))
+        }
+        "workspaceSetup" => {
+            let dir = app
+                .path()
+                .app_config_dir()
+                .map_err(|e| AppError::Unknown(format!("config dir: {e}")))?;
+            Ok(dir.join("workspace_setup.toml"))
+        }
+        "languages" => {
+            let dir = app
+                .path()
+                .app_config_dir()
+                .map_err(|e| AppError::Unknown(format!("config dir: {e}")))?;
+            Ok(dir.join("languages.toml"))
+        }
+        _ => Err(AppError::Unknown(format!("unknown app file kind: {kind}"))),
+    }
+}
+
+fn log_dir() -> Option<PathBuf> {
+    let home = std::env::var_os("HOME")?;
+    Some(PathBuf::from(home).join("Library/Logs/com.treehouse.app"))
+}
+
+/// Pick the alphabetically-latest `treehouse.log*` in `dir`.
+/// `tracing-appender` names files `treehouse.log.YYYY-MM-DD`, so a
+/// lex sort puts the newest at the end.
+fn latest_log(dir: &std::path::Path) -> AppResult<PathBuf> {
+    let read = match std::fs::read_dir(dir) {
+        Ok(r) => r,
+        Err(_) => return Err(AppError::Unknown(format!("no logs at {}", dir.display()))),
+    };
+    let mut latest: Option<String> = None;
+    for entry in read.flatten() {
+        let name = entry.file_name();
+        let name_s = match name.to_str() {
+            Some(s) => s.to_string(),
+            None => continue,
+        };
+        if !name_s.starts_with("treehouse.log") {
+            continue;
+        }
+        if latest.as_deref().map(|l| name_s.as_str() > l).unwrap_or(true) {
+            latest = Some(name_s);
+        }
+    }
+    match latest {
+        Some(name) => Ok(dir.join(name)),
+        None => Err(AppError::Unknown(format!(
+            "no treehouse.log files in {}",
+            dir.display()
+        ))),
+    }
+}
+
+#[derive(Debug, serde::Serialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct AppFileContent {
+    pub path: String,
+    pub content: String,
+}
+
+/// Read an app-managed system file (logs, override TOMLs) so the
+/// renderer can show it in an in-app Monaco viewer instead of having
+/// to shell out to a separate editor / terminal.
+///
+/// `kind` discriminates which file:
+/// - `"log"` — most recent `treehouse.log*` (or specific one via `file`)
+/// - `"lspOverrides"` — `worktree_lsp.toml`
+/// - `"workspaceSetup"` — `workspace_setup.toml`
+/// - `"languages"` — `languages.toml`
+///
+/// Missing files are surfaced as an empty-content response with the
+/// path populated, so the renderer can show "no content yet at <path>"
+/// rather than erroring.
+#[tauri::command]
+pub async fn read_app_text_file(
+    kind: String,
+    file: Option<String>,
+    app: AppHandle,
+) -> AppResult<AppFileContent> {
+    let path = resolve_app_file(&app, &kind, file.as_deref())?;
+    let content = match tokio::fs::read_to_string(&path).await {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(AppError::Io(format!("read {}: {e}", path.display()))),
+    };
+    Ok(AppFileContent {
+        path: path.to_string_lossy().to_string(),
+        content,
+    })
+}
+
+/// List the daily-rotated log files in `~/Library/Logs/com.treehouse.app/`,
+/// newest first. Empty list when the directory hasn't been created
+/// yet (no logs ever written).
+#[tauri::command]
+pub async fn list_log_files() -> AppResult<Vec<String>> {
+    let dir = match log_dir() {
+        Some(d) => d,
+        None => return Ok(Vec::new()),
+    };
+    let mut rd = match tokio::fs::read_dir(&dir).await {
+        Ok(rd) => rd,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(AppError::Io(format!("read {}: {e}", dir.display()))),
+    };
+    let mut names = Vec::new();
+    while let Some(entry) = rd.next_entry().await? {
+        if let Ok(name) = entry.file_name().into_string() {
+            if name.starts_with("treehouse.log") {
+                names.push(name);
+            }
+        }
+    }
+    names.sort_by(|a, b| b.cmp(a));
+    Ok(names)
+}
+
+/// Open the app's log directory in Finder so the user can grab the
+/// daily-rotated `treehouse.log` files. The directory is created on
+/// startup by `tracing-appender`, but if for some reason it doesn't
+/// exist yet (e.g. file logging fell through silently because $HOME
+/// wasn't set) we surface that as an error rather than spawning
+/// `open` against a missing path.
+#[tauri::command]
+pub async fn open_logs_folder() -> AppResult<()> {
+    let home = std::env::var_os("HOME")
+        .ok_or_else(|| AppError::Unknown("HOME not set".into()))?;
+    let dir = std::path::PathBuf::from(home).join("Library/Logs/com.treehouse.app");
+    if !dir.exists() {
+        return Err(AppError::Unknown(format!(
+            "log directory not found: {}",
+            dir.display()
+        )));
+    }
+    tokio::process::Command::new("open")
+        .arg(&dir)
+        .spawn()
+        .map_err(|e| AppError::Unknown(format!("open {}: {e}", dir.display())))?;
+    Ok(())
+}
+
 /// Ensure the per-worktree LSP override file exists (seeded with a
 /// header comment + worked devcontainer example on first call) and
 /// open it in the user's default editor for the file's type. macOS

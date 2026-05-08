@@ -16,13 +16,62 @@ mod test_support;
 
 use state::AppState;
 
+/// macOS log directory for the app. We compute this directly rather
+/// than going through Tauri's `app.path().app_log_dir()` because
+/// `tracing` has to be initialized before the Tauri builder runs —
+/// startup tracing (PATH import, supervisor spawn, etc.) would
+/// otherwise be lost.
+fn log_dir() -> Option<std::path::PathBuf> {
+    let home = std::env::var_os("HOME")?;
+    Some(std::path::PathBuf::from(home).join("Library/Logs/com.treehouse.app"))
+}
+
 pub fn run() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "treehouse_lib=debug".into()),
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| "treehouse_lib=debug".into());
+
+    // Stderr layer — visible in `npm run tauri dev` and when the
+    // bundled app is launched from a terminal. ANSI escapes on so
+    // dev output stays colorful.
+    let stderr_layer = tracing_subscriber::fmt::layer().with_writer(std::io::stderr);
+
+    // File layer — daily-rotated log at
+    // `~/Library/Logs/com.treehouse.app/treehouse.log`. Survives app
+    // restart so users can paste relevant slices when something
+    // misbehaves in the released DMG (where stderr is launchd-eaten
+    // and devtools are disabled). Best-effort: a missing $HOME or a
+    // failed mkdir falls through silently to stderr-only.
+    let mut file_guard: Option<tracing_appender::non_blocking::WorkerGuard> = None;
+    let file_layer = log_dir().and_then(|dir| {
+        std::fs::create_dir_all(&dir).ok()?;
+        let appender = tracing_appender::rolling::daily(&dir, "treehouse.log");
+        let (writer, guard) = tracing_appender::non_blocking(appender);
+        file_guard = Some(guard);
+        Some(
+            tracing_subscriber::fmt::layer()
+                .with_writer(writer)
+                .with_ansi(false),
         )
+    });
+
+    tracing_subscriber::registry()
+        .with(env_filter)
+        .with(stderr_layer)
+        .with(file_layer)
         .init();
+
+    // The non-blocking writer's WorkerGuard must outlive the process
+    // — drop it and pending lines are lost. Box::leak is the
+    // standard escape hatch for "lives until exit". Acceptable since
+    // we only ever construct one.
+    if let Some(guard) = file_guard {
+        Box::leak(Box::new(guard));
+    }
+
+    tracing::info!("treehouse starting; logs at ~/Library/Logs/com.treehouse.app/treehouse.log");
 
     import_shell_path();
 
@@ -82,6 +131,9 @@ pub fn run() {
             ipc::commands::lsp_save_config,
             ipc::commands::lsp_resolve_command,
             ipc::commands::lsp_open_overrides_file,
+            ipc::commands::open_logs_folder,
+            ipc::commands::read_app_text_file,
+            ipc::commands::list_log_files,
             ipc::commands::worktree_setup_steps,
             ipc::commands::worktree_mark_setup_ran,
         ])

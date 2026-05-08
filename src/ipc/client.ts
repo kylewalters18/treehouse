@@ -5,6 +5,7 @@ import type {
   AgentEvent,
   AgentSession,
   AgentSessionId,
+  AppFileContent,
   BackendAgent,
   Comment,
   CreateWorktreeResult,
@@ -394,6 +395,35 @@ export function lspResolveCommand(command: string): Promise<string | null> {
 /// since editor write-back is post-MVP.
 export function lspOpenOverridesFile(): Promise<void> {
   return invoke<void>("lsp_open_overrides_file");
+}
+
+/// Reveal `~/Library/Logs/com.treehouse.app/` in Finder. Backed by
+/// the daily-rotated `treehouse.log` files written by `tracing-
+/// appender` on the Rust side. Useful when something goes sideways
+/// in the released DMG (devtools off, stderr launchd-eaten).
+export function openLogsFolder(): Promise<void> {
+  return invoke<void>("open_logs_folder");
+}
+
+/// Read an app-managed system file (logs, override TOMLs) for the
+/// in-app viewer. `kind` is one of `"log"` / `"lspOverrides"` /
+/// `"workspaceSetup"` / `"languages"`. For `"log"`, optional `file`
+/// picks a specific daily-rotated file (default = newest).
+export type AppFileKind =
+  | "log"
+  | "lspOverrides"
+  | "workspaceSetup"
+  | "languages";
+
+export function readAppTextFile(
+  kind: AppFileKind,
+  file?: string,
+): Promise<AppFileContent> {
+  return invoke<AppFileContent>("read_app_text_file", { kind, file });
+}
+
+export function listLogFiles(): Promise<string[]> {
+  return invoke<string[]>("list_log_files");
 }
 
 /// Returns the resolved post-create hook for the worktree's workspace.

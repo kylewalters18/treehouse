@@ -51,3 +51,5 @@ export type { PathMapping } from "./bindings/PathMapping";
 export type { HookStep } from "./bindings/HookStep";
 export type { HookRunSummary } from "./bindings/HookRunSummary";
 export type { HookFailure } from "./bindings/HookFailure";
+
+export type { AppFileContent } from "./bindings/AppFileContent";

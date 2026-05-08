@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import type { AppFileKind } from "@/ipc/client";
 import type { AgentSessionId, WorktreeId } from "@/ipc/types";
 
 type UiState = {
@@ -25,6 +26,10 @@ type UiState = {
   /// state predates the launch) sort to the end in their original
   /// `started_at` order.
   agentTabOrderByWorktree: Record<WorktreeId, AgentSessionId[]>;
+  /// Which app-managed system file the in-app viewer modal is
+  /// showing, if any. Set by command-palette entries; consumed by
+  /// the modal mount in `Workspace`.
+  systemFileViewer: AppFileKind | null;
   selectWorktree: (id: WorktreeId | null) => void;
   toggleFocusMode: () => void;
   setFocusMode: (on: boolean) => void;
@@ -41,6 +46,8 @@ type UiState = {
     worktreeId: WorktreeId,
     sessionIds: AgentSessionId[],
   ) => void;
+  openSystemFileViewer: (kind: AppFileKind) => void;
+  closeSystemFileViewer: () => void;
   reset: () => void;
 };
 
@@ -52,6 +59,7 @@ export const useUiStore = create<UiState>((set) => ({
   activeAgentByWorktree: {},
   agentLabelsBySessionId: {},
   agentTabOrderByWorktree: {},
+  systemFileViewer: null,
   selectWorktree(id) {
     set({ selectedWorktreeId: id });
   },
@@ -101,6 +109,12 @@ export const useUiStore = create<UiState>((set) => ({
       },
     }));
   },
+  openSystemFileViewer(kind) {
+    set({ systemFileViewer: kind });
+  },
+  closeSystemFileViewer() {
+    set({ systemFileViewer: null });
+  },
   reset() {
     set({
       selectedWorktreeId: null,
@@ -110,6 +124,7 @@ export const useUiStore = create<UiState>((set) => ({
       activeAgentByWorktree: {},
       agentLabelsBySessionId: {},
       agentTabOrderByWorktree: {},
+      systemFileViewer: null,
     });
   },
 }));
