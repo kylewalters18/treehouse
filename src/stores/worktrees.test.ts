@@ -78,7 +78,11 @@ describe("worktrees store", () => {
     const a = wt({ id: "a", branch: "agent/a" });
     const b = wt({ id: "b", branch: "agent/b" });
     useWorktreesStore.setState({ worktrees: [a, b] });
-    ipcMocked.removeWorktree.mockResolvedValueOnce(undefined);
+    ipcMocked.removeWorktree.mockResolvedValueOnce({
+      ran: 0,
+      succeeded: 0,
+      failed: [],
+    });
     await useWorktreesStore.getState().remove("a", true);
     expect(useWorktreesStore.getState().worktrees).toEqual([b]);
   });

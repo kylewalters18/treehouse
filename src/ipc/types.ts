@@ -48,4 +48,6 @@ export type { LspServerSession } from "./bindings/LspServerSession";
 export type { LspServerStatus } from "./bindings/LspServerStatus";
 export type { PathMapping } from "./bindings/PathMapping";
 
-export type { OnCreateStep } from "./bindings/OnCreateStep";
+export type { HookStep } from "./bindings/HookStep";
+export type { HookRunSummary } from "./bindings/HookRunSummary";
+export type { HookFailure } from "./bindings/HookFailure";

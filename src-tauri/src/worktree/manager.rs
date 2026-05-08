@@ -1,13 +1,21 @@
 use std::path::PathBuf;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
+use tauri::AppHandle;
 use ts_rs::TS;
 
 use crate::state::AppState;
 use crate::util::errors::{AppError, AppResult};
 use crate::util::ids::{WorkspaceId, WorktreeId};
 
+use super::setup::{self, Hook, HookRunSummary};
 use super::{git_ops, Worktree};
+
+/// Cap any single `on_destroy` step at this duration. Cleanup is
+/// best-effort; a hung `docker rm` shouldn't block worktree removal
+/// indefinitely.
+const DESTROY_HOOK_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Tunable knobs for `create`. Pass `Default::default()` for "old" behavior.
 #[derive(Debug, Clone, Copy, Default)]
@@ -296,8 +304,10 @@ pub async fn sync_with_default(
 pub async fn remove(
     worktree_id: WorktreeId,
     force: bool,
+    skip_hook: bool,
+    app: Option<&AppHandle>,
     state: &AppState,
-) -> AppResult<()> {
+) -> AppResult<HookRunSummary> {
     let wt = state
         .worktrees
         .get(&worktree_id)
@@ -312,6 +322,27 @@ pub async fn remove(
         .ok_or_else(|| AppError::Unknown(format!("unknown workspace: {}", wt.workspace_id)))?
         .clone();
 
+    // Run on_destroy hooks BEFORE git/dir removal so commands like
+    // `docker rm -f $(... --filter local_folder=${WORKTREE_PATH})`
+    // can still see the path on disk. Best-effort: hook failures
+    // log + show up in the returned summary, but never block the
+    // actual removal — user said "remove this", we honor it.
+    let mut summary = HookRunSummary::default();
+    if !skip_hook {
+        if let Some(app) = app {
+            let raw = setup::resolve(app, &ws.root, Hook::OnDestroy).await?;
+            if !raw.is_empty() {
+                let name = wt
+                    .path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                let steps = setup::apply_templates(raw, &wt.path, &name, &wt.base_ref);
+                summary = setup::run_inline(steps, &wt.path, DESTROY_HOOK_TIMEOUT).await;
+            }
+        }
+    }
+
     git_ops::remove(&ws.root, &wt.path, force).await?;
 
     // Best-effort: delete the branch we created (ignore errors; user may have
@@ -325,7 +356,7 @@ pub async fn remove(
 
     state.worktrees.remove(&worktree_id);
     tracing::info!(id = %worktree_id, "removed worktree");
-    Ok(())
+    Ok(summary)
 }
 
 pub async fn merge(
@@ -732,7 +763,7 @@ mod tests {
         let (state, ws_id) = setup(&repo);
         let wt = create(None, ws_id, "doomed", CreateOptions::default(), &state).await.unwrap().worktree;
         let path = wt.path.clone();
-        remove(wt.id, true, &state).await.unwrap();
+        remove(wt.id, true, true, None, &state).await.unwrap();
         assert!(!path.exists());
         assert_eq!(state.worktrees.len(), 0);
     }
@@ -742,7 +773,7 @@ mod tests {
         let repo = TempRepo::new();
         let (state, ws_id) = setup(&repo);
         let main = register_main_clone(ws_id, &state).await.unwrap();
-        let err = remove(main.id, false, &state).await.unwrap_err();
+        let err = remove(main.id, false, true, None, &state).await.unwrap_err();
         assert!(matches!(err, AppError::Unknown(msg) if msg.contains("main clone")));
     }
 

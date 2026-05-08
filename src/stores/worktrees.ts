@@ -16,7 +16,11 @@ type WorktreesState = {
     name: string,
     opts?: { initSubmodules?: boolean },
   ) => Promise<Worktree | null>;
-  remove: (worktreeId: WorktreeId, force?: boolean) => Promise<void>;
+  remove: (
+    worktreeId: WorktreeId,
+    force?: boolean,
+    skipHook?: boolean,
+  ) => Promise<void>;
   reset: () => void;
 };
 
@@ -55,9 +59,9 @@ export const useWorktreesStore = create<WorktreesState>((set, get) => ({
       return null;
     }
   },
-  async remove(worktreeId, force = false) {
+  async remove(worktreeId, force = false, skipHook = false) {
     try {
-      await ipc.removeWorktree(worktreeId, force);
+      const summary = await ipc.removeWorktree(worktreeId, force, skipHook);
       set({
         worktrees: get().worktrees.filter((w) => w.id !== worktreeId),
       });
@@ -68,6 +72,19 @@ export const useWorktreesStore = create<WorktreesState>((set, get) => ({
       // Same for the agent xterm pool — kill any pooled sessions and
       // dispose their xterms so the removed worktree doesn't leak.
       clearAgentLeafStatesForWorktree(worktreeId);
+      // Surface on_destroy hook outcomes only when something failed —
+      // a clean run is silent. Worktree is already gone either way.
+      if (summary.failed.length > 0) {
+        const first = summary.failed[0];
+        const more =
+          summary.failed.length > 1
+            ? ` (+${summary.failed.length - 1} more)`
+            : "";
+        toastError(
+          `Cleanup hook: ${summary.failed.length}/${summary.ran} step${summary.ran === 1 ? "" : "s"} failed`,
+          `${first.name}: ${first.reason}${more}`,
+        );
+      }
     } catch (e: unknown) {
       toastError("Failed to remove worktree", asMessage(e));
     }

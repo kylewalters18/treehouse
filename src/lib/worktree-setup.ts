@@ -7,7 +7,7 @@
 /// already decided to run setup. No-op when no steps are configured.
 
 import { worktreeSetupSteps } from "@/ipc/client";
-import type { OnCreateStep, WorktreeId } from "@/ipc/types";
+import type { HookStep, WorktreeId } from "@/ipc/types";
 import { makeLeaf } from "@/panels/pane-tree";
 import { useTerminalLayoutStore } from "@/stores/terminal-layout";
 
@@ -16,7 +16,7 @@ import { useTerminalLayoutStore } from "@/stores/terminal-layout";
 /// stops at the first non-zero exit; the outer shell stays alive
 /// either way so the user can investigate output. Marks setup as
 /// successful (best-effort) when the chain completes.
-export function buildSetupScript(steps: OnCreateStep[]): string {
+export function buildSetupScript(steps: HookStep[]): string {
   if (steps.length === 0) return "";
   const inner = steps
     .map((step) => {
@@ -59,7 +59,7 @@ function shellEscape(s: string): string {
 export async function runWorktreeSetup(
   worktreeId: WorktreeId,
 ): Promise<void> {
-  let steps: OnCreateStep[];
+  let steps: HookStep[];
   try {
     steps = await worktreeSetupSteps(worktreeId);
   } catch (e) {

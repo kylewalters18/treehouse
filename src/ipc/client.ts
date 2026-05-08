@@ -11,13 +11,14 @@ import type {
   DiffMode,
   DiffSet,
   FileContent,
+  HookRunSummary,
+  HookStep,
   LspConfig,
   LspEvent,
   LspServerId,
   LspServerSession,
   MergeResult,
   MergeBackStrategy,
-  OnCreateStep,
   SyncResult,
   SyncStrategy,
   PtyEvent,
@@ -91,8 +92,13 @@ export function createWorktree(
 export function removeWorktree(
   worktreeId: WorktreeId,
   force: boolean = false,
-): Promise<void> {
-  return invoke<void>("remove_worktree", { worktreeId, force });
+  skipHook: boolean = false,
+): Promise<HookRunSummary> {
+  return invoke<HookRunSummary>("remove_worktree", {
+    worktreeId,
+    force,
+    skipHook,
+  });
 }
 
 export function mergeWorktree(
@@ -387,8 +393,8 @@ export function lspOpenOverridesFile(): Promise<void> {
 /// shell script string with literal values.
 export function worktreeSetupSteps(
   worktreeId: WorktreeId,
-): Promise<OnCreateStep[]> {
-  return invoke<OnCreateStep[]>("worktree_setup_steps", { worktreeId });
+): Promise<HookStep[]> {
+  return invoke<HookStep[]>("worktree_setup_steps", { worktreeId });
 }
 
 /// Touch `<worktree>/.treehouse/setup-ran` after the post-create hook

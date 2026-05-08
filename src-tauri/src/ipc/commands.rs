@@ -177,9 +177,10 @@ pub async fn create_worktree(
 pub async fn remove_worktree(
     worktree_id: WorktreeId,
     force: bool,
+    skip_hook: Option<bool>,
     app: AppHandle,
     state: State<'_, AppState>,
-) -> AppResult<()> {
+) -> AppResult<worktree::setup::HookRunSummary> {
     let workspace_id = state
         .worktrees
         .get(&worktree_id)
@@ -191,13 +192,20 @@ pub async fn remove_worktree(
     lsp::supervisor::kill_for_worktree(&state.lsp, worktree_id);
     state.diffs.remove(&worktree_id);
     worktree::status::drop_for(&state, worktree_id);
-    worktree::remove(worktree_id, force, &state).await?;
+    let hook_summary = worktree::remove(
+        worktree_id,
+        force,
+        skip_hook.unwrap_or(false),
+        Some(&app),
+        &state,
+    )
+    .await?;
 
     if let Some(ws_id) = workspace_id {
         let _ = app.emit(&events::worktrees_changed(ws_id), ());
         let _ = app.emit(&events::lsp_servers_changed(ws_id), ());
     }
-    Ok(())
+    Ok(hook_summary)
 }
 
 #[tauri::command]
@@ -677,7 +685,7 @@ pub async fn worktree_setup_steps(
     worktree_id: WorktreeId,
     app: AppHandle,
     state: State<'_, AppState>,
-) -> AppResult<Vec<worktree::setup::OnCreateStep>> {
+) -> AppResult<Vec<worktree::setup::HookStep>> {
     let wt = state
         .worktrees
         .get(&worktree_id)
@@ -688,7 +696,8 @@ pub async fn worktree_setup_steps(
         .get(&wt.workspace_id)
         .ok_or_else(|| AppError::Unknown(format!("unknown workspace: {}", wt.workspace_id)))?
         .clone();
-    let steps = worktree::setup::resolve(&app, &ws.root).await?;
+    let steps =
+        worktree::setup::resolve(&app, &ws.root, worktree::setup::Hook::OnCreate).await?;
     let name = wt
         .path
         .file_name()
