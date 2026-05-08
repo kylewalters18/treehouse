@@ -79,6 +79,16 @@ function buildCommands(deps: {
       useUiStore.getState().openSystemFileViewer("log");
     },
   });
+  cmds.push({
+    id: "problems.toggle",
+    category: "View",
+    title: "Toggle Problems tab",
+    description:
+      "Flip the bottom pane between Terminal and Problems (Cmd+Shift+M)",
+    run: () => {
+      useUiStore.getState().toggleProblemsTab();
+    },
+  });
   return cmds;
 }
 

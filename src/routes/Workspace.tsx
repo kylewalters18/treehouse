@@ -12,7 +12,7 @@ import { useLspStore } from "@/stores/lsp";
 import { useUiStore } from "@/stores/ui";
 import { WorktreeSidebar } from "@/panels/WorktreeSidebar";
 import { DiffPane } from "@/panels/DiffPane";
-import { TerminalPane } from "@/panels/TerminalPane";
+import { BottomPane } from "@/panels/BottomPane";
 import { AgentPane } from "@/panels/AgentPane";
 import { SettingsMenu } from "@/components/SettingsMenu";
 import { SendQueueButton } from "@/components/SendQueueButton";
@@ -33,6 +33,7 @@ export function Workspace() {
   const toggleSidebar = useUiStore((s) => s.toggleWorktreeSidebar);
   const sidebarPanelRef = useRef<ImperativePanelHandle>(null);
   const selectedWorktreeId = useUiStore((s) => s.selectedWorktreeId);
+  const toggleProblemsTab = useUiStore((s) => s.toggleProblemsTab);
   // Cmd+P "Go to file" picker. Open state lives here so the
   // shortcut works regardless of which pane has focus.
   const [fileFinderOpen, setFileFinderOpen] = useState(false);
@@ -95,11 +96,18 @@ export function Workspace() {
           if (!selectedWorktreeId) return;
           setFileFinderOpen((v) => !v);
         }
+      } else if (e.shiftKey && (e.key === "m" || e.key === "M")) {
+        // Cmd+Shift+M — flip the bottom pane to/from Problems
+        // (matches VS Code's shortcut). If the pane is collapsed
+        // the user still needs to drag it open; auto-expanding it
+        // is a follow-up.
+        e.preventDefault();
+        toggleProblemsTab();
       }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [toggleFocusMode, toggleSidebar, selectedWorktreeId]);
+  }, [toggleFocusMode, toggleSidebar, selectedWorktreeId, toggleProblemsTab]);
 
   if (!workspace) return null;
 
@@ -183,7 +191,7 @@ export function Workspace() {
               </Panel>
               <PanelResizeHandle className="h-px bg-neutral-800 hover:bg-neutral-700" />
               <Panel defaultSize={40}>
-                <TerminalPane />
+                <BottomPane />
               </Panel>
             </PanelGroup>
           </Panel>
@@ -225,3 +233,4 @@ function SystemFileViewerMount() {
   if (!kind) return null;
   return <SystemFileViewer open={true} onClose={close} kind={kind} />;
 }
+

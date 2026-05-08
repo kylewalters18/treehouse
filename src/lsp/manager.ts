@@ -245,6 +245,17 @@ export async function disposeSessionsForWorktree(
     if (s.worktreeId === worktreeId) toDispose.push(s);
   }
   for (const s of toDispose) {
+    // Clear markers under THIS session's owner before tearing it
+    // down. Marker owners are keyed by serverId, so the next
+    // session's markers land under a different owner — without
+    // this proactive clear, Monaco renders both, doubling every
+    // diagnostic across a restart.
+    for (const monacoUriString of s.monacoToLspUri.keys()) {
+      const model = MonacoEditor.getModel(Uri.parse(monacoUriString));
+      if (model) {
+        MonacoEditor.setModelMarkers(model, markerOwner(s), []);
+      }
+    }
     sessions.delete(s.key);
     try {
       s.connection.dispose();
@@ -276,6 +287,43 @@ function findSessionForModelUri(
     const lspUri = s.monacoToLspUri.get(monacoUri);
     if (lspUri) {
       return { session: s, lspUri, monacoToLsp: s.monacoToLspUri };
+    }
+  }
+  return null;
+}
+
+/// Look up which worktree owns the model behind `monacoUri`, by
+/// scanning every active session for a match in its
+/// `monacoToLspUri` table. Used by the Problems panel to navigate
+/// from a marker (which only knows its model resource) back to a
+/// concrete `(worktreeId, lspUri)` pair we can reveal. Returns
+/// `null` when no session has the URI on file (e.g. the user has a
+/// stray model from a different language whose LSP isn't enabled).
+export function findOwnerForMonacoUri(
+  monacoUri: string,
+): { worktreeId: WorktreeId; lspUri: string } | null {
+  for (const s of sessions.values()) {
+    const lspUri = s.monacoToLspUri.get(monacoUri);
+    if (lspUri) {
+      return { worktreeId: s.worktreeId, lspUri };
+    }
+  }
+  return null;
+}
+
+/// Reverse direction: given a `(worktreeId, lspUri)` pair, find the
+/// Monaco URI string the matching model was registered under.
+/// Used by the Problems panel to scope its view to just the
+/// active file's markers without iterating every marker through
+/// `findOwnerForMonacoUri`.
+export function findMonacoUriForLspUri(
+  worktreeId: WorktreeId,
+  lspUri: string,
+): string | null {
+  for (const s of sessions.values()) {
+    if (s.worktreeId !== worktreeId) continue;
+    for (const [monacoUri, registeredLspUri] of s.monacoToLspUri) {
+      if (registeredLspUri === lspUri) return monacoUri;
     }
   }
   return null;

@@ -30,6 +30,11 @@ type UiState = {
   /// showing, if any. Set by command-palette entries; consumed by
   /// the modal mount in `Workspace`.
   systemFileViewer: AppFileKind | null;
+  /// Which tab the bottom pane (terminal / problems) is showing.
+  /// VS Code-style — both views share the same panel space; the
+  /// terminal stays mounted (with its sessions alive) when the
+  /// user flips to Problems and back.
+  bottomPaneTab: "terminal" | "problems";
   selectWorktree: (id: WorktreeId | null) => void;
   toggleFocusMode: () => void;
   setFocusMode: (on: boolean) => void;
@@ -48,6 +53,8 @@ type UiState = {
   ) => void;
   openSystemFileViewer: (kind: AppFileKind) => void;
   closeSystemFileViewer: () => void;
+  setBottomPaneTab: (tab: "terminal" | "problems") => void;
+  toggleProblemsTab: () => void;
   reset: () => void;
 };
 
@@ -60,6 +67,7 @@ export const useUiStore = create<UiState>((set) => ({
   agentLabelsBySessionId: {},
   agentTabOrderByWorktree: {},
   systemFileViewer: null,
+  bottomPaneTab: "terminal",
   selectWorktree(id) {
     set({ selectedWorktreeId: id });
   },
@@ -115,6 +123,14 @@ export const useUiStore = create<UiState>((set) => ({
   closeSystemFileViewer() {
     set({ systemFileViewer: null });
   },
+  setBottomPaneTab(tab) {
+    set({ bottomPaneTab: tab });
+  },
+  toggleProblemsTab() {
+    set((s) => ({
+      bottomPaneTab: s.bottomPaneTab === "problems" ? "terminal" : "problems",
+    }));
+  },
   reset() {
     set({
       selectedWorktreeId: null,
@@ -125,6 +141,7 @@ export const useUiStore = create<UiState>((set) => ({
       agentLabelsBySessionId: {},
       agentTabOrderByWorktree: {},
       systemFileViewer: null,
+      bottomPaneTab: "terminal",
     });
   },
 }));
