@@ -40,7 +40,7 @@ function DiffView({ worktreeId }: { worktreeId: WorktreeId }) {
   const diff = useDiffsStore((s) => s.byWorktree[worktreeId]);
   const error = useDiffsStore((s) => s.error[worktreeId]);
   const selectedFile = useDiffsStore((s) => s.selectedFile[worktreeId] ?? null);
-  const view = useDiffsStore((s) => s.view[worktreeId] ?? "diff");
+  const view = useDiffsStore((s) => s.view[worktreeId] ?? "file");
   const mode = useDiffsStore((s) => s.mode[worktreeId] ?? "branch");
   const fetchDiff = useDiffsStore((s) => s.fetch);
   const setDiff = useDiffsStore((s) => s.set);
@@ -85,16 +85,29 @@ function DiffView({ worktreeId }: { worktreeId: WorktreeId }) {
     return diff.files.find((f) => f.path === selectedFile) ?? null;
   }, [diff, selectedFile]);
 
-  // If the user picks a file from the tree that isn't in the diff, force
-  // a non-diff view since there's no diff to show. "file" and "preview"
-  // are both valid non-diff views — only force when the current view is
-  // actually "diff", otherwise a freshly-selected Preview tab gets
-  // clobbered back to File on the next render.
+  // Reconcile the active tab with what makes sense for the selected
+  // file. Two directions:
+  //
+  // - File view + a binary or deleted file → fall through to Diff,
+  //   since EditorPane would either render a "binary file" placeholder
+  //   or fail to read a deleted path. This keeps File as the default
+  //   landing tab without leaving the user staring at a useless pane.
+  // - Diff view + a file that isn't in the diff (e.g. picked from the
+  //   tree, not from the changed-files list) → fall back to File,
+  //   since there's no diff to show. Preview is also a valid non-diff
+  //   view; only force when the current tab is actually Diff so a
+  //   freshly-selected Preview doesn't get clobbered.
   useEffect(() => {
     if (!selectedFile) return;
     const inDiff = diff?.files.some((f) => f.path === selectedFile) ?? false;
-    if (!inDiff && view === "diff") setView(worktreeId, "file");
-  }, [selectedFile, diff, view, worktreeId, setView]);
+    const fileTabUnusable =
+      (selected?.binary ?? false) || selected?.status.kind === "deleted";
+    if (view === "file" && fileTabUnusable && inDiff) {
+      setView(worktreeId, "diff");
+    } else if (view === "diff" && !inDiff) {
+      setView(worktreeId, "file");
+    }
+  }, [selectedFile, diff, selected, view, worktreeId, setView]);
 
   if (error) {
     return (
@@ -232,13 +245,6 @@ function DiffView({ worktreeId }: { worktreeId: WorktreeId }) {
         <div className="flex shrink-0 items-center gap-1 border-b border-neutral-800 bg-neutral-950 px-2 py-1 text-[11px]">
           <NavButtons worktreeId={worktreeId} />
           <TabButton
-            active={view === "diff"}
-            onClick={() => setView(worktreeId, "diff")}
-            disabled={!selected}
-          >
-            Diff
-          </TabButton>
-          <TabButton
             active={view === "file"}
             onClick={() => setView(worktreeId, "file")}
             disabled={
@@ -250,12 +256,20 @@ function DiffView({ worktreeId }: { worktreeId: WorktreeId }) {
             File
           </TabButton>
           <TabButton
-            active={view === "preview"}
-            onClick={() => setView(worktreeId, "preview")}
-            disabled={!selectedFile || !isMarkdownPath(selectedFile)}
+            active={view === "diff"}
+            onClick={() => setView(worktreeId, "diff")}
+            disabled={!selected}
           >
-            Preview
+            Diff
           </TabButton>
+          {selectedFile && isMarkdownPath(selectedFile) && (
+            <TabButton
+              active={view === "preview"}
+              onClick={() => setView(worktreeId, "preview")}
+            >
+              Preview
+            </TabButton>
+          )}
           {selectedFile && (
             <span className="ml-2 min-w-0 flex-1 truncate font-mono text-[11px] text-neutral-500">
               {selectedFile}
