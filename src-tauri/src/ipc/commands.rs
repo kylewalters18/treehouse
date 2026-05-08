@@ -585,12 +585,18 @@ pub async fn lsp_ensure(
         .get(&worktree_id)
         .ok_or_else(|| AppError::Unknown(format!("unknown worktree: {worktree_id}")))?
         .clone();
+    let ws = state
+        .workspaces
+        .get(&wt.workspace_id)
+        .ok_or_else(|| AppError::Unknown(format!("unknown workspace: {}", wt.workspace_id)))?
+        .clone();
 
-    // Resolution layers the per-worktree override (if any) on top of the
-    // global LspConfig, expands `${WORKTREE_PATH}`, and defaults
-    // `path_mapping.host_root` to the worktree path. When no override
-    // exists, this is identical to loading the global config.
-    let config = lsp::overrides::resolve(&app, &wt.path, &language_id)
+    // Resolution layers the workspace-scoped override (if any) on top
+    // of the global LspConfig, expands `${WORKTREE_PATH}` /
+    // `${WORKTREE_NAME}`, and defaults `path_mapping.host_root` to
+    // the active worktree path. With no override, identical to
+    // loading the global config.
+    let config = lsp::overrides::resolve(&app, &ws.root, &wt.path, &language_id)
         .await?
         .ok_or_else(|| {
             AppError::Unknown(format!("lsp language not enabled: {language_id}"))

@@ -7,11 +7,12 @@ import type { PathMapping } from "./PathMapping";
  */
 export type LspOverride = { 
 /**
- * Absolute host path of the worktree this override applies to.
- * Canonicalized at compare time so `~`/symlink/trailing-slash
- * variants still match.
+ * Absolute host path of the workspace this override applies to
+ * (the main clone — not a worktree). Applies to every worktree
+ * of that workspace. Canonicalized at compare time so symlink /
+ * trailing-slash variants still match.
  */
-worktree: string, 
+workspace: string, 
 /**
  * Matches `LspConfig::id` (e.g. `"cpp"`).
  */

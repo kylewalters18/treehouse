@@ -1,23 +1,27 @@
-//! Per-worktree LSP overrides. Layered on top of the global
+//! Per-workspace LSP overrides. Layered on top of the global
 //! `languages.toml` at session-spawn time, so e.g. clangd can run
-//! inside a devcontainer for one worktree without changing how every
-//! other worktree's LSPs work.
+//! inside a devcontainer for one repo without changing how every
+//! other workspace's LSPs work. Applies to every worktree of the
+//! matching workspace; templates expand per-worktree at resolve
+//! time so a single block can cover an unbounded number of
+//! worktrees.
 //!
 //! Persisted as TOML at `<app_config>/worktree_lsp.toml`. Schema:
 //!
 //! ```toml
 //! [[override]]
-//! worktree = "/Users/kyle/Code/repo__worktrees/feature-x"
+//! workspace = "/Users/kyle/Code/repo"
 //! language = "cpp"
-//! command = "devcontainer"
-//! args = ["exec", "--workspace-folder", "${WORKTREE_PATH}", "clangd"]
-//! [override.path_mapping]
-//! remote_root = "/workspaces/repo"
+//! command = "docker"
+//! args = ["exec", "-i", "treehouse-clangd-${WORKTREE_NAME}", "clangd"]
+//! [override.pathMapping]
+//! remoteRoot = "/workspaces/repo"
 //! ```
 //!
-//! Any field that's `None` falls through to the global `LspConfig` for
-//! the same `language`. `${WORKTREE_PATH}` is expanded to the active
-//! worktree's absolute host path at resolve time.
+//! Any field that's `None` falls through to the global `LspConfig`
+//! for the same `language`. `${WORKTREE_PATH}` and `${WORKTREE_NAME}`
+//! are expanded to the active worktree's absolute host path /
+//! basename at resolve time.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -35,15 +39,16 @@ const FILE: &str = "worktree_lsp.toml";
 /// Header comment seeded into a fresh `worktree_lsp.toml` so the user
 /// has a working example to start from.
 const SEED_HEADER: &str = "\
-# treehouse — per-worktree LSP overrides
+# treehouse — per-workspace LSP overrides
 #
 # Layered on top of `languages.toml` at session-spawn time. Any field
 # you set here wins; anything you omit inherits from the global config.
 #
-# Each entry needs `worktree` (the absolute host path of the worktree)
-# and `language` (matches the `id` in languages.toml). `${WORKTREE_PATH}`
-# in command/args/env values is expanded to the worktree's absolute
-# host path at runtime.
+# Each entry needs `workspace` (the absolute host path of the repo —
+# the main clone, not a worktree path) and `language` (matches the
+# `id` in languages.toml). One entry covers every worktree of that
+# workspace; templates `${WORKTREE_PATH}` and `${WORKTREE_NAME}` in
+# command/args/env values are expanded per-worktree at runtime.
 #
 # Field names use camelCase to match `languages.toml`:
 # `pathMapping`, `remoteRoot`, `hostRoot`. snake_case (`path_mapping`,
@@ -51,15 +56,17 @@ const SEED_HEADER: &str = "\
 #
 # `pathMapping` installs a JSON-RPC middleware that swaps file:// URIs
 # between host and the LSP's view of the filesystem — useful for
-# containerized servers. `hostRoot` defaults to the worktree path.
+# containerized servers. `hostRoot` defaults to the active worktree's
+# path; useful when the container's filesystem mount is keyed off
+# something else.
 #
-# Example: clangd inside a devcontainer.
+# Example: clangd inside a docker container per worktree.
 #
 # [[override]]
-# worktree = \"/absolute/path/to/this/worktree\"
+# workspace = \"/absolute/path/to/repo\"
 # language = \"cpp\"
-# command = \"devcontainer\"
-# args = [\"exec\", \"--workspace-folder\", \"${WORKTREE_PATH}\", \"clangd\"]
+# command = \"docker\"
+# args = [\"exec\", \"-i\", \"treehouse-clangd-${WORKTREE_NAME}\", \"clangd\"]
 # [override.pathMapping]
 # remoteRoot = \"/workspaces/repo\"
 ";
@@ -70,10 +77,11 @@ const SEED_HEADER: &str = "\
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
 pub struct LspOverride {
-    /// Absolute host path of the worktree this override applies to.
-    /// Canonicalized at compare time so `~`/symlink/trailing-slash
-    /// variants still match.
-    pub worktree: String,
+    /// Absolute host path of the workspace this override applies to
+    /// (the main clone — not a worktree). Applies to every worktree
+    /// of that workspace. Canonicalized at compare time so symlink /
+    /// trailing-slash variants still match.
+    pub workspace: String,
     /// Matches `LspConfig::id` (e.g. `"cpp"`).
     pub language: String,
 
@@ -121,19 +129,19 @@ pub async fn list(app: &AppHandle) -> AppResult<Vec<LspOverride>> {
     }
 }
 
-/// Find an override matching `(worktree_path, language_id)`. Both sides
-/// of the worktree comparison are canonicalized so symlink-resolved /
-/// trailing-slashed inputs collide cleanly.
+/// Find an override matching `(workspace_path, language_id)`. Both
+/// sides of the workspace comparison are canonicalized so symlink-
+/// resolved / trailing-slashed inputs collide cleanly.
 pub async fn find_for(
     app: &AppHandle,
-    worktree_path: &Path,
+    workspace_path: &Path,
     language_id: &str,
 ) -> AppResult<Option<LspOverride>> {
     let overrides = list(app).await?;
-    let target = canonicalize(worktree_path);
-    Ok(overrides
-        .into_iter()
-        .find(|o| o.language == language_id && canonicalize(Path::new(&o.worktree)) == target))
+    let target = canonicalize(workspace_path);
+    Ok(overrides.into_iter().find(|o| {
+        o.language == language_id && canonicalize(Path::new(&o.workspace)) == target
+    }))
 }
 
 /// Best-effort canonicalization. If the path doesn't exist (rare for
@@ -148,18 +156,20 @@ fn canonicalize(p: &Path) -> PathBuf {
     })
 }
 
-/// Resolve the effective `LspConfig` for a `(worktree, language)` pair:
-/// load the global config, layer the matching override on top, expand
-/// `${WORKTREE_PATH}` in command/args/env/path_mapping, and default
-/// `path_mapping.host_root` to the worktree path when unset.
+/// Resolve the effective `LspConfig` for a `(workspace, worktree,
+/// language)` triple: load the global config, layer the matching
+/// workspace-scoped override on top, expand `${WORKTREE_PATH}` and
+/// `${WORKTREE_NAME}` in command/args/env/path_mapping, and default
+/// `path_mapping.host_root` to the active worktree path when unset.
 ///
-/// Returns `Ok(None)` when the language has no enabled global entry —
-/// preserves existing "no LSP if not enabled" behavior. Overrides do
-/// NOT enable a globally-disabled language; that's a deliberate
-/// constraint, since otherwise a stale per-worktree config could keep
-/// resurrecting a server the user explicitly turned off.
+/// Returns `Ok(None)` when the language has no enabled global entry
+/// — preserves existing "no LSP if not enabled" behavior. Overrides
+/// do NOT enable a globally-disabled language; that's a deliberate
+/// constraint, since otherwise a stale config could keep resurrecting
+/// a server the user explicitly turned off.
 pub async fn resolve(
     app: &AppHandle,
+    workspace_root: &Path,
     worktree_path: &Path,
     language_id: &str,
 ) -> AppResult<Option<LspConfig>> {
@@ -172,7 +182,7 @@ pub async fn resolve(
         None => return Ok(None),
     };
 
-    if let Some(o) = find_for(app, worktree_path, language_id).await? {
+    if let Some(o) = find_for(app, workspace_root, language_id).await? {
         if let Some(cmd) = o.command {
             config.command = cmd;
         }
@@ -190,31 +200,31 @@ pub async fn resolve(
     }
 
     let worktree_path_str = worktree_path.to_string_lossy().to_string();
-    config.command = substitute(&config.command, &worktree_path_str);
-    config.args = config
-        .args
-        .into_iter()
-        .map(|a| substitute(&a, &worktree_path_str))
-        .collect();
+    let worktree_name = worktree_path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let sub = |s: &str| -> String {
+        s.replace("${WORKTREE_PATH}", &worktree_path_str)
+            .replace("${WORKTREE_NAME}", &worktree_name)
+    };
+    config.command = sub(&config.command);
+    config.args = config.args.into_iter().map(|a| sub(&a)).collect();
     config.env = config
         .env
         .into_iter()
-        .map(|(k, v)| (k, substitute(&v, &worktree_path_str)))
+        .map(|(k, v)| (k, sub(&v)))
         .collect();
 
     if let Some(pm) = config.path_mapping.as_mut() {
-        pm.remote_root = substitute(&pm.remote_root, &worktree_path_str);
+        pm.remote_root = sub(&pm.remote_root);
         match pm.host_root.as_mut() {
-            Some(h) => *h = substitute(h, &worktree_path_str),
+            Some(h) => *h = sub(h),
             None => pm.host_root = Some(worktree_path_str.clone()),
         }
     }
 
     Ok(Some(config))
-}
-
-fn substitute(s: &str, worktree_path: &str) -> String {
-    s.replace("${WORKTREE_PATH}", worktree_path)
 }
 
 /// Make sure the file exists, seeding it with a header comment + worked
