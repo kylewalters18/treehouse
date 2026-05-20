@@ -616,6 +616,12 @@ export function createLeafState(
         }
       });
       state.resizeObserver = new ResizeObserver(() => {
+        // While the host is detached from the DOM (worktree switch
+        // parks it in the pool), its content box collapses to 0 and
+        // fit() would resize the PTY to a degenerate size, leaving
+        // stale wrapping that surfaces on reattach. Bail until the
+        // host is back in the document.
+        if (!host.isConnected) return;
         fitAndPin(fit, term);
       });
       state.resizeObserver.observe(host);

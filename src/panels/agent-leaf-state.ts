@@ -240,6 +240,13 @@ export function createAgentLeafState(
         }
       });
       state.resizeObserver = new ResizeObserver(() => {
+        // While the host is detached from the DOM (worktree switch
+        // parks it in the pool), its content box collapses to 0 and
+        // fit() would resize the PTY to a degenerate size. The
+        // agent then writes content wrapped at that wrong width, and
+        // when the host reattaches we see "stale width / duplicated
+        // text." Bail until the host is back in the document.
+        if (!host.isConnected) return;
         fitAndPin(fit, term);
       });
       state.resizeObserver.observe(host);
