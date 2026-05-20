@@ -8,6 +8,12 @@
 import "@testing-library/jest-dom/vitest";
 import { vi } from "vitest";
 
+// jsdom doesn't implement scrollIntoView; FileTree calls it when the
+// selected row first renders. Stub once for all tests.
+if (!Element.prototype.scrollIntoView) {
+  Element.prototype.scrollIntoView = function () {};
+}
+
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async () => {
     throw new Error("invoke called without a test-level mock");

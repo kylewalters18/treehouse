@@ -60,9 +60,18 @@ export function FileTree({
     [worktreeId, showIgnored],
   );
 
-  // Initial load of root.
+  // Initial load of root. Update `expandedRef` synchronously so the
+  // refresh effect — which runs right after this in the same commit
+  // because `loadDir` (its dep) just changed with worktreeId — doesn't
+  // iterate the previous worktree's expanded paths against the new
+  // worktreeId. Without this, switching from a worktree that had
+  // `crates/foo/src` expanded into one that doesn't fires a listTree
+  // for that path against the new worktree, producing "canonicalize …:
+  // No such file or directory" log noise.
   useEffect(() => {
-    setExpanded(new Set([""]));
+    const fresh = new Set([""]);
+    expandedRef.current = fresh;
+    setExpanded(fresh);
     setChildren(new Map());
     setError(null);
     void loadDir("");
