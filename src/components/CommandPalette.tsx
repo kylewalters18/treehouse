@@ -55,20 +55,21 @@ function buildCommands(deps: {
   // Workspace-agnostic — always available so the user can read /
   // edit these from anywhere, including the main-clone view.
   cmds.push({
-    id: "settings.view",
+    id: "settings.edit",
     category: "Settings",
-    title: "View",
+    title: "Edit",
     description:
-      "Open treehouse.toml (LSP overrides, custom languages, worktree hooks, agent status patterns) in an in-app read-only viewer",
+      "Open treehouse.toml (LSP overrides, custom languages, worktree hooks, agent status patterns) in an in-app editor — Cmd+S saves",
     run: () => {
       useUiStore.getState().openSystemFileViewer("treehouseConfig");
     },
   });
   cmds.push({
-    id: "settings.edit",
+    id: "settings.openExternally",
     category: "Settings",
-    title: "Edit",
-    description: "Open treehouse.toml in your default editor",
+    title: "Open externally",
+    description:
+      "Open treehouse.toml in your OS default .toml handler (VS Code, Sublime, etc.) instead of the in-app editor",
     run: async () => {
       await treehouseConfigOpenFile();
     },

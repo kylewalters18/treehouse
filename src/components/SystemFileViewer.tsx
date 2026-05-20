@@ -11,6 +11,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Editor, type OnMount } from "@monaco-editor/react";
+import * as monaco from "monaco-editor";
 import type { editor as MonacoEditor } from "monaco-editor";
 import {
   type AppFileKind,
@@ -18,10 +19,13 @@ import {
   openLogsFolder,
   readAppTextFile,
   treehouseConfigOpenFile,
+  writeAppTextFile,
 } from "@/ipc/client";
 import { THEME_NAME } from "@/panels/monaco-theme";
 import { defineTreehouseTheme } from "@/panels/monaco-theme";
 import { cn } from "@/lib/cn";
+import { toastError } from "@/stores/toasts";
+import { asMessage } from "@/lib/errors";
 
 type Props = {
   open: boolean;
@@ -40,6 +44,13 @@ export function SystemFileViewer({ open, onClose, kind }: Props) {
   // currently rendered. `null` selectedLog means "show the latest".
   const [logFiles, setLogFiles] = useState<string[]>([]);
   const [selectedLog, setSelectedLog] = useState<string | null>(null);
+  // Only the config kind is editable; logs stay read-only (writing
+  // would race tracing-appender's next emit). `lastSavedContent`
+  // tracks what's currently on disk so the Save button can grey out
+  // when there's nothing to save.
+  const editable = kind === "treehouseConfig";
+  const lastSavedRef = useRef("");
+  const [dirty, setDirty] = useState(false);
 
   const language = useMemo<string>(() => {
     if (kind === "log") return "log";
@@ -66,6 +77,8 @@ export function SystemFileViewer({ open, onClose, kind }: Props) {
         );
         setPath(result.path);
         setContent(result.content);
+        lastSavedRef.current = result.content;
+        setDirty(false);
       } catch (e: unknown) {
         const msg =
           e && typeof e === "object" && "message" in e
@@ -102,18 +115,72 @@ export function SystemFileViewer({ open, onClose, kind }: Props) {
 
   // For logs, scroll to the bottom on each load so users see the
   // most recent lines first. Other file kinds open at the top.
-  const editorRef = useRef<MonacoEditor.IStandaloneCodeEditor | null>(null);
-  const onMount: OnMount = (editor, monaco) => {
-    defineTreehouseTheme(monaco);
-    editorRef.current = editor;
+  const [editor, setEditor] =
+    useState<MonacoEditor.IStandaloneCodeEditor | null>(null);
+  const onMount: OnMount = (e, m) => {
+    defineTreehouseTheme(m);
+    setEditor(e);
   };
   useEffect(() => {
-    if (!editorRef.current || kind !== "log") return;
-    const model = editorRef.current.getModel();
+    if (!editor || kind !== "log") return;
+    const model = editor.getModel();
     if (!model) return;
     const last = model.getLineCount();
-    editorRef.current.revealLine(last);
-  }, [content, kind]);
+    editor.revealLine(last);
+  }, [editor, content, kind]);
+
+  /// Save the current buffer to disk via write_app_text_file. The
+  /// conflict-policy plumbing we built for worktree files is overkill
+  /// here — the viewer is a short-lived modal that the user opens for
+  /// a single edit, so we just write whatever's in the buffer. On
+  /// success, refresh the lastSaved snapshot so the dirty dot clears.
+  const saveRef = useRef<() => Promise<void>>(async () => {});
+  saveRef.current = async () => {
+    if (!editable || !editor) return;
+    const value = editor.getModel()?.getValue() ?? "";
+    try {
+      await writeAppTextFile(kind, value);
+      lastSavedRef.current = value;
+      setContent(value);
+      setDirty(false);
+    } catch (e: unknown) {
+      toastError("Save failed", asMessage(e));
+    }
+  };
+
+  // Cmd+S → save. Registered via Monaco's command system once per
+  // editor mount; the ref indirection above keeps the active save
+  // closure live across renders.
+  useEffect(() => {
+    if (!editable || !editor) return;
+    const disposable = editor.addCommand(
+      monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS,
+      () => {
+        void saveRef.current();
+      },
+    );
+    return () => {
+      if (
+        disposable &&
+        typeof disposable === "object" &&
+        "dispose" in disposable
+      ) {
+        (disposable as { dispose: () => void }).dispose();
+      }
+    };
+  }, [editable, editor]);
+
+  // Mirror Monaco model edits into the React `dirty` state so the
+  // header button reflects unsaved changes.
+  useEffect(() => {
+    if (!editable || !editor) return;
+    const model = editor.getModel();
+    if (!model) return;
+    const sub = model.onDidChangeContent(() => {
+      setDirty(model.getValue() !== lastSavedRef.current);
+    });
+    return () => sub.dispose();
+  }, [editable, editor, content]);
 
   if (!open) return null;
   return (
@@ -151,6 +218,15 @@ export function SystemFileViewer({ open, onClose, kind }: Props) {
           <ToolbarButton onClick={() => void refresh()} title="Refresh (⌘R)">
             ↻
           </ToolbarButton>
+          {editable && (
+            <ToolbarButton
+              onClick={() => void saveRef.current()}
+              title="Save (⌘S)"
+              disabled={!dirty}
+            >
+              {dirty ? "● Save" : "Saved"}
+            </ToolbarButton>
+          )}
           <ToolbarButton
             onClick={() => {
               if (kind === "log") void openLogsFolder();
@@ -159,10 +235,10 @@ export function SystemFileViewer({ open, onClose, kind }: Props) {
             title={
               kind === "log"
                 ? "Reveal log folder in Finder"
-                : "Open in default editor"
+                : "Open in your OS default .toml handler (VS Code, Sublime, …)"
             }
           >
-            {kind === "log" ? "Finder" : "Edit"}
+            {kind === "log" ? "Finder" : "External"}
           </ToolbarButton>
           <ToolbarButton onClick={onClose} title="Close (Esc)">
             ✕
@@ -186,7 +262,7 @@ export function SystemFileViewer({ open, onClose, kind }: Props) {
               theme={THEME_NAME}
               onMount={onMount}
               options={{
-                readOnly: true,
+                readOnly: !editable,
                 minimap: { enabled: false },
                 fontFamily:
                   'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace',
@@ -217,18 +293,22 @@ function ToolbarButton({
   onClick,
   title,
   children,
+  disabled,
 }: {
   onClick: () => void;
   title: string;
   children: React.ReactNode;
+  disabled?: boolean;
 }) {
   return (
     <button
       onClick={onClick}
       title={title}
+      disabled={disabled}
       className={cn(
         "rounded px-2 py-0.5 font-mono text-[11px] text-neutral-300",
         "hover:bg-neutral-800",
+        disabled && "cursor-not-allowed text-neutral-600 hover:bg-transparent",
       )}
     >
       {children}

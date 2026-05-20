@@ -434,6 +434,17 @@ export function readAppTextFile(
   return invoke<AppFileContent>("read_app_text_file", { kind, file });
 }
 
+/// Save an app-managed system file from the in-app viewer. Only the
+/// config kind is writable on the Rust side — logs are owned by
+/// tracing-appender and writing them in-app would race with the next
+/// emit. Throws for `"log"`.
+export function writeAppTextFile(
+  kind: AppFileKind,
+  content: string,
+): Promise<void> {
+  return invoke<void>("write_app_text_file", { kind, content });
+}
+
 export function listLogFiles(): Promise<string[]> {
   return invoke<string[]>("list_log_files");
 }

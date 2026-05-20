@@ -135,6 +135,7 @@ pub fn run() {
             ipc::commands::treehouse_config_open_file,
             ipc::commands::open_logs_folder,
             ipc::commands::read_app_text_file,
+            ipc::commands::write_app_text_file,
             ipc::commands::list_log_files,
             ipc::commands::worktree_setup_steps,
             ipc::commands::worktree_mark_setup_ran,

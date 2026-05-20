@@ -888,6 +888,38 @@ pub async fn read_app_text_file(
     })
 }
 
+/// Write an app-managed system file from the in-app Monaco viewer.
+/// Only `kind == "treehouseConfig"` is writable — logs are append-only
+/// from `tracing-appender` and editing them in-app would race with the
+/// next emit. Creates the parent directory if missing so a first-time
+/// save after a fresh install doesn't fail on a non-existent
+/// `Application Support/com.treehouse.app/`.
+#[tauri::command]
+pub async fn write_app_text_file(
+    kind: String,
+    content: String,
+    app: AppHandle,
+) -> AppResult<()> {
+    let path = match kind.as_str() {
+        "treehouseConfig" => crate::user_config::config_path(&app)?,
+        "log" => {
+            return Err(AppError::Unknown(
+                "log files are read-only (tracing-appender owns the writes)".into(),
+            ))
+        }
+        other => return Err(AppError::Unknown(format!("unknown app file kind: {other}"))),
+    };
+    if let Some(dir) = path.parent() {
+        tokio::fs::create_dir_all(dir).await.map_err(|e| {
+            AppError::Io(format!("mkdir -p {}: {e}", dir.display()))
+        })?;
+    }
+    tokio::fs::write(&path, content.as_bytes())
+        .await
+        .map_err(|e| AppError::Io(format!("write {}: {e}", path.display())))?;
+    Ok(())
+}
+
 /// List the daily-rotated log files in `~/Library/Logs/com.treehouse.app/`,
 /// newest first. Empty list when the directory hasn't been created
 /// yet (no logs ever written).
