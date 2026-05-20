@@ -111,11 +111,18 @@ export function FileTree({
   }, [selectedPath, children, loadDir]);
 
   // Once the selected row exists in the DOM, scroll it into view (centered)
-  // if it isn't already fully visible. Re-runs whenever `children` updates so
-  // it picks up the row after its parent directories finish loading.
+  // if it isn't already fully visible. The effect re-runs on `children`
+  // updates so it can catch the row after its ancestor dirs finish loading,
+  // but `lastScrolledRef` ensures we only snap once per selection — expanding
+  // an unrelated directory later mustn't yank the user back.
   const treeRef = useRef<HTMLUListElement>(null);
+  const lastScrolledRef = useRef<string | null>(null);
+  useEffect(() => {
+    lastScrolledRef.current = null;
+  }, [worktreeId]);
   useEffect(() => {
     if (!selectedPath) return;
+    if (lastScrolledRef.current === selectedPath) return;
     const root = treeRef.current;
     if (!root) return;
     const el = root.querySelector<HTMLElement>(
@@ -125,12 +132,14 @@ export function FileTree({
     const scroller = findScrollableAncestor(el);
     if (!scroller) {
       el.scrollIntoView({ block: "center" });
+      lastScrolledRef.current = selectedPath;
       return;
     }
     const elRect = el.getBoundingClientRect();
     const sRect = scroller.getBoundingClientRect();
     const fullyVisible = elRect.top >= sRect.top && elRect.bottom <= sRect.bottom;
     if (!fullyVisible) el.scrollIntoView({ block: "center" });
+    lastScrolledRef.current = selectedPath;
   }, [selectedPath, children]);
 
   function toggle(dir: string) {
