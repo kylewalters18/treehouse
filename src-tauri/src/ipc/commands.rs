@@ -326,7 +326,6 @@ pub async fn launch_agent(
         &state.agents,
         worktree_id,
         wt.path,
-        wt.is_main_clone,
         backend,
         argv,
         cols,

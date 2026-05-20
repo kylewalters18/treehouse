@@ -231,7 +231,7 @@ export function WorktreeSidebar() {
         </button>
         {mainClone && (
           <RailButton
-            tooltip={`${mainClone.branch} — main clone`}
+            tooltip={mainClone.branch}
             onClick={() => selectWorktree(mainClone.id)}
             selected={selectedId === mainClone.id}
             variant="main"
@@ -359,7 +359,7 @@ export function WorktreeSidebar() {
               "flex w-full items-center justify-between gap-2 border-b border-neutral-900 px-3 py-2 text-left hover:bg-neutral-900/50",
               selectedId === mainClone.id && "bg-neutral-900",
             )}
-            title={`${mainClone.path} — main clone (merges land here; agents don't run here)`}
+            title={mainClone.path}
           >
             <div className="flex min-w-0 flex-1 items-start gap-2">
               <span className="mt-0.5 shrink-0 text-[11px] text-blue-400">◆</span>
@@ -367,8 +367,8 @@ export function WorktreeSidebar() {
                 <div className="truncate font-mono text-xs text-neutral-100">
                   {mainClone.branch}
                 </div>
-                <div className="truncate text-[11px] uppercase tracking-wider text-neutral-500">
-                  main clone
+                <div className="truncate font-mono text-[11px] text-neutral-500">
+                  {shortenPath(mainClone.path)}
                 </div>
               </div>
             </div>

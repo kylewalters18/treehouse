@@ -276,19 +276,12 @@ pub fn launch(
     registry: &AgentRegistry,
     worktree_id: WorktreeId,
     cwd: PathBuf,
-    is_main_clone: bool,
     backend: AgentBackendKind,
     argv_override: Option<Vec<String>>,
     cols: u16,
     rows: u16,
     channel: Channel<AgentEvent>,
 ) -> AppResult<AgentSession> {
-    if is_main_clone {
-        return Err(AppError::Unknown(
-            "agents run in worktrees, not the main clone".into(),
-        ));
-    }
-
     // Install Claude Code hooks in the worktree *before* spawning the
     // child, so the config is on disk when Claude reads settings.
     if matches!(backend, AgentBackendKind::ClaudeCode) {
