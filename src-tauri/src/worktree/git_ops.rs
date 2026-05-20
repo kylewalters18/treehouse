@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use tokio::process::Command;
 
 use crate::util::errors::{AppError, AppResult};
+use git2::Repository;
 
 async fn git<I, S>(repo_root: &Path, args: I) -> AppResult<String>
 where
@@ -135,6 +136,45 @@ pub async fn merge_base(repo_root: &Path, a: &str, b: &str) -> AppResult<String>
         Ok(stdout) => Ok(stdout.trim().to_string()),
         Err(_) => rev_parse(repo_root, b).await,
     }
+}
+
+/// In-process `merge-base` via `git2` — sync, no subprocess. Used from the
+/// `fs_watch` debouncer (which runs on the watcher thread, no async runtime),
+/// so we can re-anchor the diff against the live fork point on every flush
+/// instead of trusting a possibly stale cached `base_ref`. Falls back to `b`'s
+/// SHA on orphan branches / missing refs, matching the async version's shape.
+pub fn merge_base_sync(repo_path: &Path, a: &str, b: &str) -> AppResult<String> {
+    let repo = Repository::open(repo_path)?;
+    let oid_a = repo.revparse_single(a)?.id();
+    let oid_b = repo.revparse_single(b)?.id();
+    match repo.merge_base(oid_a, oid_b) {
+        Ok(oid) => Ok(oid.to_string()),
+        Err(_) => Ok(oid_b.to_string()),
+    }
+}
+
+/// Resolve the Branch-view diff anchor for a worktree right now.
+///
+/// Cached `base_ref` on the `Worktree` only advances on in-app sync /
+/// merge-back, so if the user rebases or merges main from a terminal the
+/// anchor drifts and unrelated main commits leak into the Changes pane.
+/// Recomputing the merge-base on every diff makes the cached value
+/// advisory — it's only used as a fallback when the live computation
+/// can't run (broken repo, missing refs).
+///
+/// Returns `fallback` when `branch == default_branch` so the main-repo
+/// worktree continues to show committed work in Branch view; otherwise
+/// returns the live merge-base of `default_branch` and `branch`.
+pub fn live_branch_anchor(
+    repo_path: &Path,
+    default_branch: &str,
+    branch: &str,
+    fallback: &str,
+) -> String {
+    if branch == default_branch {
+        return fallback.to_string();
+    }
+    merge_base_sync(repo_path, default_branch, branch).unwrap_or_else(|_| fallback.to_string())
 }
 
 /// `true` if the given git workdir has any staged or unstaged changes, tracked
@@ -814,5 +854,81 @@ mod tests {
         // Auto-abort: no residual rebase state left behind.
         assert!(!r.root.join(".git/rebase-apply").exists());
         assert!(!r.root.join(".git/rebase-merge").exists());
+    }
+
+    /// External rebase (terminal `git rebase main`, not in-app sync) advances
+    /// the branch's fork-point. The cached `base_ref` we hand in as fallback
+    /// is the *stale* one — `live_branch_anchor` must look past it to the
+    /// current merge-base, otherwise every commit main has gained since the
+    /// branch was created shows up as a branch change. This is the exact
+    /// failure mode users hit on squash-merge projects where rebases are
+    /// frequent.
+    #[tokio::test]
+    async fn live_branch_anchor_tracks_external_rebase() {
+        let r = TempRepo::new();
+        let initial_main = r.head();
+
+        // Branch `feat` off the initial commit, add two commits.
+        let _ = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&r.root)
+            .args(["checkout", "-q", "-b", "feat"])
+            .status();
+        r.commit_file("x.txt", "x\n", "X");
+        r.commit_file("y.txt", "y\n", "Y");
+
+        // Advance main with unrelated commits (simulating squash-merges).
+        let _ = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&r.root)
+            .args(["checkout", "-q", "main"])
+            .status();
+        r.commit_file("b.txt", "b\n", "B");
+        let new_main = r.commit_file("c.txt", "c\n", "C");
+
+        // Fork-point right now is still the initial commit. Worktree creation
+        // would have captured this as `base_ref`.
+        let captured_base = merge_base_sync(&r.root, "main", "feat").unwrap();
+        assert_eq!(captured_base, initial_main);
+
+        // External rebase moves feat onto main's current tip.
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&r.root)
+            .args(["checkout", "-q", "feat"])
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&r.root)
+            .args(["rebase", "-q", "main"])
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        // Cached anchor is now stale. live_branch_anchor must return the
+        // current merge-base (main's tip), not the stale fallback.
+        let anchor = live_branch_anchor(&r.root, "main", "feat", &captured_base);
+        assert_eq!(
+            anchor, new_main,
+            "expected live merge-base at main's tip, got stale fallback"
+        );
+        assert_ne!(anchor, initial_main);
+    }
+
+    /// On the main-clone worktree (branch == default_branch), the live anchor
+    /// is meaningless — `merge_base(main, main)` is just HEAD, which would
+    /// collapse Branch view to "no committed changes." Preserve the cached
+    /// fallback instead so committed work on main still surfaces.
+    #[test]
+    fn live_branch_anchor_keeps_fallback_for_default_branch() {
+        let r = TempRepo::new();
+        let pinned = r.head();
+        // Advance main; cached fallback stays at the original sha.
+        r.commit_file("z.txt", "z\n", "Z");
+
+        let anchor = live_branch_anchor(&r.root, "main", "main", &pinned);
+        assert_eq!(anchor, pinned);
     }
 }

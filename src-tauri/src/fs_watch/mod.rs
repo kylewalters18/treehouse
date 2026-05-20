@@ -115,13 +115,26 @@ pub fn start(
             // Recompute + cache + emit.
             tracing::debug!(worktree_id = %worktree_id, "fs batch: recomputing diff");
             let state = app_for_events.state::<AppState>();
-            let base_current = state
+            let wt_snapshot = state
                 .worktrees
                 .get(&worktree_id)
-                .map(|e| e.value().base_ref.clone());
-            let Some(base_current) = base_current else {
+                .map(|e| e.value().clone());
+            let Some(wt) = wt_snapshot else {
                 tracing::warn!(%worktree_id, "worktree vanished during debounce");
                 return;
+            };
+            let default_branch = state
+                .workspaces
+                .get(&wt.workspace_id)
+                .map(|e| e.value().default_branch.clone());
+            let base_current = match default_branch {
+                Some(db) => crate::worktree::git_ops::live_branch_anchor(
+                    &wt.path,
+                    &db,
+                    &wt.branch,
+                    &wt.base_ref,
+                ),
+                None => wt.base_ref.clone(),
             };
             let diff_set = match diff::compute::compute(worktree_id, &root, &base_current) {
                 Ok(d) => d,
@@ -182,8 +195,17 @@ pub fn recompute_and_emit(app: &AppHandle, worktree_id: WorktreeId) {
         else {
             return;
         };
+        let default_branch = state
+            .workspaces
+            .get(&wt.workspace_id)
+            .map(|e| e.value().default_branch.clone());
         let path = wt.path.clone();
-        let base_ref = wt.base_ref.clone();
+        let base_ref = match default_branch {
+            Some(db) => {
+                crate::worktree::git_ops::live_branch_anchor(&path, &db, &wt.branch, &wt.base_ref)
+            }
+            None => wt.base_ref.clone(),
+        };
         let res = tokio::task::spawn_blocking(move || {
             diff::compute::compute(worktree_id, &path, &base_ref)
         })

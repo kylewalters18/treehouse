@@ -561,24 +561,37 @@ pub async fn get_diff(
         .get(&worktree_id)
         .ok_or_else(|| AppError::Unknown(format!("unknown worktree: {worktree_id}")))?
         .clone();
-
-    // Branch view uses the cached diff written by `fs_watch` so a
-    // fresh tab open is a hot path. Uncommitted view always
-    // computes — the anchor (HEAD) can move between fs events
-    // (e.g. agent commits) and we don't want to serve a stale
-    // pre-commit diff.
-    if matches!(mode, DiffMode::Branch) {
-        if let Some(cached) = state.diffs.get(&worktree_id) {
-            return Ok(cached.clone());
-        }
-    }
+    let ws = state
+        .workspaces
+        .get(&wt.workspace_id)
+        .ok_or_else(|| AppError::Unknown(format!("unknown workspace: {}", wt.workspace_id)))?
+        .clone();
 
     let anchor = match mode {
-        DiffMode::Branch => wt.base_ref.clone(),
+        DiffMode::Branch => crate::worktree::git_ops::live_branch_anchor(
+            &wt.path,
+            &ws.default_branch,
+            &wt.branch,
+            &wt.base_ref,
+        ),
         DiffMode::Uncommitted => crate::worktree::git_ops::rev_parse(&wt.path, "HEAD")
             .await
             .unwrap_or_else(|_| wt.head.clone()),
     };
+
+    // Branch view uses the cached diff written by `fs_watch` so a fresh tab
+    // open is a hot path — but only when the cache was built against the same
+    // anchor we'd compute now. If the user rebased externally and `fs_watch`
+    // hasn't fired since, the cache's `base_ref` won't match `anchor` and we
+    // fall through to recompute. Uncommitted view never caches — its anchor
+    // (HEAD) can move between fs events (e.g. agent commits).
+    if matches!(mode, DiffMode::Branch) {
+        if let Some(cached) = state.diffs.get(&worktree_id) {
+            if cached.base_ref == anchor {
+                return Ok(cached.clone());
+            }
+        }
+    }
 
     let wt_path = wt.path.clone();
     let wt_id = wt.id;
@@ -956,7 +969,20 @@ fn prime_worktree_watch(app: &AppHandle, wt: &Worktree) {
     let app_clone = app.clone();
     let worktree_id = wt.id;
     let worktree_path = wt.path.clone();
-    let base_ref = wt.base_ref.clone();
+    let default_branch = app
+        .state::<AppState>()
+        .workspaces
+        .get(&wt.workspace_id)
+        .map(|e| e.value().default_branch.clone());
+    let base_ref = match default_branch {
+        Some(db) => crate::worktree::git_ops::live_branch_anchor(
+            &worktree_path,
+            &db,
+            &wt.branch,
+            &wt.base_ref,
+        ),
+        None => wt.base_ref.clone(),
+    };
 
     if let Err(e) = fs_watch::start(app.clone(), worktree_id, worktree_path.clone()) {
         tracing::warn!(?e, "fs_watch start failed");
