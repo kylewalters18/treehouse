@@ -1,9 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import Editor, { type OnMount } from "@monaco-editor/react";
+import * as monaco from "monaco-editor";
 import type { editor as MonacoEditor } from "monaco-editor";
 import { THEME_NAME } from "./monaco-theme";
-import { listAgentsForWorktree, onDiffUpdated, readFile } from "@/ipc/client";
+import {
+  listAgentsForWorktree,
+  onDiffUpdated,
+  readFile,
+  writeFile,
+} from "@/ipc/client";
+import { useEditorDirtyStore } from "@/stores/editor-dirty";
 import { pasteAndSubmit } from "@/lib/agent";
 import type {
   AgentSession,
@@ -56,13 +63,9 @@ export function EditorPane({ worktreeId, path }: Props) {
       return;
     }
     let cancelled = false;
-    // Refresh flag suppresses the initial loading spinner on agent-driven
-    // re-reads so the editor doesn't blank out every time the file on
-    // disk changes. Only the first read (triggered by `path` change)
-    // shows the "Loading…" placeholder.
-    const fetch = async (withSpinner: boolean) => {
-      if (withSpinner) setLoading(true);
-      setError(null);
+    setLoading(true);
+    setError(null);
+    (async () => {
       try {
         const c = await readFile(worktreeId, path);
         if (!cancelled) {
@@ -75,29 +78,14 @@ export function EditorPane({ worktreeId, path }: Props) {
           setLoading(false);
         }
       }
-    };
-
-    void fetch(true);
-
-    // Live-refresh on agent writes. `diff_updated` is emitted by the
-    // worktree file-watcher after its debounce; when the current file
-    // is in the updated diff we re-read it so the editor shows the
-    // agent's new content. Monaco's react wrapper no-ops when content
-    // is unchanged, so unrelated file changes are free.
-    let unlisten: (() => void) | null = null;
-    onDiffUpdated(worktreeId, (diff) => {
-      if (cancelled) return;
-      if (!diff.files.some((f) => f.path === path)) return;
-      void fetch(false);
-    }).then((fn) => {
-      if (cancelled) fn();
-      else unlisten = fn;
-    });
-
+    })();
     return () => {
       cancelled = true;
-      unlisten?.();
     };
+    // EditorPane only does the initial read; EditorWithComments owns the
+    // diff_updated listener so the conflict policy has access to the
+    // live Monaco model (and we don't reset the model out from under
+    // the user via a parent setState).
   }, [worktreeId, path]);
 
   const language = useMemo(() => (path ? inferLanguage(path) : "plaintext"), [path]);
@@ -142,10 +130,14 @@ export function EditorPane({ worktreeId, path }: Props) {
 
   return (
     <div className="relative h-full w-full bg-neutral-950">
+      {/* `key={path}` so a file switch tears the whole subtree down:
+          fresh Monaco model, fresh dirty/conflict refs, no carryover
+          from the previous file. */}
       <EditorWithComments
+        key={path}
         worktreeId={worktreeId}
         path={path}
-        content={content.text}
+        initialContent={content.text}
         language={language}
       />
     </div>
@@ -157,12 +149,12 @@ export function EditorPane({ worktreeId, path }: Props) {
 function EditorWithComments({
   worktreeId,
   path,
-  content,
+  initialContent,
   language,
 }: {
   worktreeId: WorktreeId;
   path: string;
-  content: string;
+  initialContent: string;
   language: string;
 }) {
   const [editor, setEditor] = useState<MonacoEditor.IStandaloneCodeEditor | null>(
@@ -172,6 +164,20 @@ function EditorWithComments({
     line: number;
     column: number;
   } | null>(null);
+  // The string we last successfully loaded from / wrote to disk. Compared
+  // against the live Monaco model to drive both the dirty indicator and
+  // the conflict policy: a diff_updated event whose disk content equals
+  // this string is an echo of our own write, and a dirty buffer (model !=
+  // this) blocks silent reload from disk.
+  const lastReadContentRef = useRef(initialContent);
+  // Non-null iff the conflict banner is showing. `changed` carries the
+  // new disk content (so "Reload" can apply it); `deleted` means the
+  // path is gone on disk.
+  type PendingDisk =
+    | { kind: "changed"; content: string }
+    | { kind: "deleted" };
+  const [pendingDisk, setPendingDisk] = useState<PendingDisk | null>(null);
+  const setDirtyStore = useEditorDirtyStore((s) => s.set);
   const onMount: OnMount = (e) => {
     setEditor(e);
     const pos = e.getPosition();
@@ -180,7 +186,141 @@ function EditorWithComments({
 
   useLspIntegration(editor, worktreeId, path, language);
   useGotoClickHandler(editor, worktreeId, language);
-  usePendingReveal(editor, worktreeId, path, content);
+  usePendingReveal(editor, worktreeId, path, initialContent);
+
+  /// Save the current model content to disk via the write_file IPC. On
+  /// success, refresh `lastReadContent` to the just-saved value so the
+  /// subsequent diff_updated echo lines up and we don't false-positive
+  /// the conflict banner. Implicit "Keep editing" if a banner is up.
+  const save = async () => {
+    if (!editor) return;
+    const model = editor.getModel();
+    if (!model) return;
+    const value = model.getValue();
+    try {
+      await writeFile(worktreeId, path, value);
+      lastReadContentRef.current = value;
+      setDirtyStore(worktreeId, path, false);
+      setPendingDisk(null);
+    } catch (e) {
+      toastError("Save failed", asMessage(e));
+    }
+  };
+  // Latest-save ref so the Cmd+S command (registered once per editor
+  // mount) always invokes the *current* save closure rather than the
+  // stale one from the registration moment.
+  const saveRef = useRef(save);
+  saveRef.current = save;
+
+  // Bind Cmd+S to save. `addCommand` registers a Monaco-internal command
+  // (no `addAction` UI in the command palette), which is what we want —
+  // save is a system thing, not a discoverable editor action.
+  useEffect(() => {
+    if (!editor) return;
+    const disposable = editor.addCommand(
+      monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS,
+      () => {
+        void saveRef.current();
+      },
+    );
+    // `addCommand` returns a disposable id since monaco 0.20-ish; older
+    // versions return null. Wrap defensively.
+    return () => {
+      if (disposable && typeof disposable === "object" && "dispose" in disposable) {
+        (disposable as { dispose: () => void }).dispose();
+      }
+    };
+  }, [editor]);
+
+  // Track dirty state by subscribing to model edits. Compare against
+  // `lastReadContentRef` so a paste that arrives at the same content
+  // (e.g. "undo all my edits") correctly flips back to clean.
+  useEffect(() => {
+    if (!editor) return;
+    const model = editor.getModel();
+    if (!model) return;
+    const sub = model.onDidChangeContent(() => {
+      const isDirty = model.getValue() !== lastReadContentRef.current;
+      setDirtyStore(worktreeId, path, isDirty);
+    });
+    return () => sub.dispose();
+  }, [editor, worktreeId, path, setDirtyStore]);
+
+  // Clear the dirty flag in the store on unmount so the file path
+  // label doesn't show a stale dot after the editor is gone (e.g. when
+  // the user closes the file or switches worktrees).
+  useEffect(() => {
+    return () => {
+      setDirtyStore(worktreeId, path, false);
+    };
+  }, [worktreeId, path, setDirtyStore]);
+
+  // Conflict-aware reload-on-disk. When fs_watch emits diff_updated for
+  // our path, re-fetch the file and decide:
+  //   - disk == lastRead  → echo of our own write, no-op
+  //   - clean buffer, disk changed → silently apply to model + refresh
+  //     lastRead (today's behavior, preserved)
+  //   - dirty buffer, disk changed → show banner; stash the new content
+  //   - read errors as not-found → "deleted" variant
+  useEffect(() => {
+    if (!editor) return;
+    let cancelled = false;
+    let unlisten: (() => void) | null = null;
+    onDiffUpdated(worktreeId, async (diff) => {
+      if (cancelled) return;
+      if (!diff.files.some((f) => f.path === path)) return;
+      let next: PendingDisk;
+      try {
+        const c = await readFile(worktreeId, path);
+        if (cancelled) return;
+        if (c.text === null) return; // binary / oversized — out of scope for editor conflict
+        if (c.text === lastReadContentRef.current) return; // echo
+        next = { kind: "changed", content: c.text };
+      } catch {
+        if (cancelled) return;
+        next = { kind: "deleted" };
+      }
+      const model = editor.getModel();
+      if (!model) return;
+      const isDirty = model.getValue() !== lastReadContentRef.current;
+      if (!isDirty) {
+        // Silent apply.
+        if (next.kind === "changed") {
+          model.setValue(next.content);
+          lastReadContentRef.current = next.content;
+        } else {
+          model.setValue("");
+          lastReadContentRef.current = "";
+        }
+        setDirtyStore(worktreeId, path, false);
+        return;
+      }
+      // Dirty → surface conflict (or update the stashed disk content
+      // if the banner is already up from an earlier event).
+      setPendingDisk(next);
+    }).then((fn) => {
+      if (cancelled) fn();
+      else unlisten = fn;
+    });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [editor, worktreeId, path, setDirtyStore]);
+
+  /// "Reload from disk" / "Discard local edits" — hard discard. Replace
+  /// the model with the new disk content (empty string for the delete
+  /// case) and treat that as the new lastRead.
+  const reloadFromDisk = () => {
+    if (!editor || !pendingDisk) return;
+    const model = editor.getModel();
+    if (!model) return;
+    const newValue = pendingDisk.kind === "changed" ? pendingDisk.content : "";
+    model.setValue(newValue);
+    lastReadContentRef.current = newValue;
+    setDirtyStore(worktreeId, path, false);
+    setPendingDisk(null);
+  };
 
   // Mirror Monaco's cursor position into local state so the bottom-right
   // indicator updates as the user navigates. Monaco fires this for both
@@ -232,29 +372,34 @@ function EditorWithComments({
   }, [editor, worktreeId, path]);
 
   return (
-    <>
+    <div className="flex h-full w-full flex-col">
+      {pendingDisk && (
+        <ConflictBanner
+          kind={pendingDisk.kind}
+          onReload={reloadFromDisk}
+          onDismiss={() => setPendingDisk(null)}
+        />
+      )}
+      <div className="relative flex-1">
       <Editor
-        // Remount on file switch so @monaco-editor/react disposes the
-        // previous Monaco model. Without `key`, the wrapper holds the
-        // old model around and (with editable mode) propagates content
-        // changes via `executeEdits + forceMoveMarkers`, which lets
-        // diagnostics from the prior file linger on the new file at
-        // shifted positions.
-        key={path}
+        // `defaultValue` (not `value`) so the prop never clobbers the
+        // model after the user starts typing — local edits survive
+        // ancestor re-renders. Cross-file switches are handled by the
+        // parent's `key={path}` on this whole component, which tears
+        // the editor down and remounts with a fresh `defaultValue`.
         height="100%"
         language={language}
-        value={content}
+        defaultValue={initialContent}
         theme={THEME_NAME}
         onMount={onMount}
         path={path}
         options={{
-          // Intentionally not `readOnly: true`: Monaco gates the code-
-          // action oracle on the editor being editable
-          // (codeActionModel.js:173), so the lightbulb / Cmd+. menu /
-          // diff peek for clang-tidy fix-its only appears when the
-          // editor is editable. Edits made here live only in the
-          // in-memory model — write-back is post-MVP, so reopening the
-          // file restores the on-disk content.
+          // Editable (not `readOnly: true`) for two reasons: Monaco
+          // gates the code-action oracle on editability
+          // (codeActionModel.js:173), so the clang-tidy lightbulb /
+          // Cmd+. menu only appears when the editor is editable; AND
+          // we now support write-back (Cmd+S writes the buffer to
+          // disk via the `write_file` IPC).
           minimap: { enabled: false },
           fontFamily:
             'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace',
@@ -294,7 +439,52 @@ function EditorWithComments({
           Ln {cursorPos.line}, Col {cursorPos.column}
         </div>
       )}
-    </>
+      </div>
+    </div>
+  );
+}
+
+/// Sticky banner above the editor surfacing the conflict policy: the
+/// file on disk diverged from the user's last-loaded state while they
+/// had unsaved local edits. "Reload from disk" hard-discards the local
+/// buffer; "Keep editing" dismisses — the next save then overwrites the
+/// agent's intervening writes (or recreates a deleted file).
+function ConflictBanner({
+  kind,
+  onReload,
+  onDismiss,
+}: {
+  kind: "changed" | "deleted";
+  onReload: () => void;
+  onDismiss: () => void;
+}) {
+  const title =
+    kind === "changed"
+      ? "Modified on disk while you were editing."
+      : "Deleted on disk while you were editing.";
+  const reloadLabel = kind === "changed" ? "Reload from disk" : "Discard local edits";
+  const keepLabel =
+    kind === "changed"
+      ? "Keep editing"
+      : "Keep editing — next save recreates the file";
+  return (
+    <div className="flex shrink-0 items-center justify-between gap-3 border-b border-amber-900/50 bg-amber-950/30 px-3 py-2 text-xs text-amber-200">
+      <span className="min-w-0 truncate">⚠ {title}</span>
+      <div className="flex shrink-0 items-center gap-1">
+        <button
+          onClick={onReload}
+          className="rounded border border-amber-800/60 bg-amber-900/40 px-2 py-0.5 text-[11px] text-amber-100 hover:bg-amber-900/60"
+        >
+          {reloadLabel}
+        </button>
+        <button
+          onClick={onDismiss}
+          className="rounded border border-neutral-800 bg-neutral-900/60 px-2 py-0.5 text-[11px] text-neutral-300 hover:bg-neutral-800"
+        >
+          {keepLabel}
+        </button>
+      </div>
+    </div>
   );
 }
 

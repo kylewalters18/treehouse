@@ -106,6 +106,7 @@ pub fn run() {
             ipc::commands::sync_worktree,
             ipc::commands::get_diff,
             ipc::commands::read_file,
+            ipc::commands::write_file,
             ipc::commands::read_blob_at_ref,
             ipc::commands::list_tree,
             ipc::commands::list_files,

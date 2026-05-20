@@ -168,6 +168,18 @@ export function readFile(
   return invoke<FileContent>("read_file", { worktreeId, path });
 }
 
+/// Write `content` to a worktree-relative path, truncating any existing
+/// file. The Rust side runs a write-flavored sandbox check (canonicalizes
+/// the *parent*, since the file may not exist yet) and rejects paths
+/// outside the worktree. Used by editor write-back (Cmd+S).
+export function writeFile(
+  worktreeId: WorktreeId,
+  path: string,
+  content: string,
+): Promise<void> {
+  return invoke<void>("write_file", { worktreeId, path, content });
+}
+
 export function listTree(
   worktreeId: WorktreeId,
   dir: string = "",

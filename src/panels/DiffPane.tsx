@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { DiffEditor, type DiffOnMount } from "@monaco-editor/react";
 import type { editor as MonacoEditor } from "monaco-editor";
+import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { useUiStore } from "@/stores/ui";
 import { useWorktreesStore } from "@/stores/worktrees";
 import { useDiffsStore } from "@/stores/diffs";
@@ -12,6 +13,7 @@ import { cn } from "@/lib/cn";
 import { CommentOverlay, EditorPane } from "./EditorPane";
 import { useEditorViewStateStore } from "@/stores/editor-view-state";
 import { FileTree } from "./FileTree";
+import { useIsEditorDirty } from "@/stores/editor-dirty";
 import { MarkdownPreview, isMarkdownPath } from "./MarkdownPreview";
 import { inferLanguage } from "./editor-language";
 import { iconForFile, statusFilenameColor } from "./file-icons";
@@ -118,8 +120,13 @@ function DiffView({ worktreeId }: { worktreeId: WorktreeId }) {
   }
 
   return (
-    <div className="flex h-full">
-      <aside className="flex w-72 flex-col border-r border-neutral-800">
+    <PanelGroup
+      direction="horizontal"
+      className="flex h-full"
+      autoSaveId="diff-sidebar"
+    >
+      <Panel defaultSize={22} minSize={12} maxSize={50}>
+        <aside className="flex h-full flex-col border-r border-neutral-800">
         <div className="flex shrink-0 items-center justify-between border-b border-neutral-900 px-3 py-2 text-[11px] uppercase tracking-wider text-neutral-500">
           <span>Changes ({diff?.stats.filesChanged ?? 0})</span>
           {diff && (
@@ -240,8 +247,11 @@ function DiffView({ worktreeId }: { worktreeId: WorktreeId }) {
             showIgnored={showIgnored}
           />
         </div>
-      </aside>
-      <section className="flex flex-1 flex-col overflow-hidden">
+        </aside>
+      </Panel>
+      <PanelResizeHandle className="w-px bg-neutral-800 hover:bg-neutral-700" />
+      <Panel defaultSize={78}>
+        <section className="flex h-full flex-col overflow-hidden">
         <div className="flex shrink-0 items-center gap-1 border-b border-neutral-800 bg-neutral-950 px-2 py-1 text-[11px]">
           <NavButtons worktreeId={worktreeId} />
           <TabButton
@@ -271,9 +281,7 @@ function DiffView({ worktreeId }: { worktreeId: WorktreeId }) {
             </TabButton>
           )}
           {selectedFile && (
-            <span className="ml-2 min-w-0 flex-1 truncate font-mono text-[11px] text-neutral-500">
-              {selectedFile}
-            </span>
+            <FilePathLabel worktreeId={worktreeId} path={selectedFile} />
           )}
           <LspProgressIndicator worktreeId={worktreeId} />
           <FocusToggle />
@@ -299,8 +307,35 @@ function DiffView({ worktreeId }: { worktreeId: WorktreeId }) {
             </div>
           )}
         </div>
-      </section>
-    </div>
+        </section>
+      </Panel>
+    </PanelGroup>
+  );
+}
+
+/// Path display in the editor tab strip, with a leading "● " when the
+/// editor buffer has unsaved local edits. The dirty flag is published
+/// to the editor-dirty store by EditorPane on every model change.
+function FilePathLabel({
+  worktreeId,
+  path,
+}: {
+  worktreeId: WorktreeId;
+  path: string;
+}) {
+  const dirty = useIsEditorDirty(worktreeId, path);
+  return (
+    <span className="ml-2 flex min-w-0 flex-1 items-center truncate font-mono text-[11px] text-neutral-500">
+      {dirty && (
+        <span
+          className="mr-1 shrink-0 text-amber-400"
+          title="Unsaved changes — Cmd+S to save"
+        >
+          ●
+        </span>
+      )}
+      <span className="truncate">{path}</span>
+    </span>
   );
 }
 

@@ -502,6 +502,16 @@ pub async fn read_file(
     fs_api::read_worktree_file(worktree_id, &path, &state).await
 }
 
+#[tauri::command]
+pub async fn write_file(
+    worktree_id: WorktreeId,
+    path: String,
+    content: String,
+    state: State<'_, AppState>,
+) -> AppResult<()> {
+    fs_api::write_worktree_file(worktree_id, &path, &content, &state).await
+}
+
 /// Read a file's content at a specific ref (branch / sha / tag). Used by
 /// the DiffEditor to render the "before" side of a diff. Returns an empty
 /// string when the path didn't exist at that ref — git's own behavior is

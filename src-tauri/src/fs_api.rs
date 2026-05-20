@@ -102,6 +102,33 @@ pub async fn read_worktree_file(
     }
 }
 
+/// Write `content` to a worktree-relative path, truncating any existing
+/// file. Used by editor write-back (Cmd+S). The path goes through a
+/// write-flavored sandbox check that canonicalizes the *parent* directory
+/// (since the file itself may not exist yet for first-time saves) and
+/// rejects anything that lands outside the worktree root. Does not create
+/// missing parent dirs — the editor only saves files the user has already
+/// opened, so the parent always exists in practice; if an agent removed
+/// the directory underneath, the IO error surfaces.
+pub async fn write_worktree_file(
+    worktree_id: WorktreeId,
+    rel_path: &str,
+    content: &str,
+    state: &AppState,
+) -> AppResult<()> {
+    let wt = state
+        .worktrees
+        .get(&worktree_id)
+        .ok_or_else(|| AppError::Unknown(format!("unknown worktree: {worktree_id}")))?
+        .clone();
+
+    let abs = resolve_sandboxed_for_write(&wt.path, rel_path)?;
+    tokio::fs::write(&abs, content.as_bytes())
+        .await
+        .map_err(|e| AppError::Io(format!("write {rel_path}: {e}")))?;
+    Ok(())
+}
+
 /// List one directory's direct children (used by the lazy-expanding file
 /// tree). Directories come first, then files; both sorted case-insensitively.
 /// `dir` is worktree-relative. "" means the worktree root.
@@ -286,4 +313,104 @@ fn resolve_sandboxed(root: &Path, rel: &str) -> AppResult<PathBuf> {
         return Err(AppError::Unknown(format!("path escape: {rel}")));
     }
     Ok(canon)
+}
+
+/// Write-flavored sandbox check. The file at `rel` may not exist yet (first
+/// save of an agent-deleted file), so we can't canonicalize it directly.
+/// Instead canonicalize the parent — that catches symlink escapes too —
+/// and re-attach the basename literally.
+fn resolve_sandboxed_for_write(root: &Path, rel: &str) -> AppResult<PathBuf> {
+    let candidate = root.join(rel);
+    let parent = candidate
+        .parent()
+        .ok_or_else(|| AppError::Unknown(format!("write path has no parent: {rel}")))?;
+    let file_name = candidate
+        .file_name()
+        .ok_or_else(|| AppError::Unknown(format!("write path has no file name: {rel}")))?;
+    let canon_root = dunce::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let canon_parent = dunce::canonicalize(parent)
+        .map_err(|e| AppError::Io(format!("canonicalize parent of {rel}: {e}")))?;
+    if !canon_parent.starts_with(&canon_root) {
+        return Err(AppError::Unknown(format!("path escape: {rel}")));
+    }
+    Ok(canon_parent.join(file_name))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::AppState;
+    use crate::test_support::{workspace_fixture, TempRepo};
+    use crate::util::ids::WorktreeId;
+    use crate::worktree::Worktree;
+
+    fn fixture() -> (AppState, WorktreeId, TempRepo) {
+        let repo = TempRepo::new();
+        let state = AppState::new();
+        let ws = workspace_fixture(&state, &repo.root);
+        let id = WorktreeId::new();
+        let head = repo.head();
+        state.worktrees.insert(
+            id,
+            Worktree {
+                id,
+                workspace_id: ws.id,
+                path: repo.root.clone(),
+                branch: "main".into(),
+                base_ref: head.clone(),
+                head,
+                dirty: false,
+                is_main_clone: true,
+            },
+        );
+        (state, id, repo)
+    }
+
+    #[tokio::test]
+    async fn write_then_read_round_trips() {
+        let (state, id, repo) = fixture();
+        let body = "hello\nworld\n";
+        write_worktree_file(id, "README.md", body, &state).await.unwrap();
+        let on_disk = std::fs::read_to_string(repo.root.join("README.md")).unwrap();
+        assert_eq!(on_disk, body);
+        let round = read_worktree_file(id, "README.md", &state).await.unwrap();
+        assert_eq!(round.text.as_deref(), Some(body));
+    }
+
+    #[tokio::test]
+    async fn write_creates_new_file_in_existing_dir() {
+        let (state, id, repo) = fixture();
+        std::fs::create_dir_all(repo.root.join("src")).unwrap();
+        write_worktree_file(id, "src/main.rs", "fn main() {}\n", &state)
+            .await
+            .unwrap();
+        assert!(repo.root.join("src/main.rs").exists());
+    }
+
+    #[tokio::test]
+    async fn write_rejects_path_traversal() {
+        let (state, id, _repo) = fixture();
+        let err = write_worktree_file(id, "../escape.txt", "x", &state)
+            .await
+            .expect_err("traversal must be rejected");
+        match err {
+            AppError::Unknown(msg) => assert!(
+                msg.contains("path escape") || msg.contains("canonicalize"),
+                "unexpected error: {msg}"
+            ),
+            AppError::Io(_) => {} // canonicalize-parent miss for "../" outside; also acceptable
+            _ => panic!("unexpected error variant: {err:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn write_recreates_deleted_file_when_parent_intact() {
+        let (state, id, repo) = fixture();
+        std::fs::remove_file(repo.root.join("README.md")).unwrap();
+        write_worktree_file(id, "README.md", "back\n", &state).await.unwrap();
+        assert_eq!(
+            std::fs::read_to_string(repo.root.join("README.md")).unwrap(),
+            "back\n"
+        );
+    }
 }
