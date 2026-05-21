@@ -284,14 +284,15 @@ function EditorWithComments({
       if (!model) return;
       const isDirty = model.getValue() !== lastReadContentRef.current;
       if (!isDirty) {
-        // Silent apply.
-        if (next.kind === "changed") {
-          model.setValue(next.content);
-          lastReadContentRef.current = next.content;
-        } else {
-          model.setValue("");
-          lastReadContentRef.current = "";
-        }
+        // Silent apply — but DO NOT `model.setValue` here. setValue
+        // wipes the whole buffer, which thrashes scroll/cursor/folds/
+        // tokenization on every agent write. Instead replace only the
+        // contiguous region that actually changed (longest common
+        // prefix + suffix), so the view sticks unless the cursor is
+        // inside the edit region.
+        const newText = next.kind === "changed" ? next.content : "";
+        applyMinimalReplace(model, newText);
+        lastReadContentRef.current = newText;
         setDirtyStore(worktreeId, path, false);
         return;
       }
@@ -316,7 +317,7 @@ function EditorWithComments({
     const model = editor.getModel();
     if (!model) return;
     const newValue = pendingDisk.kind === "changed" ? pendingDisk.content : "";
-    model.setValue(newValue);
+    applyMinimalReplace(model, newValue);
     lastReadContentRef.current = newValue;
     setDirtyStore(worktreeId, path, false);
     setPendingDisk(null);
@@ -449,6 +450,66 @@ function EditorWithComments({
 /// had unsaved local edits. "Reload from disk" hard-discards the local
 /// buffer; "Keep editing" dismisses — the next save then overwrites the
 /// agent's intervening writes (or recreates a deleted file).
+/// Replace just the contiguous span of `model` that differs from `newText`,
+/// instead of `model.setValue(newText)`. setValue is a full-buffer
+/// replace — every call wipes scroll position, cursor, selection,
+/// folds, and forces full re-tokenization. That's catastrophic when an
+/// agent is writing the open file at debounce cadence (~150ms): the
+/// view thrashes hard enough to be unusable.
+///
+/// Strategy: find the longest common prefix and longest common suffix
+/// between the old text and the new text, then push a single edit that
+/// replaces only the middle. Monaco preserves cursor position outside
+/// the edit range, restricts re-tokenization to changed lines, and
+/// leaves view state alone. Cursor *inside* the change region still
+/// gets repositioned by Monaco's own clamping — that's unavoidable for
+/// a real content change in that region.
+///
+/// O(n) in the text size for the prefix/suffix scan; no diff library.
+/// Identical-content fast path is a no-op (no edit pushed → no
+/// re-tokenize).
+function applyMinimalReplace(
+  model: MonacoEditor.ITextModel,
+  newText: string,
+): void {
+  const oldText = model.getValue();
+  if (oldText === newText) return;
+  const oldLen = oldText.length;
+  const newLen = newText.length;
+  let prefix = 0;
+  const minLen = Math.min(oldLen, newLen);
+  while (prefix < minLen && oldText.charCodeAt(prefix) === newText.charCodeAt(prefix)) {
+    prefix++;
+  }
+  let suffix = 0;
+  const maxSuffix = minLen - prefix;
+  while (
+    suffix < maxSuffix &&
+    oldText.charCodeAt(oldLen - 1 - suffix) ===
+      newText.charCodeAt(newLen - 1 - suffix)
+  ) {
+    suffix++;
+  }
+  const startPos = model.getPositionAt(prefix);
+  const endPos = model.getPositionAt(oldLen - suffix);
+  const replacement = newText.slice(prefix, newLen - suffix);
+  model.pushEditOperations(
+    [],
+    [
+      {
+        range: new monaco.Range(
+          startPos.lineNumber,
+          startPos.column,
+          endPos.lineNumber,
+          endPos.column,
+        ),
+        text: replacement,
+      },
+    ],
+    () => null,
+  );
+}
+
 function ConflictBanner({
   kind,
   onReload,
