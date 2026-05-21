@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { AlertTriangle, Check, Loader2 } from "lucide-react";
+import { AlertTriangle, Check, ChevronDown, ChevronRight, Loader2, X } from "lucide-react";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { useWorkspaceStore } from "@/stores/workspace";
 import { useWorktreesStore } from "@/stores/worktrees";
 import { useUiStore } from "@/stores/ui";
@@ -16,6 +17,7 @@ import type {
   AgentActivity,
   MergeBackStrategy,
   SyncStrategy,
+  Workspace,
   Worktree,
   WorktreeActivity,
   WorktreeId,
@@ -24,10 +26,13 @@ import { cn } from "@/lib/cn";
 import { runWorktreeSetup } from "@/lib/worktree-setup";
 
 export function WorktreeSidebar() {
-  const workspace = useWorkspaceStore((s) => s.workspace);
+  const workspaces = useWorkspaceStore((s) => s.workspaces);
+  const openWorkspace = useWorkspaceStore((s) => s.openWorkspace);
+  const closeWorkspaceStore = useWorkspaceStore((s) => s.closeWorkspace);
   const worktrees = useWorktreesStore((s) => s.worktrees);
   const creating = useWorktreesStore((s) => s.creating);
   const refresh = useWorktreesStore((s) => s.refresh);
+  const dropForWorkspace = useWorktreesStore((s) => s.dropForWorkspace);
   const createWt = useWorktreesStore((s) => s.create);
   const removeWt = useWorktreesStore((s) => s.remove);
   const selectedId = useUiStore((s) => s.selectedWorktreeId);
@@ -35,14 +40,16 @@ export function WorktreeSidebar() {
   const collapsed = useUiStore((s) => s.worktreeSidebarCollapsed);
   const toggleCollapsed = useUiStore((s) => s.toggleWorktreeSidebar);
 
-  const [name, setName] = useState("");
+  // Per-repo create form state — keyed by workspaceId so concurrent
+  // creates in different repos don't collide on a single input.
+  const [createNames, setCreateNames] = useState<Record<string, string>>({});
+  const [creatingNames, setCreatingNames] = useState<
+    Record<string, string | null>
+  >({});
+  const [creatingSteps, setCreatingSteps] = useState<
+    Record<string, string | null>
+  >({});
   const [skipSetup, setSkipSetup] = useState(false);
-  const [creatingName, setCreatingName] = useState<string | null>(null);
-  // Most recent step the backend reported during create. Reset
-  // alongside `creatingName`. Optional — falls back to a generic
-  // message in the spinner if no step has arrived yet.
-  const [creatingStep, setCreatingStep] = useState<string | null>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
   const [mergeTarget, setMergeTarget] = useState<Worktree | null>(null);
   const [syncTarget, setSyncTarget] = useState<Worktree | null>(null);
   const syncStrategyDefault = useSettingsStore((s) => s.settings.syncStrategy);
@@ -55,40 +62,65 @@ export function WorktreeSidebar() {
   const [activity, setActivity] = useState<
     Record<WorktreeId, WorktreeActivity>
   >({});
+  // Per-repo collapse state. Collapsed by default so a stack of open
+  // repos doesn't drown out the flat Agents band — each repo's body
+  // (create form, main clone, Changes, Inactive) is one click away
+  // when you need it. The repo owning the *selected* worktree
+  // auto-expands so context is preserved when you click a row inside a
+  // collapsed section (e.g. via the Agents band).
+  const [expandedRepos, setExpandedRepos] = useState<Set<string>>(new Set());
 
-  const mainClone = worktrees.find((w) => w.isMainClone) ?? null;
-  const regular = worktrees.filter((w) => !w.isMainClone);
+  // Stable key so the per-workspace effect re-runs precisely when the
+  // *set* of open workspaces changes (not on every store update).
+  const workspaceIdsKey = workspaces.map((w) => w.id).join("|");
 
   useEffect(() => {
-    if (!workspace) return;
-    refresh(workspace.id);
-    const unlistenChanged = onWorktreesChanged(workspace.id, () =>
-      refresh(workspace.id),
-    );
-    const unlistenStep = onWorktreeCreateStep(workspace.id, (step) =>
-      setCreatingStep(step),
-    );
+    if (workspaces.length === 0) return;
+    // Refresh every open workspace's worktrees on mount + on changes.
+    // Multi-repo: refresh is merge-not-replace so concurrent refreshes
+    // don't clobber each other.
+    workspaces.forEach((ws) => {
+      refresh(ws.id);
+    });
+    const unlisteners: Array<Promise<() => void>> = [];
+    for (const ws of workspaces) {
+      unlisteners.push(
+        onWorktreesChanged(ws.id, () => {
+          refresh(ws.id);
+        }),
+      );
+      unlisteners.push(
+        onWorktreeCreateStep(ws.id, (step) => {
+          setCreatingSteps((prev) => ({ ...prev, [ws.id]: step }));
+        }),
+      );
+    }
     return () => {
-      unlistenChanged.then((fn) => fn()).catch(() => {});
-      unlistenStep.then((fn) => fn()).catch(() => {});
+      for (const p of unlisteners) {
+        p.then((fn) => fn()).catch(() => {});
+      }
     };
-  }, [workspace, refresh]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workspaceIdsKey, refresh]);
 
-  // Poll agent activity so the dot next to each worktree stays fresh.
+  // Poll agent activity for every open workspace so the dot next to
+  // each worktree (across all repos) stays fresh.
   useEffect(() => {
-    if (!workspace) return;
+    if (workspaces.length === 0) return;
     let cancelled = false;
     async function tick() {
-      if (!workspace) return;
-      try {
-        const list = await listAgentActivity(workspace.id);
-        if (cancelled) return;
-        const map: Record<WorktreeId, WorktreeActivity> = {};
-        for (const w of list) map[w.worktreeId] = w;
-        setActivity(map);
-      } catch {
-        // Transient; we'll retry on the next tick.
+      const lists = await Promise.allSettled(
+        useWorkspaceStore
+          .getState()
+          .workspaces.map((ws) => listAgentActivity(ws.id)),
+      );
+      if (cancelled) return;
+      const map: Record<WorktreeId, WorktreeActivity> = {};
+      for (const r of lists) {
+        if (r.status !== "fulfilled") continue;
+        for (const w of r.value) map[w.worktreeId] = w;
       }
+      setActivity(map);
     }
     void tick();
     const handle = window.setInterval(tick, 1500);
@@ -96,35 +128,106 @@ export function WorktreeSidebar() {
       cancelled = true;
       window.clearInterval(handle);
     };
-  }, [workspace]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workspaceIdsKey]);
 
-  async function onCreate(e: React.FormEvent) {
-    e.preventDefault();
-    if (!workspace || !name.trim() || creating) return;
-    const trimmed = name.trim();
-    setCreatingName(trimmed);
-    setCreatingStep(null);
+  const showRepoChips = workspaces.length > 1;
+
+  // Auto-expand the repo owning the currently-selected worktree.
+  // Without this, clicking a row in the cross-repo Agents band would
+  // collapse the user's view of that repo's full state — surprising,
+  // because the user is now actively working in it.
+  useEffect(() => {
+    if (!selectedId) return;
+    const wt = worktrees.find((w) => w.id === selectedId);
+    if (!wt) return;
+    setExpandedRepos((prev) => {
+      if (prev.has(wt.workspaceId)) return prev;
+      const next = new Set(prev);
+      next.add(wt.workspaceId);
+      return next;
+    });
+  }, [selectedId, worktrees]);
+
+  function toggleRepoExpanded(workspaceId: string) {
+    setExpandedRepos((prev) => {
+      const next = new Set(prev);
+      if (next.has(workspaceId)) next.delete(workspaceId);
+      else next.add(workspaceId);
+      return next;
+    });
+  }
+
+  async function onCreateForWorkspace(workspaceId: string) {
+    const trimmed = (createNames[workspaceId] ?? "").trim();
+    if (!trimmed || creating) return;
+    setCreatingNames((prev) => ({ ...prev, [workspaceId]: trimmed }));
+    setCreatingSteps((prev) => ({ ...prev, [workspaceId]: null }));
     try {
-      const wt = await createWt(workspace.id, trimmed, {
+      const wt = await createWt(workspaceId, trimmed, {
         initSubmodules: initSubmodulesDefault,
       });
       if (wt) {
-        setName("");
-        inputRef.current?.focus();
+        setCreateNames((prev) => ({ ...prev, [workspaceId]: "" }));
         selectWorktree(wt.id);
-        // Run the post-create hook (devcontainer up / npm install / …)
-        // unless the user opted out via the checkbox. Drives a
-        // dedicated "setup" terminal tab so the user sees output live;
-        // failures stay visible in the tab rather than blocking
-        // creation.
         if (!skipSetup) {
           void runWorktreeSetup(wt.id);
         }
       }
     } finally {
-      setCreatingName(null);
-      setCreatingStep(null);
+      setCreatingNames((prev) => ({ ...prev, [workspaceId]: null }));
+      setCreatingSteps((prev) => ({ ...prev, [workspaceId]: null }));
     }
+  }
+
+  async function pickAndOpenAnotherRepo() {
+    const picked = await openDialog({
+      directory: true,
+      multiple: false,
+      title: "Select a git repository to open",
+    });
+    if (typeof picked === "string") {
+      await openWorkspace(picked);
+    }
+  }
+
+  async function onCloseRepo(ws: Workspace) {
+    // Confirm if there's a live agent or any dirty worktree in this
+    // repo — closing tears down PTYs and worktree state.
+    const repoWorktrees = worktrees.filter((w) => w.workspaceId === ws.id);
+    const liveAgents = repoWorktrees.filter(
+      (w) => activity[w.id] !== undefined && activity[w.id].activity !== "inactive",
+    );
+    const dirty = repoWorktrees.filter((w) => activity[w.id]?.dirty);
+    if (liveAgents.length > 0 || dirty.length > 0) {
+      const reasons: string[] = [];
+      if (liveAgents.length > 0)
+        reasons.push(
+          `• ${liveAgents.length} live agent(s) will be killed`,
+        );
+      if (dirty.length > 0)
+        reasons.push(
+          `• ${dirty.length} worktree(s) have uncommitted changes`,
+        );
+      const repoLabel = basenameOf(ws.root);
+      const ok = window.confirm(
+        `Close "${repoLabel}"?\n\n${ws.root}\n\n${reasons.join("\n")}\n\nThe on-disk worktrees are kept; this just detaches them from treehouse.`,
+      );
+      if (!ok) return;
+    }
+    // Drop UI-side worktree entries immediately so the sidebar doesn't
+    // briefly render the section after close while Rust tears down.
+    dropForWorkspace(ws.id);
+    // If the selected worktree belonged to this repo, fall back to
+    // any remaining worktree (cross-repo) or null.
+    const sel = useUiStore.getState().selectedWorktreeId;
+    if (sel && repoWorktrees.some((w) => w.id === sel)) {
+      const fallback = worktrees.find(
+        (w) => w.workspaceId !== ws.id,
+      );
+      selectWorktree(fallback?.id ?? null);
+    }
+    await closeWorkspaceStore(ws.id);
   }
 
   async function onRemove(w: Worktree) {
@@ -220,6 +323,36 @@ export function WorktreeSidebar() {
   }
 
   if (collapsed) {
+    // Collapsed rail: agents flat at top, then each open repo's dots
+    // (◆ main + status dots) separated by dividers. Tooltip carries the
+    // repo name when more than one is open.
+    const allRegular = worktrees.filter((w) => !w.isMainClone);
+    const flatAgents = allRegular.filter(
+      (w) => activity[w.id] !== undefined && activity[w.id].activity !== "inactive",
+    );
+    const renderDot = (w: Worktree) => {
+      const a = activity[w.id];
+      const repoName = showRepoChips
+        ? `${basenameOf(
+            workspaces.find((ws) => ws.id === w.workspaceId)?.root ?? "",
+          )} · `
+        : "";
+      const tooltip =
+        repoName +
+        w.branch +
+        (a?.ahead ? `  ↑${a.ahead}` : "") +
+        (a?.behind ? `  ↓${a.behind}` : "");
+      return (
+        <RailButton
+          key={w.id}
+          tooltip={tooltip}
+          onClick={() => selectWorktree(w.id)}
+          selected={selectedId === w.id}
+        >
+          <StatusDot activity={a?.activity ?? "inactive"} />
+        </RailButton>
+      );
+    };
     return (
       <div className="flex h-full flex-col items-center gap-1 overflow-y-auto border-r border-neutral-800 py-2">
         <button
@@ -229,62 +362,126 @@ export function WorktreeSidebar() {
         >
           ▶
         </button>
-        {mainClone && (
-          <RailButton
-            tooltip={mainClone.branch}
-            onClick={() => selectWorktree(mainClone.id)}
-            selected={selectedId === mainClone.id}
-            variant="main"
-          >
-            ◆
-          </RailButton>
+        {flatAgents.length > 0 && (
+          <>
+            {flatAgents.map(renderDot)}
+            <RailDivider />
+          </>
         )}
-        {(() => {
-          const { withAgent, changes, dormant } = groupWorktrees(
-            regular,
-            activity,
+        {workspaces.map((ws, wsIdx) => {
+          const repoWorktrees = worktrees.filter(
+            (w) => w.workspaceId === ws.id,
           );
-          const renderDot = (w: Worktree) => {
-            const a = activity[w.id];
-            const tooltip =
-              w.branch +
-              (a?.ahead ? `  ↑${a.ahead}` : "") +
-              (a?.behind ? `  ↓${a.behind}` : "");
-            return (
-              <RailButton
-                key={w.id}
-                tooltip={tooltip}
-                onClick={() => selectWorktree(w.id)}
-                selected={selectedId === w.id}
-              >
-                <StatusDot activity={a?.activity ?? "inactive"} />
-              </RailButton>
-            );
-          };
+          const mainClone =
+            repoWorktrees.find((w) => w.isMainClone) ?? null;
+          const regular = repoWorktrees.filter((w) => !w.isMainClone);
+          const { changes, dormant } = groupWorktrees(regular, activity);
           return (
-            <>
-              {withAgent.map(renderDot)}
-              {withAgent.length > 0 && (changes.length > 0 || dormant.length > 0) && (
-                <RailDivider />
+            <div key={ws.id} className="flex flex-col items-center gap-1">
+              {wsIdx > 0 && <RailDivider />}
+              {mainClone && (
+                <RailButton
+                  tooltip={`${basenameOf(ws.root)} · ${mainClone.branch}`}
+                  onClick={() => selectWorktree(mainClone.id)}
+                  selected={selectedId === mainClone.id}
+                  variant="main"
+                >
+                  ◆
+                </RailButton>
               )}
               {changes.map(renderDot)}
-              {changes.length > 0 && dormant.length > 0 && <RailDivider />}
               {dormant.map(renderDot)}
-            </>
+            </div>
           );
-        })()}
+        })}
       </div>
     );
+  }
+
+  // Multi-repo render: flat Agents band → per-workspace sections →
+  // "+ Open another repo" footer.
+  const allRegular = worktrees.filter((w) => !w.isMainClone);
+  const flatAgents = allRegular.filter(
+    (w) => activity[w.id] !== undefined && activity[w.id].activity !== "inactive",
+  );
+  const totalWorktrees = allRegular.length;
+
+  const renderRow = (
+    w: Worktree,
+    dim: boolean,
+    showChip: boolean,
+  ) => (
+    <li
+      key={w.id}
+      className={cn(
+        "group relative flex cursor-pointer items-start px-3 py-2 hover:bg-neutral-900/50",
+        selectedId === w.id && "bg-neutral-900",
+      )}
+      onClick={() => selectWorktree(w.id)}
+    >
+      {/* Dim the row CONTENT but not the row itself — `opacity` <1
+          creates a stacking context, and applying it to the <li>
+          traps RowMenu's dropdown inside that context: sibling
+          rows below paint over the popup and swallow its clicks. */}
+      <div
+        className={cn(
+          "flex min-w-0 flex-1 items-start gap-2",
+          dim && "opacity-60",
+        )}
+      >
+        <StatusDot
+          activity={activity[w.id]?.activity ?? "inactive"}
+          className="mt-1.5"
+        />
+        <div className="min-w-0 flex-1">
+          <div className="flex items-baseline gap-2">
+            {showChip && (
+              <RepoChip
+                workspace={workspaces.find((ws) => ws.id === w.workspaceId)}
+              />
+            )}
+            <span className="truncate font-mono text-xs text-neutral-200">
+              {w.branch}
+            </span>
+            <AheadBehind
+              ahead={activity[w.id]?.ahead ?? 0}
+              behind={activity[w.id]?.behind ?? 0}
+            />
+          </div>
+          <div
+            className="truncate font-mono text-[11px] text-neutral-500"
+            title={w.path}
+          >
+            {shortenPath(w.path)}
+          </div>
+        </div>
+      </div>
+      <RowMenu
+        behind={activity[w.id]?.behind ?? 0}
+        onSync={() => setSyncTarget(w)}
+        onMerge={() => setMergeTarget(w)}
+        onRemove={() => onRemove(w)}
+      />
+    </li>
+  );
+
+  // Default branch for the merge/sync dialogs — derived from the
+  // worktree's own workspace so a worktree in repo B doesn't end up
+  // diffing against repo A's main.
+  function defaultBranchFor(w: Worktree | null): string {
+    if (!w) return "main";
+    const ws = workspaces.find((x) => x.id === w.workspaceId);
+    return ws?.defaultBranch ?? "main";
   }
 
   return (
     <div className="flex h-full flex-col border-r border-neutral-800">
       <div className="flex items-center justify-between border-b border-neutral-900 px-3 py-2">
         <span className="text-[11px] font-semibold uppercase tracking-wider text-neutral-500">
-          Worktrees
+          {showRepoChips ? "Repos" : "Worktrees"}
         </span>
         <div className="flex items-center gap-2">
-          <span className="text-[11px] text-neutral-600">{regular.length}</span>
+          <span className="text-[11px] text-neutral-600">{totalWorktrees}</span>
           <button
             onClick={toggleCollapsed}
             title="Collapse sidebar (⌘B)"
@@ -295,179 +492,209 @@ export function WorktreeSidebar() {
         </div>
       </div>
 
-      <form
-        onSubmit={onCreate}
-        className="flex flex-col gap-1.5 border-b border-neutral-900 p-3"
-      >
-        <div className="flex gap-2">
-          <input
-            ref={inputRef}
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="new worktree name"
-            // Worktree names are slugged into branch names (lowercase,
-            // dashes, no autocorrect-y reshaping). Disable the OS/browser
-            // text-assist features that otherwise capitalize the first
-            // letter, autocomplete to dictionary words, or underline
-            // misspellings.
-            autoCapitalize="off"
-            autoCorrect="off"
-            autoComplete="off"
-            spellCheck={false}
-            className="flex-1 rounded border border-neutral-800 bg-neutral-950 px-2 py-1 text-xs placeholder:text-neutral-600 focus:border-neutral-700 focus:outline-none"
-            disabled={!workspace || creating}
-          />
-          <button
-            type="submit"
-            disabled={!workspace || !name.trim() || creating}
-            className="flex items-center justify-center rounded bg-blue-600 px-3 py-1 text-xs font-medium text-white hover:bg-blue-500 disabled:opacity-50"
-          >
-            {creating ? <Spinner /> : "+"}
-          </button>
-        </div>
+      <div className="flex-1 overflow-y-auto">
+        {flatAgents.length > 0 && (
+          <>
+            <SectionHeader label="Agents" count={flatAgents.length} />
+            <ul className="divide-y divide-neutral-900 border-b border-neutral-900">
+              {flatAgents.map((w) => renderRow(w, false, showRepoChips))}
+            </ul>
+          </>
+        )}
+
+        {workspaces.map((ws) => {
+          const repoWorktrees = worktrees.filter(
+            (w) => w.workspaceId === ws.id,
+          );
+          const mainClone =
+            repoWorktrees.find((w) => w.isMainClone) ?? null;
+          const regular = repoWorktrees.filter((w) => !w.isMainClone);
+          const nonAgent = regular.filter(
+            (w) =>
+              activity[w.id] === undefined ||
+              activity[w.id].activity === "inactive",
+          );
+          const { changes, dormant } = groupWorktrees(nonAgent, activity);
+          const liveName = creatingNames[ws.id];
+          const liveStep = creatingSteps[ws.id];
+          const expanded = expandedRepos.has(ws.id);
+          // Header count excludes the main clone (its own row when
+          // expanded). When the user has agents in this repo, those
+          // already surface in the cross-repo Agents band above, but
+          // they're still part of the repo's worktrees for context —
+          // include them in the count.
+          const repoCount = regular.length;
+          return (
+            <div
+              key={ws.id}
+              className="border-b border-neutral-900"
+            >
+              <button
+                onClick={() => toggleRepoExpanded(ws.id)}
+                className="flex w-full items-center justify-between gap-2 bg-neutral-950 px-2 py-1.5 text-left hover:bg-neutral-900/60"
+                title={ws.root}
+              >
+                <span className="flex min-w-0 flex-1 items-center gap-1">
+                  {expanded ? (
+                    <ChevronDown size={12} className="shrink-0 text-neutral-500" />
+                  ) : (
+                    <ChevronRight size={12} className="shrink-0 text-neutral-500" />
+                  )}
+                  <span className="truncate font-mono text-[11px] text-neutral-300">
+                    {basenameOf(ws.root)}
+                  </span>
+                  <span className="shrink-0 text-[10px] text-neutral-600">
+                    {repoCount}
+                  </span>
+                </span>
+                <span
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    void onCloseRepo(ws);
+                  }}
+                  title={`Close ${basenameOf(ws.root)} (other repos stay open)`}
+                  className="rounded p-0.5 text-neutral-600 hover:bg-neutral-800 hover:text-neutral-200"
+                >
+                  <X size={12} />
+                </span>
+              </button>
+
+              {!expanded ? null : <>
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  void onCreateForWorkspace(ws.id);
+                }}
+                className="flex gap-2 px-3 py-2"
+              >
+                <input
+                  value={createNames[ws.id] ?? ""}
+                  onChange={(e) =>
+                    setCreateNames((prev) => ({
+                      ...prev,
+                      [ws.id]: e.target.value,
+                    }))
+                  }
+                  placeholder="new worktree name"
+                  autoCapitalize="off"
+                  autoCorrect="off"
+                  autoComplete="off"
+                  spellCheck={false}
+                  className="flex-1 rounded border border-neutral-800 bg-neutral-950 px-2 py-1 text-xs placeholder:text-neutral-600 focus:border-neutral-700 focus:outline-none"
+                  disabled={creating || !!liveName}
+                />
+                <button
+                  type="submit"
+                  disabled={
+                    !(createNames[ws.id] ?? "").trim() ||
+                    creating ||
+                    !!liveName
+                  }
+                  className="flex items-center justify-center rounded bg-blue-600 px-3 py-1 text-xs font-medium text-white hover:bg-blue-500 disabled:opacity-50"
+                >
+                  {liveName ? <Spinner /> : "+"}
+                </button>
+              </form>
+
+              {liveName && (
+                <div className="flex items-center gap-2 px-3 pb-2 text-[11px] text-neutral-500">
+                  <Spinner />
+                  <span className="min-w-0 flex-1 truncate">
+                    <span className="font-mono text-neutral-300">
+                      {liveName}
+                    </span>
+                    <span className="mx-1.5 text-neutral-700">·</span>
+                    {liveStep ?? "Starting"}…
+                  </span>
+                </div>
+              )}
+
+              {mainClone && (
+                <button
+                  onClick={() => selectWorktree(mainClone.id)}
+                  className={cn(
+                    "flex w-full items-center justify-between gap-2 px-3 py-2 text-left hover:bg-neutral-900/50",
+                    selectedId === mainClone.id && "bg-neutral-900",
+                  )}
+                  title={mainClone.path}
+                >
+                  <div className="flex min-w-0 flex-1 items-start gap-2">
+                    <span className="mt-0.5 shrink-0 text-[11px] text-blue-400">
+                      ◆
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate font-mono text-xs text-neutral-100">
+                        {mainClone.branch}
+                      </div>
+                      <div className="truncate font-mono text-[11px] text-neutral-500">
+                        {shortenPath(mainClone.path)}
+                      </div>
+                    </div>
+                  </div>
+                </button>
+              )}
+
+              {regular.length === 0 && !liveName ? (
+                <div className="m-3 rounded border border-dashed border-neutral-800 p-3 text-center text-[11px] text-neutral-600">
+                  No worktrees yet. Create one above.
+                </div>
+              ) : (
+                <>
+                  {changes.length > 0 && (
+                    <>
+                      <SectionHeader
+                        label="Changes"
+                        count={changes.length}
+                      />
+                      <ul className="divide-y divide-neutral-900">
+                        {changes.map((w) => renderRow(w, false, false))}
+                      </ul>
+                    </>
+                  )}
+                  {dormant.length > 0 && (
+                    <>
+                      <SectionHeader
+                        label="Inactive"
+                        count={dormant.length}
+                      />
+                      <ul className="divide-y divide-neutral-900">
+                        {dormant.map((w) => renderRow(w, true, false))}
+                      </ul>
+                    </>
+                  )}
+                </>
+              )}
+              </>}
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="flex items-center justify-between border-t border-neutral-800 px-3 py-2">
         <label
           className="flex select-none items-center gap-1.5 text-[11px] text-neutral-500"
-          title="Skip the post-create hook (worktree-setup.toml). Useful when you don't want to spin up the devcontainer / install deps for this worktree."
+          title="Skip the post-create hook (worktree-setup.toml) for the next worktree create."
         >
           <input
             type="checkbox"
             checked={skipSetup}
             onChange={(e) => setSkipSetup(e.target.checked)}
-            disabled={!workspace || creating}
             className="h-3 w-3"
           />
           skip setup hook
         </label>
-      </form>
-
-      {creatingName && (
-        <div className="flex items-center gap-2 border-b border-neutral-900 px-3 py-2 text-[11px] text-neutral-500">
-          <Spinner />
-          <span className="min-w-0 flex-1 truncate">
-            <span className="font-mono text-neutral-300">{creatingName}</span>
-            <span className="mx-1.5 text-neutral-700">·</span>
-            {creatingStep ?? "Starting"}…
-          </span>
-        </div>
-      )}
-
-      <div className="flex-1 overflow-y-auto">
-        {mainClone && (
-          <button
-            onClick={() => selectWorktree(mainClone.id)}
-            className={cn(
-              "flex w-full items-center justify-between gap-2 border-b border-neutral-900 px-3 py-2 text-left hover:bg-neutral-900/50",
-              selectedId === mainClone.id && "bg-neutral-900",
-            )}
-            title={mainClone.path}
-          >
-            <div className="flex min-w-0 flex-1 items-start gap-2">
-              <span className="mt-0.5 shrink-0 text-[11px] text-blue-400">◆</span>
-              <div className="min-w-0 flex-1">
-                <div className="truncate font-mono text-xs text-neutral-100">
-                  {mainClone.branch}
-                </div>
-                <div className="truncate font-mono text-[11px] text-neutral-500">
-                  {shortenPath(mainClone.path)}
-                </div>
-              </div>
-            </div>
-          </button>
-        )}
-        {regular.length === 0 ? (
-          <div className="m-3 rounded border border-dashed border-neutral-800 p-3 text-center text-[11px] text-neutral-600">
-            No worktrees yet. Create one above.
-          </div>
-        ) : (
-          (() => {
-            const { withAgent, changes, dormant } = groupWorktrees(
-              regular,
-              activity,
-            );
-            const renderRow = (w: Worktree, dim: boolean) => (
-              <li
-                key={w.id}
-                className={cn(
-                  "group relative flex cursor-pointer items-start px-3 py-2 hover:bg-neutral-900/50",
-                  selectedId === w.id && "bg-neutral-900",
-                )}
-                onClick={() => selectWorktree(w.id)}
-              >
-                {/* Dim the row CONTENT but not the row itself — `opacity` <1
-                    creates a stacking context, and applying it to the <li>
-                    traps RowMenu's dropdown inside that context: sibling
-                    rows below paint over the popup and swallow its clicks. */}
-                <div
-                  className={cn(
-                    "flex min-w-0 flex-1 items-start gap-2",
-                    dim && "opacity-60",
-                  )}
-                >
-                  <StatusDot
-                    activity={activity[w.id]?.activity ?? "inactive"}
-                    className="mt-1.5"
-                  />
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-baseline gap-2">
-                      <span className="truncate font-mono text-xs text-neutral-200">
-                        {w.branch}
-                      </span>
-                      <AheadBehind
-                        ahead={activity[w.id]?.ahead ?? 0}
-                        behind={activity[w.id]?.behind ?? 0}
-                      />
-                    </div>
-                    <div
-                      className="truncate font-mono text-[11px] text-neutral-500"
-                      title={w.path}
-                    >
-                      {shortenPath(w.path)}
-                    </div>
-                  </div>
-                </div>
-                <RowMenu
-                  behind={activity[w.id]?.behind ?? 0}
-                  onSync={() => setSyncTarget(w)}
-                  onMerge={() => setMergeTarget(w)}
-                  onRemove={() => onRemove(w)}
-                />
-              </li>
-            );
-            return (
-              <>
-                {withAgent.length > 0 && (
-                  <>
-                    <SectionHeader label="Agents" count={withAgent.length} />
-                    <ul className="divide-y divide-neutral-900">
-                      {withAgent.map((w) => renderRow(w, false))}
-                    </ul>
-                  </>
-                )}
-                {changes.length > 0 && (
-                  <>
-                    <SectionHeader label="Changes" count={changes.length} />
-                    <ul className="divide-y divide-neutral-900">
-                      {changes.map((w) => renderRow(w, false))}
-                    </ul>
-                  </>
-                )}
-                {dormant.length > 0 && (
-                  <>
-                    <SectionHeader label="Inactive" count={dormant.length} />
-                    <ul className="divide-y divide-neutral-900">
-                      {dormant.map((w) => renderRow(w, true))}
-                    </ul>
-                  </>
-                )}
-              </>
-            );
-          })()
-        )}
+        <button
+          onClick={() => void pickAndOpenAnotherRepo()}
+          className="rounded border border-neutral-700 px-2 py-1 text-[11px] text-neutral-300 hover:bg-neutral-800"
+        >
+          + Open repo
+        </button>
       </div>
+
       {mergeTarget && (
         <MergeDialog
           worktree={mergeTarget}
-          defaultBranch={workspace?.defaultBranch ?? "main"}
+          defaultBranch={defaultBranchFor(mergeTarget)}
           initialStrategy={mergeStrategyDefault}
           onClose={() => setMergeTarget(null)}
           onConfirm={async (opts) => {
@@ -480,7 +707,7 @@ export function WorktreeSidebar() {
       {syncTarget && (
         <SyncDialog
           worktree={syncTarget}
-          defaultBranch={workspace?.defaultBranch ?? "main"}
+          defaultBranch={defaultBranchFor(syncTarget)}
           behind={activity[syncTarget.id]?.behind ?? 0}
           initialStrategy={syncStrategyDefault}
           onClose={() => setSyncTarget(null)}
@@ -493,6 +720,26 @@ export function WorktreeSidebar() {
       )}
     </div>
   );
+}
+
+/// Small tag chip next to a branch row showing which repo it belongs
+/// to. Only rendered when more than one workspace is open.
+function RepoChip({ workspace }: { workspace: Workspace | undefined }) {
+  if (!workspace) return null;
+  return (
+    <span
+      className="rounded bg-neutral-800/80 px-1 font-mono text-[10px] text-neutral-400"
+      title={workspace.root}
+    >
+      {basenameOf(workspace.root)}
+    </span>
+  );
+}
+
+function basenameOf(p: string): string {
+  const trimmed = p.replace(/\/+$/, "");
+  const idx = trimmed.lastIndexOf("/");
+  return idx === -1 ? trimmed : trimmed.slice(idx + 1);
 }
 
 function MergeDialog({

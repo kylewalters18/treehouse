@@ -13,6 +13,9 @@ import {
   treehouseConfigOpenFile,
   treehouseConfigReload,
 } from "@/ipc/client";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { useWorkspaceStore, workspaceForWorktree } from "@/stores/workspace";
+import { useWorktreesStore } from "@/stores/worktrees";
 import { toastInfo } from "@/stores/toasts";
 import { cn } from "@/lib/cn";
 import type { WorktreeId } from "@/ipc/types";
@@ -104,6 +107,42 @@ function buildCommands(deps: {
       useUiStore.getState().toggleProblemsTab();
     },
   });
+  cmds.push({
+    id: "workspace.openAnother",
+    category: "Workspace",
+    title: "Open another repo",
+    description:
+      "Pick a folder and add it to the open set (your other repos stay open)",
+    run: async () => {
+      const picked = await openDialog({
+        directory: true,
+        multiple: false,
+        title: "Select a git repository to open",
+      });
+      if (typeof picked === "string") {
+        await useWorkspaceStore.getState().openWorkspace(picked);
+      }
+    },
+  });
+  if (deps.worktreeId) {
+    const selectedId = deps.worktreeId;
+    const wt = useWorktreesStore
+      .getState()
+      .worktrees.find((w) => w.id === selectedId);
+    const ws = workspaceForWorktree(wt?.workspaceId);
+    if (ws) {
+      cmds.push({
+        id: "workspace.closeThis",
+        category: "Workspace",
+        title: `Close this repo (${ws.root.split("/").pop()})`,
+        description:
+          "Detach this repo from treehouse. Kills any live agents in it; worktree directories on disk are kept.",
+        run: async () => {
+          await useWorkspaceStore.getState().closeWorkspace(ws.id);
+        },
+      });
+    }
+  }
   return cmds;
 }
 

@@ -6,7 +6,7 @@ import { useCommentsStore, formatBatchForAgent } from "@/stores/comments";
 import { useDiffsStore } from "@/stores/diffs";
 import { useUiStore } from "@/stores/ui";
 import { useWorktreesStore } from "@/stores/worktrees";
-import { useWorkspaceStore } from "@/stores/workspace";
+import { workspaceForWorktree } from "@/stores/workspace";
 import { toastError, toastInfo, toastSuccess } from "@/stores/toasts";
 import { asMessage } from "@/lib/errors";
 import { cn } from "@/lib/cn";
@@ -17,10 +17,13 @@ import { cn } from "@/lib/cn";
 /// the user doesn't have to navigate back to each file to audit the
 /// batch before sending.
 export function SendQueueButton() {
-  const workspace = useWorkspaceStore((s) => s.workspace);
   const selectedWorktreeId = useUiStore((s) => s.selectedWorktreeId);
   const worktrees = useWorktreesStore((s) => s.worktrees);
   const selected = worktrees.find((w) => w.id === selectedWorktreeId) ?? null;
+  // Multi-repo: comments are tagged with their workspace root; derive
+  // the active repo from the selected worktree rather than the (now
+  // ambiguous) "current workspace."
+  const workspace = workspaceForWorktree(selected?.workspaceId);
   const activeAgentId = useUiStore((s) =>
     selectedWorktreeId ? s.activeAgentByWorktree[selectedWorktreeId] ?? null : null,
   );

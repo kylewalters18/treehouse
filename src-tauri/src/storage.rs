@@ -16,6 +16,7 @@ use crate::worktree::{MergeBackStrategy, SyncStrategy};
 
 const RECENT_MAX: usize = 20;
 const RECENT_FILE: &str = "recent.json";
+const OPEN_WORKSPACES_FILE: &str = "open_workspaces.json";
 const SETTINGS_FILE: &str = "settings.json";
 const COMMENTS_FILE: &str = "comments.json";
 
@@ -101,6 +102,78 @@ fn now_millis() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+// --- Open workspaces (multi-repo session) ---
+//
+// Parallel to `recent.json` but with different semantics: this is the
+// set of workspaces the user wants restored next launch, not a most-
+// recently-used history. Open appends, close removes; insertion order
+// is preserved so the sidebar's per-repo sections come back in the
+// same order. Same JSON-on-disk shape (just `path` — no timestamp
+// needed since this isn't sorted).
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct OpenWorkspacesFile {
+    items: Vec<PathBuf>,
+}
+
+fn open_workspaces_path(app: &AppHandle) -> AppResult<PathBuf> {
+    Ok(config_dir(app)?.join(OPEN_WORKSPACES_FILE))
+}
+
+/// Persisted set of "should be open on launch" repo paths, in insertion
+/// order. Missing file → empty list (first run / never opened anything).
+pub async fn list_open(app: &AppHandle) -> AppResult<Vec<PathBuf>> {
+    let path = open_workspaces_path(app)?;
+    let bytes = match tokio::fs::read(&path).await {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(AppError::Io(format!("read {}: {e}", path.display()))),
+    };
+    let file: OpenWorkspacesFile = serde_json::from_slice(&bytes)
+        .map_err(|e| AppError::Unknown(format!("parse {}: {e}", path.display())))?;
+    Ok(file.items)
+}
+
+/// Add `opened_path` to the persisted open set. Idempotent — already-
+/// present paths keep their position rather than getting bumped to
+/// the end, so a Cmd+R / accidental re-open doesn't reorder the
+/// sidebar.
+pub async fn push_open(app: &AppHandle, opened_path: &PathBuf) -> AppResult<()> {
+    let dir = config_dir(app)?;
+    let _ = tokio::fs::create_dir_all(&dir).await;
+    let mut items = list_open(app).await.unwrap_or_default();
+    if !items.iter().any(|p| p == opened_path) {
+        items.push(opened_path.clone());
+    }
+    write_open(app, &items).await
+}
+
+/// Remove `closed_path` from the persisted open set. No-op if it's
+/// not present. Called from `close_workspace` and from boot-restore
+/// when a stored path no longer exists on disk.
+pub async fn remove_open(app: &AppHandle, closed_path: &PathBuf) -> AppResult<()> {
+    let mut items = list_open(app).await.unwrap_or_default();
+    let before = items.len();
+    items.retain(|p| p != closed_path);
+    if items.len() == before {
+        return Ok(());
+    }
+    write_open(app, &items).await
+}
+
+async fn write_open(app: &AppHandle, items: &[PathBuf]) -> AppResult<()> {
+    let path = open_workspaces_path(app)?;
+    let file = OpenWorkspacesFile {
+        items: items.to_vec(),
+    };
+    let bytes = serde_json::to_vec_pretty(&file)
+        .map_err(|e| AppError::Unknown(format!("serialize open workspaces: {e}")))?;
+    tokio::fs::write(&path, bytes)
+        .await
+        .map_err(|e| AppError::Io(format!("write {}: {e}", path.display())))?;
+    Ok(())
 }
 
 // --- Settings ---

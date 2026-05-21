@@ -32,6 +32,11 @@ pub async fn open_workspace(
     if let Err(e) = storage::push_recent(&app, &ws.root).await {
         tracing::warn!(?e, "push_recent failed");
     }
+    // Track in the persisted open-set so the next launch restores this
+    // repo (multi-repo session restore). Best-effort.
+    if let Err(e) = storage::push_open(&app, &ws.root).await {
+        tracing::warn!(?e, "push_open failed");
+    }
     // Reconcile any pre-existing worktrees under <repo>__worktrees/.
     worktree::reconcile(ws.id, &state).await?;
     // Register the main clone as a synthetic sidebar entry.
@@ -163,9 +168,30 @@ pub async fn close_workspace(
         state.worktrees.remove(id);
     }
     let _ = app.emit(&events::lsp_servers_changed(workspace_id), ());
-    state.workspaces.remove(&workspace_id);
+    let removed_root = state
+        .workspaces
+        .remove(&workspace_id)
+        .map(|(_, ws)| ws.root);
+    if let Some(root) = removed_root {
+        if let Err(e) = storage::remove_open(&app, &root).await {
+            tracing::warn!(?e, "remove_open failed");
+        }
+    }
     tracing::info!(id = %workspace_id, worktrees = wt_ids.len(), "closed workspace");
     Ok(())
+}
+
+/// Return the workspaces currently open in this app session. Used by
+/// the renderer to hydrate `useWorkspaceStore` on first mount —
+/// AppState is the source of truth, and boot-time `restore_open_workspaces`
+/// (lib.rs) has already opened anything that should be live.
+#[tauri::command]
+pub async fn list_workspaces(state: State<'_, AppState>) -> AppResult<Vec<Workspace>> {
+    Ok(state
+        .workspaces
+        .iter()
+        .map(|e| e.value().clone())
+        .collect())
 }
 
 #[tauri::command]
@@ -1006,7 +1032,7 @@ pub async fn treehouse_config_open_file(app: AppHandle) -> AppResult<()> {
 
 /// Start the file watcher for a worktree and kick off an initial diff compute.
 /// Both are best-effort: failures are logged but don't block the caller.
-fn prime_worktree_watch(app: &AppHandle, wt: &Worktree) {
+pub(crate) fn prime_worktree_watch(app: &AppHandle, wt: &Worktree) {
     let app_clone = app.clone();
     let worktree_id = wt.id;
     let worktree_path = wt.path.clone();

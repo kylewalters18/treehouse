@@ -45,8 +45,26 @@ export function closeWorkspace(workspaceId: WorkspaceId): Promise<void> {
   return invoke<void>("close_workspace", { workspaceId });
 }
 
+/// Currently-open workspaces (multi-repo session). Used to hydrate
+/// `useWorkspaceStore` on app mount and after the boot-time restore
+/// emits `app://workspaces-restored`.
+export function listWorkspaces(): Promise<Workspace[]> {
+  return invoke<Workspace[]>("list_workspaces");
+}
+
 export function listRecentWorkspaces(): Promise<RecentWorkspace[]> {
   return invoke<RecentWorkspace[]>("list_recent_workspaces");
+}
+
+/// One-shot event fired by the Rust setup() callback after it finishes
+/// restoring the persisted open-workspaces set on launch. The renderer
+/// listens for it on mount and (re)calls listWorkspaces() to hydrate
+/// the store — handles the race where the renderer mounts before
+/// restore completes.
+export function onWorkspacesRestored(
+  handler: () => void,
+): Promise<UnlistenFn> {
+  return listen<void>("app://workspaces-restored", () => handler());
 }
 
 /// Open an http/https URL in the host's default browser. Backend

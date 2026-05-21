@@ -96,12 +96,36 @@ describe("worktrees store", () => {
     expect(useToastsStore.getState().toasts.length).toBe(1);
   });
 
-  it("refresh replaces the list from the backend", async () => {
-    const list = [wt({ id: "x" }), wt({ id: "y" })];
+  it("refresh replaces only the given workspace's entries", async () => {
+    // Multi-repo invariant: refreshing ws-1 doesn't drop ws-2's
+    // worktrees. The store keeps a flat list keyed by workspaceId per
+    // entry and merges on refresh.
+    const wsTwoExisting = wt({ id: "kept", workspaceId: "ws-2" });
+    useWorktreesStore.setState({ worktrees: [wsTwoExisting] });
+    const list = [
+      wt({ id: "x", workspaceId: "ws-1" }),
+      wt({ id: "y", workspaceId: "ws-1" }),
+    ];
     ipcMocked.listWorktrees.mockResolvedValueOnce(list);
     await useWorktreesStore.getState().refresh("ws-1");
-    expect(useWorktreesStore.getState().worktrees).toEqual(list);
+    expect(useWorktreesStore.getState().worktrees).toEqual([
+      wsTwoExisting,
+      ...list,
+    ]);
     expect(useWorktreesStore.getState().loading).toBe(false);
+  });
+
+  it("dropForWorkspace clears only the given workspace's entries", () => {
+    useWorktreesStore.setState({
+      worktrees: [
+        wt({ id: "a", workspaceId: "ws-1" }),
+        wt({ id: "b", workspaceId: "ws-2" }),
+        wt({ id: "c", workspaceId: "ws-1" }),
+      ],
+    });
+    useWorktreesStore.getState().dropForWorkspace("ws-1");
+    const remaining = useWorktreesStore.getState().worktrees.map((w) => w.id);
+    expect(remaining).toEqual(["b"]);
   });
 
   it("creating flag flips around the IPC call", async () => {

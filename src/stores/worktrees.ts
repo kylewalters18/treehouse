@@ -7,10 +7,19 @@ import { useEditorViewStateStore } from "@/stores/editor-view-state";
 import { clearAgentLeafStatesForWorktree } from "@/panels/agent-leaf-state";
 
 type WorktreesState = {
+  /// Flat list across every open workspace. Each Worktree carries its
+  /// own `workspaceId` so consumers filter at render time. Multi-repo:
+  /// `refresh(workspaceId)` merges (replaces only that workspace's
+  /// entries); never `replace-all` or other repos' worktrees vanish.
   worktrees: Worktree[];
   loading: boolean;
   creating: boolean;
   refresh: (workspaceId: WorkspaceId) => Promise<void>;
+  refreshAll: (workspaceIds: WorkspaceId[]) => Promise<void>;
+  /// Drop every entry for a given workspace. Called when a repo is
+  /// closed so the sidebar doesn't briefly show its (now-orphaned)
+  /// worktrees before the next refresh.
+  dropForWorkspace: (workspaceId: WorkspaceId) => void;
   create: (
     workspaceId: WorkspaceId,
     name: string,
@@ -32,11 +41,31 @@ export const useWorktreesStore = create<WorktreesState>((set, get) => ({
     set({ loading: true });
     try {
       const list = await ipc.listWorktrees(workspaceId);
-      set({ worktrees: list, loading: false });
+      // Merge: drop only this workspace's prior entries, then append
+      // the fresh ones. Other workspaces' worktrees stay put.
+      set((s) => ({
+        worktrees: [
+          ...s.worktrees.filter((w) => w.workspaceId !== workspaceId),
+          ...list,
+        ],
+        loading: false,
+      }));
     } catch (e: unknown) {
       toastError("Failed to list worktrees", asMessage(e));
       set({ loading: false });
     }
+  },
+  async refreshAll(workspaceIds) {
+    if (workspaceIds.length === 0) {
+      set({ worktrees: [], loading: false });
+      return;
+    }
+    await Promise.all(workspaceIds.map((id) => get().refresh(id)));
+  },
+  dropForWorkspace(workspaceId) {
+    set((s) => ({
+      worktrees: s.worktrees.filter((w) => w.workspaceId !== workspaceId),
+    }));
   },
   async create(workspaceId, name, opts = {}) {
     set({ creating: true });

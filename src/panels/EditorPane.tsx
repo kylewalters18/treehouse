@@ -27,7 +27,7 @@ import { useLspStore } from "@/stores/lsp";
 import { useNavigationStore } from "@/stores/navigation";
 import { useSettingsStore } from "@/stores/settings";
 import { useUiStore } from "@/stores/ui";
-import { useWorkspaceStore } from "@/stores/workspace";
+import { workspaceForWorktree } from "@/stores/workspace";
 import { useWorktreesStore } from "@/stores/worktrees";
 import { toastError, toastInfo, toastSuccess } from "@/stores/toasts";
 import { asMessage } from "@/lib/errors";
@@ -522,9 +522,12 @@ export function CommentOverlay({
   worktreeId: WorktreeId;
   filePath: string;
 }) {
-  const workspace = useWorkspaceStore((s) => s.workspace);
   const worktrees = useWorktreesStore((s) => s.worktrees);
   const wt = worktrees.find((w) => w.id === worktreeId) ?? null;
+  // Multi-repo: comments are keyed by (workspaceRoot, branch). Derive
+  // the workspace from the worktree we're editing in rather than a
+  // global "current workspace."
+  const workspace = workspaceForWorktree(wt?.workspaceId);
   const workspaceRoot = workspace?.root ?? "";
   const branch = wt?.branch ?? "";
 

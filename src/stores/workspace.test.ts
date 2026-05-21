@@ -1,19 +1,24 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import * as ipc from "@/ipc/client";
 import type { Workspace } from "@/ipc/types";
-import { useWorkspaceStore } from "./workspace";
+import { useWorkspaceStore, workspaceForWorktree } from "./workspace";
 
 vi.mock("@/ipc/client");
 const ipcMocked = vi.mocked(ipc);
 
 function freshState() {
-  useWorkspaceStore.setState({ workspace: null, loading: false, error: null });
+  useWorkspaceStore.setState({ workspaces: [], loading: false, error: null });
 }
 
-const WS: Workspace = {
-  id: "ws-1",
-  root: "/tmp/repo",
+const WS_A: Workspace = {
+  id: "ws-a",
+  root: "/tmp/repo-a",
   defaultBranch: "main",
+};
+const WS_B: Workspace = {
+  id: "ws-b",
+  root: "/tmp/repo-b",
+  defaultBranch: "trunk",
 };
 
 describe("workspace store", () => {
@@ -22,53 +27,97 @@ describe("workspace store", () => {
     freshState();
   });
 
-  it("openWorkspace stores the Workspace on success", async () => {
-    ipcMocked.openWorkspace.mockResolvedValueOnce(WS);
-    await useWorkspaceStore.getState().openWorkspace("/tmp/repo");
+  it("openWorkspace hydrates from listWorkspaces on success", async () => {
+    // The store always re-hydrates after open instead of optimistically
+    // pushing — keeps it convergent with Rust state, which de-dupes by
+    // root and is the source of truth.
+    ipcMocked.openWorkspace.mockResolvedValueOnce(WS_A);
+    ipcMocked.listWorkspaces.mockResolvedValueOnce([WS_A]);
+    await useWorkspaceStore.getState().openWorkspace("/tmp/repo-a");
     const s = useWorkspaceStore.getState();
-    expect(s.workspace).toEqual(WS);
+    expect(s.workspaces).toEqual([WS_A]);
     expect(s.loading).toBe(false);
     expect(s.error).toBe(null);
   });
 
-  it("openWorkspace stores a readable error message on failure", async () => {
+  it("openWorkspace surfaces a readable error message on failure", async () => {
     ipcMocked.openWorkspace.mockRejectedValueOnce({
       kind: "NotAGitRepo",
       message: "not a repo",
     });
     await useWorkspaceStore.getState().openWorkspace("/not/a/repo");
     const s = useWorkspaceStore.getState();
-    expect(s.workspace).toBe(null);
+    expect(s.workspaces).toEqual([]);
     expect(s.error).toBe("not a repo");
-    // Regression: we used to serialize objects to "[object Object]".
     expect(s.error).not.toBe("[object Object]");
     expect(s.loading).toBe(false);
   });
 
-  it("closeWorkspace calls the backend before clearing", async () => {
-    useWorkspaceStore.setState({ workspace: WS, loading: false, error: null });
+  it("openWorkspace on a second repo appends rather than replacing", async () => {
+    // The multi-repo invariant: opening a new workspace must not drop
+    // the previously open one.
+    useWorkspaceStore.setState({ workspaces: [WS_A], loading: false, error: null });
+    ipcMocked.openWorkspace.mockResolvedValueOnce(WS_B);
+    ipcMocked.listWorkspaces.mockResolvedValueOnce([WS_A, WS_B]);
+    await useWorkspaceStore.getState().openWorkspace("/tmp/repo-b");
+    expect(useWorkspaceStore.getState().workspaces).toEqual([WS_A, WS_B]);
+  });
+
+  it("closeWorkspace removes the targeted repo and leaves the rest", async () => {
+    useWorkspaceStore.setState({
+      workspaces: [WS_A, WS_B],
+      loading: false,
+      error: null,
+    });
     ipcMocked.closeWorkspace.mockResolvedValueOnce(undefined);
-    await useWorkspaceStore.getState().closeWorkspace();
-    expect(ipcMocked.closeWorkspace).toHaveBeenCalledWith(WS.id);
-    expect(useWorkspaceStore.getState().workspace).toBe(null);
+    ipcMocked.listWorkspaces.mockResolvedValueOnce([WS_B]);
+    await useWorkspaceStore.getState().closeWorkspace(WS_A.id);
+    expect(ipcMocked.closeWorkspace).toHaveBeenCalledWith(WS_A.id);
+    expect(useWorkspaceStore.getState().workspaces).toEqual([WS_B]);
   });
 
-  it("closeWorkspace still clears the UI even if the backend rejects", async () => {
-    useWorkspaceStore.setState({ workspace: WS, loading: false, error: null });
+  it("closeWorkspace still re-hydrates even if the backend rejects", async () => {
+    useWorkspaceStore.setState({
+      workspaces: [WS_A, WS_B],
+      loading: false,
+      error: null,
+    });
     ipcMocked.closeWorkspace.mockRejectedValueOnce(new Error("boom"));
-    await useWorkspaceStore.getState().closeWorkspace();
-    expect(useWorkspaceStore.getState().workspace).toBe(null);
+    ipcMocked.listWorkspaces.mockResolvedValueOnce([WS_B]);
+    await useWorkspaceStore.getState().closeWorkspace(WS_A.id);
+    expect(useWorkspaceStore.getState().workspaces).toEqual([WS_B]);
   });
 
-  it("loading flag flips around the IPC call", async () => {
-    let resolve!: (w: typeof WS) => void;
+  it("hydrate replaces the workspaces list with Rust's source of truth", async () => {
+    useWorkspaceStore.setState({ workspaces: [WS_A], loading: false, error: null });
+    ipcMocked.listWorkspaces.mockResolvedValueOnce([WS_A, WS_B]);
+    await useWorkspaceStore.getState().hydrate();
+    expect(useWorkspaceStore.getState().workspaces).toEqual([WS_A, WS_B]);
+  });
+
+  it("loading flag flips around the open IPC", async () => {
+    let resolveOpen!: (w: Workspace) => void;
     ipcMocked.openWorkspace.mockImplementationOnce(
-      () => new Promise((r) => (resolve = r)),
+      () => new Promise<Workspace>((r) => (resolveOpen = r)),
     );
-    const p = useWorkspaceStore.getState().openWorkspace("/tmp/repo");
+    ipcMocked.listWorkspaces.mockResolvedValueOnce([WS_A]);
+    const p = useWorkspaceStore.getState().openWorkspace("/tmp/repo-a");
     expect(useWorkspaceStore.getState().loading).toBe(true);
-    resolve(WS);
+    resolveOpen(WS_A);
     await p;
     expect(useWorkspaceStore.getState().loading).toBe(false);
+  });
+
+  it("workspaceForWorktree resolves a workspace by id", () => {
+    useWorkspaceStore.setState({
+      workspaces: [WS_A, WS_B],
+      loading: false,
+      error: null,
+    });
+    expect(workspaceForWorktree(WS_B.id)).toEqual(WS_B);
+    expect(workspaceForWorktree(undefined)).toBe(null);
+    expect(workspaceForWorktree("missing" as unknown as Workspace["id"])).toBe(
+      null,
+    );
   });
 });

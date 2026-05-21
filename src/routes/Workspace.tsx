@@ -5,7 +5,7 @@ import {
   PanelResizeHandle,
   type ImperativePanelHandle,
 } from "react-resizable-panels";
-import { useWorkspaceStore } from "@/stores/workspace";
+import { useWorkspaceStore, workspaceForWorktree } from "@/stores/workspace";
 import { useWorktreesStore } from "@/stores/worktrees";
 import { useDiffsStore } from "@/stores/diffs";
 import { useLspStore } from "@/stores/lsp";
@@ -22,7 +22,7 @@ import { CommandPalette } from "@/components/CommandPalette";
 import { SystemFileViewer } from "@/components/SystemFileViewer";
 
 export function Workspace() {
-  const workspace = useWorkspaceStore((s) => s.workspace);
+  const workspaceCount = useWorkspaceStore((s) => s.workspaces.length);
   const closeWorkspace = useWorkspaceStore((s) => s.closeWorkspace);
   const resetWorktrees = useWorktreesStore((s) => s.reset);
   const resetDiffs = useDiffsStore((s) => s.reset);
@@ -34,6 +34,16 @@ export function Workspace() {
   const toggleSidebar = useUiStore((s) => s.toggleWorktreeSidebar);
   const sidebarPanelRef = useRef<ImperativePanelHandle>(null);
   const selectedWorktreeId = useUiStore((s) => s.selectedWorktreeId);
+  const worktrees = useWorktreesStore((s) => s.worktrees);
+  // Multi-repo: the "active" workspace is whichever owns the selected
+  // worktree. Falls back to the first open workspace when nothing is
+  // selected (fresh launch before the user has clicked anywhere).
+  const selectedWorktree =
+    worktrees.find((w) => w.id === selectedWorktreeId) ?? null;
+  const activeWorkspace =
+    workspaceForWorktree(selectedWorktree?.workspaceId) ??
+    useWorkspaceStore.getState().workspaces[0] ??
+    null;
   const toggleProblemsTab = useUiStore((s) => s.toggleProblemsTab);
   // Cmd+P "Go to file" picker. Open state lives here so the
   // shortcut works regardless of which pane has focus.
@@ -64,12 +74,18 @@ export function Workspace() {
 
   useEffect(() => {
     void loadLspConfigs();
+    // Reset only when leaving the Workspace shell entirely (all repos
+    // closed → Home). With multi-repo, opening another repo MUST NOT
+    // reset worktrees/diffs/ui — they're shared across all open
+    // workspaces and keyed by worktreeId.
     return () => {
       resetWorktrees();
       resetDiffs();
       resetUi();
     };
-  }, [workspace, resetWorktrees, resetDiffs, resetUi, loadLspConfigs]);
+    // Intentionally empty deps: only the unmount path runs the reset.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Cmd+\ (Ctrl+\ on Linux/Win) toggles focus mode.
   // Cmd+B toggles the worktree sidebar (VS Code muscle memory).
@@ -120,17 +136,23 @@ export function Workspace() {
     return () => window.removeEventListener("keydown", onKey);
   }, [toggleFocusMode, toggleSidebar, selectedWorktreeId, toggleProblemsTab]);
 
-  if (!workspace) return null;
+  if (workspaceCount === 0) return null;
 
   return (
     <div className="flex h-full w-full flex-col">
       <header className="flex items-center justify-between border-b border-neutral-800 px-4 py-2 text-xs">
         <div className="flex items-center gap-3">
           <span className="font-semibold">treehouse</span>
-          <span className="font-mono text-neutral-400">{workspace.root}</span>
-          <span className="rounded bg-neutral-800 px-2 py-0.5 font-mono text-[11px] text-neutral-300">
-            {workspace.defaultBranch}
-          </span>
+          {activeWorkspace && (
+            <>
+              <span className="font-mono text-neutral-400">
+                {activeWorkspace.root}
+              </span>
+              <span className="rounded bg-neutral-800 px-2 py-0.5 font-mono text-[11px] text-neutral-300">
+                {activeWorkspace.defaultBranch}
+              </span>
+            </>
+          )}
           {focusMode && (
             <span className="rounded bg-blue-900/40 px-2 py-0.5 font-mono text-[11px] text-blue-300">
               focus · ⌘\ to exit
@@ -141,8 +163,12 @@ export function Workspace() {
           <SendQueueButton />
           <SettingsMenu />
           <button
-            onClick={closeWorkspace}
-            className="rounded border border-neutral-700 px-2 py-1 text-neutral-400 hover:bg-neutral-800"
+            onClick={() => {
+              if (activeWorkspace) void closeWorkspace(activeWorkspace.id);
+            }}
+            disabled={!activeWorkspace}
+            title="Close this repo (other open repos stay open)"
+            className="rounded border border-neutral-700 px-2 py-1 text-neutral-400 hover:bg-neutral-800 disabled:opacity-50"
           >
             Close
           </button>

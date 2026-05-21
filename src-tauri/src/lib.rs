@@ -93,6 +93,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             ipc::commands::open_workspace,
             ipc::commands::close_workspace,
+            ipc::commands::list_workspaces,
             ipc::commands::list_recent_workspaces,
             ipc::commands::open_external_url,
             ipc::commands::get_settings,
@@ -141,7 +142,7 @@ pub fn run() {
             ipc::commands::worktree_mark_setup_ran,
         ])
         .setup(|app| {
-            use tauri::Manager;
+            use tauri::{Emitter, Manager};
             tracing::info!("treehouse started");
             let handle = app.handle().clone();
             let state: tauri::State<AppState> = handle.state();
@@ -174,10 +175,65 @@ pub fn run() {
                     }
                 }
             });
+            // Restore the persisted open-workspaces set so the user
+            // doesn't have to re-open every repo on launch. Runs after
+            // the renderer has booted, then emits
+            // `app://workspaces-restored`; the renderer listens and
+            // (re)hydrates `useWorkspaceStore` from `list_workspaces`.
+            let handle_for_restore = handle.clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(e) = restore_open_workspaces(&handle_for_restore).await {
+                    tracing::warn!(?e, "restore_open_workspaces failed");
+                }
+                let _ = handle_for_restore.emit("app://workspaces-restored", ());
+            });
             Ok(())
         })
         .run(tauri::generate_context!())
         .expect("error while running treehouse");
+}
+
+/// Rehydrate the multi-repo session: read the persisted open-set and
+/// rerun the same open-workspace sequence (`workspace::open` +
+/// `worktree::reconcile` + `register_main_clone` + `prime_worktree_watch`
+/// + `recompute_all_for_workspace`) for each entry. Paths that no
+/// longer exist or fail to open are pruned from the persisted list so
+/// they don't keep tripping the next launch.
+async fn restore_open_workspaces(app: &tauri::AppHandle) -> util::errors::AppResult<()> {
+    let paths = storage::list_open(app).await.unwrap_or_default();
+    if paths.is_empty() {
+        return Ok(());
+    }
+    let state: tauri::State<AppState> = {
+        use tauri::Manager;
+        app.state()
+    };
+    for path in paths {
+        let as_str = path.to_string_lossy().to_string();
+        match workspace::open(&as_str, &state).await {
+            Ok(ws) => {
+                if let Err(e) = worktree::reconcile(ws.id, &state).await {
+                    tracing::warn!(?e, ?path, "reconcile failed during restore");
+                    continue;
+                }
+                let _ = worktree::register_main_clone(ws.id, &state).await;
+                for entry in state.worktrees.iter() {
+                    let wt = entry.value().clone();
+                    if wt.workspace_id != ws.id {
+                        continue;
+                    }
+                    ipc::commands::prime_worktree_watch(app, &wt);
+                }
+                worktree::status::recompute_all_for_workspace(app, ws.id).await;
+                tracing::info!(?path, "restored workspace");
+            }
+            Err(e) => {
+                tracing::warn!(?e, ?path, "restore: dropping persisted entry");
+                let _ = storage::remove_open(app, &path).await;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Mac `.app` bundles launched from Finder / launchd inherit a minimal PATH
