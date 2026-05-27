@@ -13,6 +13,7 @@ function freshState() {
       initSubmodules: false,
       defaultAgentBackend: "claudeCode",
       enabledLspLanguages: [],
+      baseRefs: {},
     },
     loaded: false,
   });
@@ -31,6 +32,7 @@ describe("settings store", () => {
       initSubmodules: true,
       defaultAgentBackend: "kiro",
       enabledLspLanguages: [],
+      baseRefs: {},
     });
     await useSettingsStore.getState().load();
     const s = useSettingsStore.getState();
@@ -55,6 +57,7 @@ describe("settings store", () => {
       initSubmodules: false,
       defaultAgentBackend: "claudeCode",
       enabledLspLanguages: [],
+      baseRefs: {},
     });
     await useSettingsStore.getState().setSyncStrategy("merge");
     expect(useSettingsStore.getState().settings.syncStrategy).toBe("merge");
@@ -70,6 +73,7 @@ describe("settings store", () => {
       initSubmodules: true,
       defaultAgentBackend: "claudeCode",
       enabledLspLanguages: [],
+      baseRefs: {},
     });
     await useSettingsStore.getState().setInitSubmodules(true);
     expect(useSettingsStore.getState().settings.initSubmodules).toBe(true);
@@ -85,6 +89,7 @@ describe("settings store", () => {
       initSubmodules: false,
       defaultAgentBackend: "kiro",
       enabledLspLanguages: [],
+      baseRefs: {},
     });
     await useSettingsStore.getState().setDefaultAgentBackend("kiro");
     expect(useSettingsStore.getState().settings.defaultAgentBackend).toBe("kiro");

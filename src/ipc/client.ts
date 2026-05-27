@@ -52,6 +52,22 @@ export function listWorkspaces(): Promise<Workspace[]> {
   return invoke<Workspace[]>("list_workspaces");
 }
 
+/// Branch refs (local + remote-tracking, e.g. `origin/main`) offered in the
+/// Changes-pane base picker. Read-only; no fetch.
+export function listBranches(workspaceId: WorkspaceId): Promise<string[]> {
+  return invoke<string[]>("list_branches", { workspaceId });
+}
+
+/// Set (or clear, with `null`) the base ref the Changes diff compares against
+/// for this workspace. Returns the updated workspace; the Rust side also
+/// recomputes every worktree's diff so the Changes list refreshes.
+export function setWorkspaceBaseRef(
+  workspaceId: WorkspaceId,
+  baseRef: string | null,
+): Promise<Workspace> {
+  return invoke<Workspace>("set_workspace_base_ref", { workspaceId, baseRef });
+}
+
 export function listRecentWorkspaces(): Promise<RecentWorkspace[]> {
   return invoke<RecentWorkspace[]>("list_recent_workspaces");
 }

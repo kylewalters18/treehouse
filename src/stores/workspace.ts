@@ -31,6 +31,12 @@ type WorkspaceState = {
   /// again whenever `app://workspaces-restored` fires (after the boot
   /// restore completes).
   hydrate: () => Promise<void>;
+  /// Set (or clear, with `null`) the base ref the Changes diff compares
+  /// against for a workspace. Persisted Rust-side and applied to the live
+  /// state; we patch the returned workspace into the array so the picker
+  /// reflects the new value without a full re-hydrate. The Rust side also
+  /// recomputes every worktree diff, which arrives via `diff_updated`.
+  setBaseRef: (id: WorkspaceId, baseRef: string | null) => Promise<void>;
 };
 
 export const useWorkspaceStore = create<WorkspaceState>((set) => ({
@@ -69,6 +75,12 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
     } catch (e: unknown) {
       set({ error: asMessage(e), loading: false });
     }
+  },
+  async setBaseRef(id: WorkspaceId, baseRef: string | null) {
+    const updated = await ipc.setWorkspaceBaseRef(id, baseRef);
+    set((s) => ({
+      workspaces: s.workspaces.map((w) => (w.id === id ? updated : w)),
+    }));
   },
 }));
 

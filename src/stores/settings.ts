@@ -24,6 +24,7 @@ const DEFAULT_SETTINGS: Settings = {
   initSubmodules: false,
   defaultAgentBackend: "claudeCode",
   enabledLspLanguages: [],
+  baseRefs: {},
 };
 
 export const useSettingsStore = create<SettingsState>((set, get) => ({

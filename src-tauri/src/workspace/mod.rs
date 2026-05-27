@@ -16,6 +16,13 @@ pub struct Workspace {
     #[ts(type = "string")]
     pub root: PathBuf,
     pub default_branch: String,
+    /// User-configured base ref for the Changes (Branch-view) diff, e.g.
+    /// `"origin/main"`. `None` → the effective default of
+    /// `origin/<default_branch>` (see `worktree::git_ops::effective_base`).
+    /// Persisted per workspace by root path in `Settings::base_refs` — worktree
+    /// IDs are ephemeral across restarts, so the config hangs off the repo.
+    #[serde(default)]
+    pub base_ref_override: Option<String>,
 }
 
 pub async fn open(path: &str, state: &AppState) -> AppResult<Workspace> {
@@ -45,6 +52,9 @@ pub async fn open(path: &str, state: &AppState) -> AppResult<Workspace> {
         id: WorkspaceId::new(),
         root,
         default_branch,
+        // Populated by the `open_workspace` command from persisted settings;
+        // `workspace::open` has no `AppHandle` to read storage here.
+        base_ref_override: None,
     };
 
     state.workspaces.insert(workspace.id, workspace.clone());

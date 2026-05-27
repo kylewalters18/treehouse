@@ -40,4 +40,11 @@ defaultAgentBackend: AgentBackendKind,
 /**
  * LSP languages the user has flipped on. See struct-level rustdoc.
  */
-enabledLspLanguages: Array<string>, };
+enabledLspLanguages: Array<string>, 
+/**
+ * Per-workspace base ref for the Changes (Branch-view) diff, keyed by
+ * workspace root path. Absent key → the effective default of
+ * `origin/<default_branch>`. Keyed by path rather than `WorkspaceId`
+ * because IDs are regenerated on every app launch (see `Comment`).
+ */
+baseRefs: { [key in string]?: string }, };

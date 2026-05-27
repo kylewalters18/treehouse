@@ -208,6 +208,12 @@ pub struct Settings {
     /// LSP languages the user has flipped on. See struct-level rustdoc.
     #[serde(default)]
     pub enabled_lsp_languages: Vec<String>,
+    /// Per-workspace base ref for the Changes (Branch-view) diff, keyed by
+    /// workspace root path. Absent key → the effective default of
+    /// `origin/<default_branch>`. Keyed by path rather than `WorkspaceId`
+    /// because IDs are regenerated on every app launch (see `Comment`).
+    #[serde(default)]
+    pub base_refs: std::collections::BTreeMap<String, String>,
 }
 
 impl Default for Settings {
@@ -218,6 +224,7 @@ impl Default for Settings {
             init_submodules: false,
             default_agent_backend: AgentBackendKind::ClaudeCode,
             enabled_lsp_languages: Vec::new(),
+            base_refs: std::collections::BTreeMap::new(),
         }
     }
 }

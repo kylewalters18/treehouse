@@ -138,11 +138,12 @@ pub async fn merge_base(repo_root: &Path, a: &str, b: &str) -> AppResult<String>
     }
 }
 
-/// In-process `merge-base` via `git2` — sync, no subprocess. Used from the
-/// `fs_watch` debouncer (which runs on the watcher thread, no async runtime),
-/// so we can re-anchor the diff against the live fork point on every flush
-/// instead of trusting a possibly stale cached `base_ref`. Falls back to `b`'s
-/// SHA on orphan branches / missing refs, matching the async version's shape.
+/// In-process `merge-base` via `git2` — sync, no subprocess. A standalone
+/// primitive: `live_branch_anchor` inlines the equivalent over an already-open
+/// repo (it compares two candidate bases), but this single-base form is handy
+/// for tests and any future caller off the async runtime. Falls back to `b`'s
+/// SHA on orphan branches / missing refs.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn merge_base_sync(repo_path: &Path, a: &str, b: &str) -> AppResult<String> {
     let repo = Repository::open(repo_path)?;
     let oid_a = repo.revparse_single(a)?.id();
@@ -150,6 +151,23 @@ pub fn merge_base_sync(repo_path: &Path, a: &str, b: &str) -> AppResult<String> 
     match repo.merge_base(oid_a, oid_b) {
         Ok(oid) => Ok(oid.to_string()),
         Err(_) => Ok(oid_b.to_string()),
+    }
+}
+
+/// The base ref a worktree's Branch-view diff compares against: the
+/// workspace's configured override when set, else `origin/<default_branch>`.
+///
+/// `origin/<default>` is the default rather than local `<default>` because
+/// that's the integration target the branch was forked from, and the one
+/// GitHub/GitLab anchor their MR diff on. On squash-merge projects the two
+/// diverge — the platform rewrites each merged branch into a *fresh* commit on
+/// the remote, so local `<default>` (advanced by our own merge-backs, or just
+/// stale) ends up on a different lineage and leaks every remote commit into
+/// the diff. The user can override per workspace via the Changes-pane picker.
+pub fn effective_base(default_branch: &str, override_ref: Option<&str>) -> String {
+    match override_ref {
+        Some(r) if !r.trim().is_empty() => r.trim().to_string(),
+        _ => format!("origin/{default_branch}"),
     }
 }
 
@@ -162,19 +180,71 @@ pub fn merge_base_sync(repo_path: &Path, a: &str, b: &str) -> AppResult<String> 
 /// advisory — it's only used as a fallback when the live computation
 /// can't run (broken repo, missing refs).
 ///
+/// The base is the merge-base of `configured_base` (from `effective_base` —
+/// the per-workspace override, defaulting to `origin/<default>`) and the
+/// branch. Local `<default>` is a safety net: if the configured ref can't be
+/// resolved (no remote yet, unfetched, or a since-deleted ref) we fall back to
+/// it before giving up to `fallback`. Refs are read as-of-last-fetch — no
+/// fetch is performed here.
+///
 /// Returns `fallback` when `branch == default_branch` so the main-repo
-/// worktree continues to show committed work in Branch view; otherwise
-/// returns the live merge-base of `default_branch` and `branch`.
+/// worktree continues to show committed work in Branch view, or when no
+/// candidate yields a merge-base (orphan branch / missing refs).
 pub fn live_branch_anchor(
     repo_path: &Path,
     default_branch: &str,
+    configured_base: &str,
     branch: &str,
     fallback: &str,
 ) -> String {
     if branch == default_branch {
         return fallback.to_string();
     }
-    merge_base_sync(repo_path, default_branch, branch).unwrap_or_else(|_| fallback.to_string())
+    let Ok(repo) = Repository::open(repo_path) else {
+        return fallback.to_string();
+    };
+    let Ok(head) = repo.revparse_single(branch).map(|o| o.id()) else {
+        return fallback.to_string();
+    };
+
+    // Configured base wins; local `<default>` is the fallback when it can't be
+    // resolved. merge-base keeps the diff to "what this branch adds."
+    for base_ref in [configured_base, default_branch] {
+        let Ok(base_oid) = repo.revparse_single(base_ref).map(|o| o.id()) else {
+            continue;
+        };
+        if let Ok(mb) = repo.merge_base(base_oid, head) {
+            return mb.to_string();
+        }
+    }
+    fallback.to_string()
+}
+
+/// Branch refs offered in the Changes-pane base picker: local heads plus
+/// remote-tracking branches (`git for-each-ref refs/heads refs/remotes`),
+/// minus the `origin/HEAD` symbolic pointers. Sorted, deduped. Read-only, so
+/// `git2` would do — but for-each-ref's `%(refname:short)` gives exactly the
+/// short names we want to display and pass straight back as a base ref.
+pub async fn list_branches(repo_root: &Path) -> AppResult<Vec<String>> {
+    let stdout = git(
+        repo_root,
+        [
+            "for-each-ref",
+            "--format=%(refname:short)",
+            "refs/heads",
+            "refs/remotes",
+        ],
+    )
+    .await?;
+    let mut names: Vec<String> = stdout
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.ends_with("/HEAD"))
+        .map(str::to_string)
+        .collect();
+    names.sort();
+    names.dedup();
+    Ok(names)
 }
 
 /// `true` if the given git workdir has any staged or unstaged changes, tracked
@@ -907,14 +977,71 @@ mod tests {
             .unwrap();
         assert!(status.success());
 
-        // Cached anchor is now stale. live_branch_anchor must return the
-        // current merge-base (main's tip), not the stale fallback.
-        let anchor = live_branch_anchor(&r.root, "main", "feat", &captured_base);
+        // Cached anchor is now stale. With no remote, the default
+        // `origin/main` base can't resolve, so it falls back to local `main`
+        // and must return the current merge-base (main's tip), not the stale
+        // fallback.
+        let anchor = live_branch_anchor(&r.root, "main", "origin/main", "feat", &captured_base);
         assert_eq!(
             anchor, new_main,
             "expected live merge-base at main's tip, got stale fallback"
         );
         assert_ne!(anchor, initial_main);
+    }
+
+    /// Squash-merge projects rewrite each merged branch into a fresh commit on
+    /// `origin/<default>`, so local `main` (advanced by our own merge-backs, or
+    /// just stale) lands on a *different* lineage than the worktree branch —
+    /// which was forked from `origin/main`. Anchoring on local `main` then
+    /// shares only the ancient root with the branch and leaks every remote
+    /// commit into the diff. The anchor must prefer the `origin/main`
+    /// merge-base, matching the GitHub/GitLab MR diff. This is the exact bug
+    /// users hit on squash-merge projects.
+    #[test]
+    fn live_branch_anchor_prefers_origin_when_local_main_diverged() {
+        let r = TempRepo::new();
+        let initial = r.head();
+
+        // Advance main with a commit, then publish it to a bare `origin`.
+        // Commit O is feat's true fork point on the remote lineage.
+        let on_main = r.commit_file("o.txt", "o\n", "O");
+        let bare = r.root.parent().unwrap().join("origin.git");
+        run_git(&r.root, &["init", "--bare", "-q", bare.to_str().unwrap()]);
+        run_git(&r.root, &["remote", "add", "origin", bare.to_str().unwrap()]);
+        run_git(&r.root, &["push", "-q", "origin", "main"]);
+        run_git(&r.root, &["fetch", "-q", "origin"]);
+
+        // Branch off the remote lineage (main is at O), add the branch's work.
+        run_git(&r.root, &["checkout", "-q", "-b", "feat"]);
+        r.commit_file("f.txt", "f\n", "F");
+
+        // Now diverge LOCAL main onto another lineage: reset to root + add an
+        // unrelated commit (an in-app merge-back, say). origin/main stays at O;
+        // local main no longer contains O.
+        run_git(&r.root, &["checkout", "-q", "main"]);
+        run_git(&r.root, &["reset", "--hard", "-q", &initial]);
+        r.commit_file("l.txt", "l\n", "L");
+        run_git(&r.root, &["checkout", "-q", "feat"]);
+
+        // Sanity: the two candidate merge-bases really do differ.
+        let local_mb = merge_base_sync(&r.root, "main", "feat").unwrap();
+        let origin_mb = merge_base_sync(&r.root, "origin/main", "feat").unwrap();
+        assert_eq!(local_mb, initial, "local main shares only the root with feat");
+        assert_eq!(origin_mb, on_main, "origin/main is feat's true fork point");
+        assert_ne!(local_mb, origin_mb);
+
+        // With the default base (origin/main), the anchor must pick the origin
+        // merge-base (O), not local main's stale root — else commit O leaks
+        // into the Changes pane as a branch change.
+        let anchor = live_branch_anchor(&r.root, "main", "origin/main", "feat", &local_mb);
+        assert_eq!(
+            anchor, on_main,
+            "expected origin/main merge-base, got local-main's stale root"
+        );
+
+        // An explicit override to local `main` flips it back to local's root.
+        let local_anchor = live_branch_anchor(&r.root, "main", "main", "feat", &local_mb);
+        assert_eq!(local_anchor, initial, "explicit local-main override ignored");
     }
 
     /// On the main-clone worktree (branch == default_branch), the live anchor
@@ -928,7 +1055,7 @@ mod tests {
         // Advance main; cached fallback stays at the original sha.
         r.commit_file("z.txt", "z\n", "Z");
 
-        let anchor = live_branch_anchor(&r.root, "main", "main", &pinned);
+        let anchor = live_branch_anchor(&r.root, "main", "origin/main", "main", &pinned);
         assert_eq!(anchor, pinned);
     }
 }

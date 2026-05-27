@@ -34,6 +34,7 @@ export function installE2EMocks(): void {
       defaultAgentBackend: "claudeCode",
     }),
     list_comments: async () => [],
+    list_branches: async () => [],
     lsp_list_configs: async () => [],
     lsp_resolve_command: async () => null,
   };

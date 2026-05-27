@@ -4,7 +4,9 @@ import type { editor as MonacoEditor } from "monaco-editor";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { useUiStore } from "@/stores/ui";
 import { useWorktreesStore } from "@/stores/worktrees";
+import { useWorkspaceStore } from "@/stores/workspace";
 import { useDiffsStore } from "@/stores/diffs";
+import { BaseRefPicker } from "@/components/BaseRefPicker";
 import { useLspStore } from "@/stores/lsp";
 import { useNavigationStore } from "@/stores/navigation";
 import { onDiffUpdated, readBlobAtRef, readFile } from "@/ipc/client";
@@ -39,6 +41,12 @@ export function DiffPane() {
 }
 
 function DiffView({ worktreeId }: { worktreeId: WorktreeId }) {
+  const workspaceId = useWorktreesStore(
+    (s) => s.worktrees.find((w) => w.id === worktreeId)?.workspaceId,
+  );
+  const workspace = useWorkspaceStore((s) =>
+    s.workspaces.find((w) => w.id === workspaceId),
+  );
   const diff = useDiffsStore((s) => s.byWorktree[worktreeId]);
   const error = useDiffsStore((s) => s.error[worktreeId]);
   const selectedFile = useDiffsStore((s) => s.selectedFile[worktreeId] ?? null);
@@ -168,6 +176,11 @@ function DiffView({ worktreeId }: { worktreeId: WorktreeId }) {
             </button>
           </div>
         </div>
+        {workspace && mode === "branch" && (
+          <div className="flex shrink-0 items-center overflow-visible border-b border-neutral-900 px-2 py-1 text-[11px]">
+            <BaseRefPicker workspace={workspace} />
+          </div>
+        )}
         <div className="max-h-[40%] shrink-0 overflow-y-auto border-b border-neutral-900">
           {!diff || diff.files.length === 0 ? (
             <div className="px-3 py-2 text-[11px] text-neutral-600">

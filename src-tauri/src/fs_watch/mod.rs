@@ -123,14 +123,18 @@ pub fn start(
                 tracing::warn!(%worktree_id, "worktree vanished during debounce");
                 return;
             };
-            let default_branch = state
+            let ws = state
                 .workspaces
                 .get(&wt.workspace_id)
-                .map(|e| e.value().default_branch.clone());
-            let base_current = match default_branch {
-                Some(db) => crate::worktree::git_ops::live_branch_anchor(
+                .map(|e| e.value().clone());
+            let base_current = match ws {
+                Some(ws) => crate::worktree::git_ops::live_branch_anchor(
                     &wt.path,
-                    &db,
+                    &ws.default_branch,
+                    &crate::worktree::git_ops::effective_base(
+                        &ws.default_branch,
+                        ws.base_ref_override.as_deref(),
+                    ),
                     &wt.branch,
                     &wt.base_ref,
                 ),
@@ -195,15 +199,22 @@ pub fn recompute_and_emit(app: &AppHandle, worktree_id: WorktreeId) {
         else {
             return;
         };
-        let default_branch = state
+        let ws = state
             .workspaces
             .get(&wt.workspace_id)
-            .map(|e| e.value().default_branch.clone());
+            .map(|e| e.value().clone());
         let path = wt.path.clone();
-        let base_ref = match default_branch {
-            Some(db) => {
-                crate::worktree::git_ops::live_branch_anchor(&path, &db, &wt.branch, &wt.base_ref)
-            }
+        let base_ref = match ws {
+            Some(ws) => crate::worktree::git_ops::live_branch_anchor(
+                &path,
+                &ws.default_branch,
+                &crate::worktree::git_ops::effective_base(
+                    &ws.default_branch,
+                    ws.base_ref_override.as_deref(),
+                ),
+                &wt.branch,
+                &wt.base_ref,
+            ),
             None => wt.base_ref.clone(),
         };
         let res = tokio::task::spawn_blocking(move || {

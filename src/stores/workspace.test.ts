@@ -14,11 +14,13 @@ const WS_A: Workspace = {
   id: "ws-a",
   root: "/tmp/repo-a",
   defaultBranch: "main",
+  baseRefOverride: null,
 };
 const WS_B: Workspace = {
   id: "ws-b",
   root: "/tmp/repo-b",
   defaultBranch: "trunk",
+  baseRefOverride: null,
 };
 
 describe("workspace store", () => {

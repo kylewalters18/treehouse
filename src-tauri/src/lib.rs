@@ -98,6 +98,8 @@ pub fn run() {
             ipc::commands::open_external_url,
             ipc::commands::get_settings,
             ipc::commands::update_settings,
+            ipc::commands::set_workspace_base_ref,
+            ipc::commands::list_branches,
             ipc::commands::list_comments,
             ipc::commands::save_comments,
             ipc::commands::list_worktrees,

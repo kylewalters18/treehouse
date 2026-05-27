@@ -26,7 +26,20 @@ pub async fn open_workspace(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> AppResult<Workspace> {
-    let ws = workspace::open(&path, &state).await?;
+    let mut ws = workspace::open(&path, &state).await?;
+    // Apply the persisted per-workspace base-ref override (keyed by root path,
+    // since worktree/workspace IDs are regenerated each launch). Mirror it into
+    // both the live state entry — which `prime_worktree_watch` reads below for
+    // the initial diff — and the returned value.
+    if let Ok(settings) = storage::load_settings(&app).await {
+        let key = ws.root.to_string_lossy().to_string();
+        if let Some(base) = settings.base_refs.get(&key).cloned() {
+            if let Some(mut entry) = state.workspaces.get_mut(&ws.id) {
+                entry.base_ref_override = Some(base.clone());
+            }
+            ws.base_ref_override = Some(base);
+        }
+    }
     // Record it in the recent-workspaces list so Home can one-click back.
     // Best-effort: log and continue if it fails.
     if let Err(e) = storage::push_recent(&app, &ws.root).await {
@@ -125,6 +138,75 @@ pub async fn update_settings(
     to_save.enabled_lsp_languages.dedup();
     storage::save_settings(&app, &to_save).await?;
     Ok(to_save)
+}
+
+/// Set (or clear, with `None`) the per-workspace base ref the Changes
+/// (Branch-view) diff compares against — e.g. `"origin/main"`, `"develop"`.
+/// Persists by workspace root path, updates the in-memory workspace, and
+/// recomputes every worktree's diff so the Changes list refreshes at once.
+#[tauri::command]
+pub async fn set_workspace_base_ref(
+    workspace_id: WorkspaceId,
+    base_ref: Option<String>,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> AppResult<Workspace> {
+    // Treat blank / whitespace as "cleared" so the reset path and an empty
+    // field both fall back to the origin/<default> default.
+    let normalized = base_ref
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    // Scope the DashMap guard so it drops before the `.await` below.
+    let ws = {
+        let mut entry = state
+            .workspaces
+            .get_mut(&workspace_id)
+            .ok_or_else(|| AppError::Unknown(format!("unknown workspace: {workspace_id}")))?;
+        entry.base_ref_override = normalized.clone();
+        entry.value().clone()
+    };
+
+    let key = ws.root.to_string_lossy().to_string();
+    let mut settings = storage::load_settings(&app).await.unwrap_or_default();
+    match &normalized {
+        Some(r) => {
+            settings.base_refs.insert(key, r.clone());
+        }
+        None => {
+            settings.base_refs.remove(&key);
+        }
+    }
+    storage::save_settings(&app, &settings).await?;
+
+    // Refresh the Changes list for every worktree in this workspace.
+    let ids: Vec<WorktreeId> = state
+        .worktrees
+        .iter()
+        .filter(|e| e.value().workspace_id == workspace_id)
+        .map(|e| *e.key())
+        .collect();
+    for id in ids {
+        fs_watch::recompute_and_emit(&app, id);
+    }
+
+    tracing::info!(id = %workspace_id, base_ref = ?normalized, "set workspace base ref");
+    Ok(ws)
+}
+
+/// Branch refs (local heads + remote-tracking) for the Changes-pane base
+/// picker. Read-only; no fetch.
+#[tauri::command]
+pub async fn list_branches(
+    workspace_id: WorkspaceId,
+    state: State<'_, AppState>,
+) -> AppResult<Vec<String>> {
+    let root = state
+        .workspaces
+        .get(&workspace_id)
+        .map(|e| e.value().root.clone())
+        .ok_or_else(|| AppError::Unknown(format!("unknown workspace: {workspace_id}")))?;
+    crate::worktree::git_ops::list_branches(&root).await
 }
 
 #[tauri::command]
@@ -602,10 +684,15 @@ pub async fn get_diff(
         .ok_or_else(|| AppError::Unknown(format!("unknown workspace: {}", wt.workspace_id)))?
         .clone();
 
+    let base = crate::worktree::git_ops::effective_base(
+        &ws.default_branch,
+        ws.base_ref_override.as_deref(),
+    );
     let anchor = match mode {
         DiffMode::Branch => crate::worktree::git_ops::live_branch_anchor(
             &wt.path,
             &ws.default_branch,
+            &base,
             &wt.branch,
             &wt.base_ref,
         ),
@@ -1036,15 +1123,19 @@ pub(crate) fn prime_worktree_watch(app: &AppHandle, wt: &Worktree) {
     let app_clone = app.clone();
     let worktree_id = wt.id;
     let worktree_path = wt.path.clone();
-    let default_branch = app
+    let ws = app
         .state::<AppState>()
         .workspaces
         .get(&wt.workspace_id)
-        .map(|e| e.value().default_branch.clone());
-    let base_ref = match default_branch {
-        Some(db) => crate::worktree::git_ops::live_branch_anchor(
+        .map(|e| e.value().clone());
+    let base_ref = match ws {
+        Some(ws) => crate::worktree::git_ops::live_branch_anchor(
             &worktree_path,
-            &db,
+            &ws.default_branch,
+            &crate::worktree::git_ops::effective_base(
+                &ws.default_branch,
+                ws.base_ref_override.as_deref(),
+            ),
             &wt.branch,
             &wt.base_ref,
         ),

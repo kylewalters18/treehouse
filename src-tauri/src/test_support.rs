@@ -87,6 +87,7 @@ pub fn workspace_fixture(state: &AppState, root: &Path) -> Workspace {
         id: WorkspaceId::new(),
         root: root.to_path_buf(),
         default_branch: "main".to_string(),
+        base_ref_override: None,
     };
     state.workspaces.insert(ws.id, ws.clone());
     ws
