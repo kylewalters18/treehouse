@@ -4,9 +4,15 @@ A desktop **agentic development environment (ADE)** for working alongside AI cod
 
 > Greenfield, macOS-first, early stage.
 
-## Why an ADE, not an IDE
+## The idea: a tmux session per worktree, made native
 
-Conventional IDEs treat AI agents as a side panel bolted onto a traditional editor. treehouse flips that: the **worktree is the unit of work**, the **diff is the primary review surface**, and the editor exists in service of reviewing what the agent wrote — not for hand-typing implementations. Three agents on three branches in parallel is the default mode, not the exotic case.
+treehouse is the workflow a tmux power-user already builds by hand — a session per git worktree, with an editor pane, an agent pane (Claude Code / Codex / Kiro), and a shell — turned into a native, opinionated app. You switch between worktrees the way you'd cycle tmux windows; each carries its own agents, terminals, editor state, and scrollback. What raw tmux can't cheaply give you is the **review surface**: a live, scroll-stable diff of everything the agent changed, with inline comments you batch back as prompts. That's the centerpiece treehouse adds on top of the per-worktree editor/agent/shell loop.
+
+Put differently — conventional IDEs treat AI agents as a side panel bolted onto a traditional editor. treehouse flips that: the **worktree is the unit of work**, the **diff is the primary review surface**, and the editor exists in service of reviewing what the agent wrote — not for hand-typing implementations. Three agents on three branches in parallel is the default mode, not the exotic case.
+
+### A fork in philosophy, not in code
+
+treehouse borrows VS Code's editor core (Monaco) and visual language (Dark Modern, TextMate/Shiki grammars), but it isn't a VS Code extension and isn't a Code-OSS fork. It deliberately rejects VS Code's workbench and `window = workspace` model — the very thing that would fight a tmux-shaped, agent-first layout. So you get the editor you know inside a shell built for parallel agents in worktrees, not an agent panel bolted onto a general-purpose IDE. The tradeoff we accept on purpose: no extension marketplace, and a few editor-adjacent bits (LSP wiring, syntax highlighting) re-implemented rather than inherited.
 
 ## What's in it
 

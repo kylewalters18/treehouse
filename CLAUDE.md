@@ -1,6 +1,12 @@
 # treehouse
 
-Desktop ADE (agentic development environment) centered on **parallel AI-agent development in git worktrees**. The unit of work is a worktree; agents (Claude Code / Codex / Kiro) run as long-lived subprocesses inside each worktree, and the primary review surface is a live-updating diff of that worktree against a base ref. Multiple agents and `xterm.js` terminals per worktree are tabbed; opt-in LSPs wire into Monaco for hover/goto/completions; inline review comments queue up and batch-send to the active agent; merge-back (merge / squash / rebase) is one click.
+Desktop ADE (agentic development environment) centered on **parallel AI-agent development in git worktrees**.
+
+**Design north star: a tmux session per worktree, made native and opinionated.** The model treehouse chases is the one a tmux power-user assembles by hand — a session per worktree holding an editor (think nvim), an agent, and a shell, cycled like tmux windows. treehouse ships that layout as a native app and adds the one thing raw tmux can't cheaply give: a live, scroll-stable diff of the worktree against a base ref as the primary review surface, with inline comments that batch back to the agent as prompts. When weighing a feature, favor what sharpens that per-worktree editor/agent/shell loop and the diff review at its center. Treat the multiplexing/terminal/persistence plumbing as commodity (it's what tmux would hand you free) — the moat is the review surface, not the panes.
+
+**A fork in philosophy, not in code.** treehouse borrows VS Code's editor core (Monaco) and visual language (Dark Modern, TextMate/Shiki grammars) but deliberately rejects its workbench and `window = workspace` model — that model is exactly what would fight the tmux-shaped, agent-first layout. So this is neither a VS Code extension (which makes you a guest in someone else's workbench) nor a Code-OSS fork (which inherits the workbench you don't want); it's VS Code's editor in a tmux-shaped shell we own. The accepted cost: no extension marketplace, and we re-implement the editor-adjacent bits the full workbench gives free (LSP wiring, syntax highlighting via Shiki) — chosen tradeoffs, not gaps to close.
+
+The unit of work is a worktree; agents (Claude Code / Codex / Kiro) run as long-lived subprocesses inside each worktree, and the primary review surface is a live-updating diff of that worktree against a base ref. Multiple agents and `xterm.js` terminals per worktree are tabbed; opt-in LSPs wire into Monaco for hover/goto/completions; inline review comments queue up and batch-send to the active agent; merge-back (merge / squash / rebase) is one click.
 
 Greenfield, built macOS-first. Tauri v2 (Rust backend) + React 19 + Vite.
 
