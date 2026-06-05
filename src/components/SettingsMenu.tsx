@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useSettingsStore } from "@/stores/settings";
 import { useLspStore } from "@/stores/lsp";
 import { useForgeStore } from "@/stores/forge";
@@ -30,9 +30,19 @@ const AGENT_OPTIONS: { value: AgentBackendKind; label: string; sub: string }[] =
   { value: "kiro", label: "Kiro", sub: "kiro-cli" },
 ];
 
+type Category = "workflow" | "agents" | "languages" | "forge";
+const CATEGORIES: { id: Category; label: string }[] = [
+  { id: "workflow", label: "Workflow" },
+  { id: "agents", label: "Agents" },
+  { id: "languages", label: "Languages" },
+  { id: "forge", label: "Forge" },
+];
+
+/// Settings as a categorized modal: a left rail of sections + a content pane
+/// that scrolls on its own, so a long list (Languages) never drags the rest.
 export function SettingsMenu() {
   const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
+  const [active, setActive] = useState<Category>("workflow");
   const settings = useSettingsStore((s) => s.settings);
   const setSync = useSettingsStore((s) => s.setSyncStrategy);
   const setMerge = useSettingsStore((s) => s.setMergeBackStrategy);
@@ -41,26 +51,17 @@ export function SettingsMenu() {
 
   useEffect(() => {
     if (!open) return;
-    function onDocClick(e: MouseEvent) {
-      if (ref.current && !ref.current.contains(e.target as Node)) {
-        setOpen(false);
-      }
-    }
     function onKey(e: KeyboardEvent) {
       if (e.key === "Escape") setOpen(false);
     }
-    window.addEventListener("mousedown", onDocClick);
     window.addEventListener("keydown", onKey);
-    return () => {
-      window.removeEventListener("mousedown", onDocClick);
-      window.removeEventListener("keydown", onKey);
-    };
+    return () => window.removeEventListener("keydown", onKey);
   }, [open]);
 
   return (
-    <div ref={ref} className="relative">
+    <>
       <button
-        onClick={() => setOpen((v) => !v)}
+        onClick={() => setOpen(true)}
         className={cn(
           "rounded border px-2 py-1 text-neutral-400 hover:bg-neutral-800",
           open ? "border-neutral-600 bg-neutral-800" : "border-neutral-700",
@@ -70,61 +71,98 @@ export function SettingsMenu() {
         ⚙
       </button>
       {open && (
-        <div className="absolute right-0 top-[110%] z-30 w-72 rounded-lg border border-neutral-800 bg-neutral-900 p-3 shadow-2xl">
-          <Section
-            label="Default Sync strategy"
-            options={SYNC_OPTIONS}
-            value={settings.syncStrategy}
-            onChange={(v) => void setSync(v)}
-          />
-          <div className="mt-3 border-t border-neutral-800 pt-3">
-            <Section
-              label="Default Merge strategy"
-              options={MERGE_OPTIONS}
-              value={settings.mergeBackStrategy}
-              onChange={(v) => void setMerge(v)}
-            />
-          </div>
-          <div className="mt-3 border-t border-neutral-800 pt-3">
-            <Section
-              label="Default agent"
-              options={AGENT_OPTIONS}
-              value={settings.defaultAgentBackend}
-              onChange={(v) => void setDefaultAgent(v)}
-            />
-          </div>
-          <div className="mt-3 border-t border-neutral-800 pt-3">
-            <label className="flex cursor-pointer items-start gap-2 rounded border border-neutral-800 px-2 py-1.5 text-xs hover:bg-neutral-950">
-              <input
-                type="checkbox"
-                checked={settings.initSubmodules}
-                onChange={(e) => void setInitSubmodules(e.target.checked)}
-                className="mt-0.5 accent-blue-600"
-              />
-              <span className="flex-1">
-                <div className="font-medium text-neutral-100">
-                  Initialize submodules on create
+        <div
+          className="fixed inset-0 z-40 flex items-center justify-center bg-black/50"
+          onMouseDown={() => setOpen(false)}
+        >
+          <div
+            className="flex h-[34rem] max-h-[82vh] w-[44rem] overflow-hidden rounded-lg border border-neutral-800 bg-neutral-900 shadow-2xl"
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            {/* Category rail */}
+            <nav className="flex w-40 shrink-0 flex-col gap-0.5 border-r border-neutral-800 bg-neutral-950/40 p-2">
+              <div className="px-2 py-1 text-[11px] font-semibold uppercase tracking-wider text-neutral-500">
+                Settings
+              </div>
+              {CATEGORIES.map((c) => (
+                <button
+                  key={c.id}
+                  onClick={() => setActive(c.id)}
+                  className={cn(
+                    "rounded px-2 py-1.5 text-left text-xs",
+                    active === c.id
+                      ? "bg-neutral-800 text-neutral-100"
+                      : "text-neutral-400 hover:bg-neutral-800/60 hover:text-neutral-200",
+                  )}
+                >
+                  {c.label}
+                </button>
+              ))}
+              <span className="flex-1" />
+              <button
+                onClick={() => setOpen(false)}
+                className="rounded border border-neutral-700 px-2 py-1 text-xs text-neutral-300 hover:bg-neutral-800"
+              >
+                Done
+              </button>
+            </nav>
+
+            {/* Content pane (scrolls independently) */}
+            <div className="flex-1 overflow-y-auto p-4">
+              {active === "workflow" && (
+                <div className="flex flex-col gap-4">
+                  <Section
+                    label="Default sync strategy"
+                    options={SYNC_OPTIONS}
+                    value={settings.syncStrategy}
+                    onChange={(v) => void setSync(v)}
+                  />
+                  <Section
+                    label="Default merge strategy"
+                    options={MERGE_OPTIONS}
+                    value={settings.mergeBackStrategy}
+                    onChange={(v) => void setMerge(v)}
+                  />
+                  <label className="flex cursor-pointer items-start gap-2 rounded border border-neutral-800 px-2 py-1.5 text-xs hover:bg-neutral-950">
+                    <input
+                      type="checkbox"
+                      checked={settings.initSubmodules}
+                      onChange={(e) => void setInitSubmodules(e.target.checked)}
+                      className="mt-0.5 accent-blue-600"
+                    />
+                    <span className="flex-1">
+                      <div className="font-medium text-neutral-100">
+                        Initialize submodules on create
+                      </div>
+                      <div className="font-mono text-[11px] text-neutral-500">
+                        git submodule update --init --recursive
+                      </div>
+                    </span>
+                  </label>
                 </div>
-                <div className="font-mono text-[11px] text-neutral-500">
-                  git submodule update --init --recursive
-                </div>
-              </span>
-            </label>
-          </div>
-          <div className="mt-3 border-t border-neutral-800 pt-3">
-            <LanguagesSection />
-          </div>
-          <div className="mt-3 border-t border-neutral-800 pt-3">
-            <ForgeSection />
+              )}
+
+              {active === "agents" && (
+                <Section
+                  label="Default agent"
+                  options={AGENT_OPTIONS}
+                  value={settings.defaultAgentBackend}
+                  onChange={(v) => void setDefaultAgent(v)}
+                />
+              )}
+
+              {active === "languages" && <LanguagesPane />}
+              {active === "forge" && <ForgePane />}
+            </div>
           </div>
         </div>
       )}
-    </div>
+    </>
   );
 }
 
-/// Read-only forge availability/auth line for the active workspace.
-function ForgeSection() {
+/// Forge availability/auth for the active workspace.
+function ForgePane() {
   const selectedWorktreeId = useUiStore((s) => s.selectedWorktreeId);
   const worktrees = useWorktreesStore((s) => s.worktrees);
   const selected = worktrees.find((w) => w.id === selectedWorktreeId) ?? null;
@@ -150,10 +188,10 @@ function ForgeSection() {
 
   return (
     <div>
-      <div className="mb-1 text-[11px] uppercase tracking-wider text-neutral-500">
+      <div className="mb-2 text-[11px] uppercase tracking-wider text-neutral-500">
         Forge
       </div>
-      <div className="rounded border border-neutral-800 px-2 py-1.5 text-xs">
+      <div className="rounded border border-neutral-800 px-3 py-2 text-xs">
         <div className="flex items-center gap-1.5">
           <span
             className={cn(
@@ -173,8 +211,11 @@ function ForgeSection() {
               {status.host}
             </span>
           )}
+          {status?.username && (
+            <span className="text-[11px] text-neutral-500">@{status.username}</span>
+          )}
         </div>
-        <div className="mt-0.5 font-mono text-[11px] text-neutral-500">
+        <div className="mt-1 font-mono text-[11px] text-neutral-500">
           {!status
             ? "checking…"
             : !status.installed
@@ -186,25 +227,25 @@ function ForgeSection() {
                   : "not signed in — gh auth login"}
         </div>
       </div>
+      <p className="mt-2 text-[11px] text-neutral-600">
+        Auth is managed by the <code className="font-mono">glab</code> /{" "}
+        <code className="font-mono">gh</code> CLI; sign in from a terminal.
+      </p>
     </div>
   );
 }
 
-function LanguagesSection() {
-  const [open, setOpen] = useState(false);
+function LanguagesPane() {
   const configs = useLspStore((s) => s.configs);
   const resolved = useLspStore((s) => s.resolved);
   const load = useLspStore((s) => s.load);
   const settings = useSettingsStore((s) => s.settings);
-  const setEnabledLanguages = useSettingsStore(
-    (s) => s.setEnabledLspLanguages,
-  );
+  const setEnabledLanguages = useSettingsStore((s) => s.setEnabledLspLanguages);
 
   useEffect(() => {
-    if (open && configs.length === 0) void load();
-  }, [open, configs.length, load]);
+    if (configs.length === 0) void load();
+  }, [configs.length, load]);
 
-  // Treat the persisted list as a set for O(1) row lookups + mutation.
   const enabledSet = useMemo(
     () => new Set(settings.enabledLspLanguages),
     [settings.enabledLspLanguages],
@@ -219,31 +260,23 @@ function LanguagesSection() {
 
   return (
     <div>
-      <button
-        onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center justify-between text-[11px] uppercase tracking-wider text-neutral-500 hover:text-neutral-300"
-      >
-        <span>Languages (LSP)</span>
-        <span>{open ? "−" : "+"}</span>
-      </button>
-      {open && (
-        <div className="mt-2 flex max-h-64 flex-col gap-1 overflow-auto">
-          {configs.length === 0 && (
-            <div className="px-2 py-1 text-[11px] text-neutral-500">
-              Loading…
-            </div>
-          )}
-          {configs.map((c) => (
-            <LanguageRow
-              key={c.id}
-              config={c}
-              enabled={enabledSet.has(c.id)}
-              resolvedPath={resolved[c.command]}
-              onToggle={(on) => toggle(c.id, on)}
-            />
-          ))}
-        </div>
-      )}
+      <div className="mb-2 text-[11px] uppercase tracking-wider text-neutral-500">
+        Languages (LSP)
+      </div>
+      <div className="flex flex-col gap-1">
+        {configs.length === 0 && (
+          <div className="px-2 py-1 text-[11px] text-neutral-500">Loading…</div>
+        )}
+        {configs.map((c) => (
+          <LanguageRow
+            key={c.id}
+            config={c}
+            enabled={enabledSet.has(c.id)}
+            resolvedPath={resolved[c.command]}
+            onToggle={(on) => toggle(c.id, on)}
+          />
+        ))}
+      </div>
     </div>
   );
 }
@@ -314,7 +347,7 @@ function Section<T extends string>({
 }) {
   return (
     <div>
-      <div className="mb-1 text-[11px] uppercase tracking-wider text-neutral-500">
+      <div className="mb-1.5 text-[11px] uppercase tracking-wider text-neutral-500">
         {label}
       </div>
       <div className="flex flex-col gap-1">
