@@ -134,7 +134,7 @@ function DiffView({ worktreeId }: { worktreeId: WorktreeId }) {
   return (
     <div className="flex h-full flex-col">
       {workspace && branch && (
-        <MrBar workspaceId={workspace.id} branch={branch} />
+        <MrBar workspaceId={workspace.id} worktreeId={worktreeId} branch={branch} />
       )}
     <PanelGroup
       direction="horizontal"

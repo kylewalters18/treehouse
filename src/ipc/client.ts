@@ -545,6 +545,14 @@ export function forgeGetIssue(
   return invoke<ForgeIssue>("forge_get_issue", { workspaceId, number });
 }
 
+export function forgeSetIssueAssignee(
+  workspaceId: WorkspaceId,
+  number: number,
+  assign: boolean,
+): Promise<void> {
+  return invoke<void>("forge_set_issue_assignee", { workspaceId, number, assign });
+}
+
 export function forgeListMrs(
   workspaceId: WorkspaceId,
   stateFilter: "open" | "merged" | "closed" | "all",

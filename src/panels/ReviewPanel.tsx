@@ -391,7 +391,7 @@ function Muted({ children }: { children: React.ReactNode }) {
 
 function Empty({ children }: { children: React.ReactNode }) {
   return (
-    <div className="flex h-full items-center justify-center bg-neutral-950 p-4 text-sm text-neutral-500">
+    <div className="flex h-full items-center justify-center text-xs text-neutral-600">
       {children}
     </div>
   );

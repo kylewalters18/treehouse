@@ -83,6 +83,12 @@ impl Forge {
             Forge::Github(g) => g.get_issue(number).await,
         }
     }
+    pub async fn set_issue_assignee(&self, number: u64, assign: bool) -> AppResult<()> {
+        match self {
+            Forge::Gitlab(g) => g.set_issue_assignee(number, assign).await,
+            Forge::Github(g) => g.set_issue_assignee(number, assign).await,
+        }
+    }
     pub async fn list_mrs(&self, state_filter: &str, limit: u32) -> AppResult<Vec<ForgeMr>> {
         match self {
             Forge::Gitlab(g) => g.list_mrs(state_filter, limit).await,

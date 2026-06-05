@@ -34,6 +34,9 @@ pub struct ForgeStatus {
     pub installed: bool,
     /// `glab/gh auth status` exited cleanly.
     pub authenticated: bool,
+    /// The authenticated user's username, when known — used to drive the
+    /// "assigned to you" self-assign toggle.
+    pub username: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]

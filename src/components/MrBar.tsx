@@ -2,17 +2,21 @@ import { useEffect, useState } from "react";
 import type { WorkspaceId } from "@/ipc/types";
 import { openExternalUrl } from "@/ipc/client";
 import { useForgeStore, forgeBranchKey } from "@/stores/forge";
+import { IssueChip } from "@/components/IssueChip";
 import { toastInfo, toastSuccess } from "@/stores/toasts";
 import { cn } from "@/lib/cn";
+import type { WorktreeId } from "@/ipc/types";
 
 /// Strip above the diff showing the MR linked to the worktree's branch:
 /// pill + open-in-browser, Create when none, and Approve / Merge when one
 /// exists. MR comments (general + inline) live in the Review tab.
 export function MrBar({
   workspaceId,
+  worktreeId,
   branch,
 }: {
   workspaceId: WorkspaceId;
+  worktreeId: WorktreeId;
   branch: string;
 }) {
   const mr = useForgeStore((s) => s.mrByBranch[forgeBranchKey(workspaceId, branch)]);
@@ -80,6 +84,7 @@ export function MrBar({
 
   return (
     <div className="flex h-8 shrink-0 items-center gap-2 border-b border-neutral-800 bg-neutral-950 px-3 text-xs">
+      <IssueChip workspaceId={workspaceId} worktreeId={worktreeId} branch={branch} />
       {mr === undefined ? (
         <span className="text-neutral-600">…</span>
       ) : mr === null ? (

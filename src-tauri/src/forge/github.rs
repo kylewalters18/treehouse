@@ -37,6 +37,7 @@ impl GithubForge {
             host: Some(self.host.clone()),
             installed,
             authenticated,
+            username: None,
         })
     }
 
@@ -44,6 +45,9 @@ impl GithubForge {
         todo()
     }
     pub async fn get_issue(&self, _number: u64) -> AppResult<ForgeIssue> {
+        todo()
+    }
+    pub async fn set_issue_assignee(&self, _number: u64, _assign: bool) -> AppResult<()> {
         todo()
     }
     pub async fn list_mrs(&self, _state: &str, _limit: u32) -> AppResult<Vec<ForgeMr>> {

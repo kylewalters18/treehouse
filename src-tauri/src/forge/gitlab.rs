@@ -61,12 +61,37 @@ impl GitlabForge {
         } else {
             false
         };
+        let username = if authenticated {
+            self.current_username().await.ok()
+        } else {
+            None
+        };
         Ok(ForgeStatus {
             kind: ForgeKind::Gitlab,
             host: Some(self.host.clone()),
             installed,
             authenticated,
+            username,
         })
+    }
+
+    /// The authenticated user's username (`glab api user`).
+    async fn current_username(&self) -> AppResult<String> {
+        let raw: GlUser = Self::parse("user", &self.api_get("user").await?)?;
+        Ok(raw.username)
+    }
+
+    /// Assign the issue to the current user, or unassign all (the "I'm taking
+    /// this" toggle).
+    pub async fn set_issue_assignee(&self, number: u64, assign: bool) -> AppResult<()> {
+        let mut args = vec!["issue".into(), "update".into(), number.to_string()];
+        if assign {
+            args.push("--assignee".into());
+            args.push(self.current_username().await?);
+        } else {
+            args.push("--unassign".into());
+        }
+        self.glab(&args).await.map(|_| ())
     }
 
     // --- issues ---

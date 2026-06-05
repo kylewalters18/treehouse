@@ -13,4 +13,9 @@ installed: boolean,
 /**
  * `glab/gh auth status` exited cleanly.
  */
-authenticated: boolean, };
+authenticated: boolean, 
+/**
+ * The authenticated user's username, when known — used to drive the
+ * "assigned to you" self-assign toggle.
+ */
+username: string | null, };

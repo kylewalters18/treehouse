@@ -483,6 +483,7 @@ fn unknown_status(remote: Option<forge::RemoteInfo>) -> ForgeStatus {
         host: remote.map(|r| r.host),
         installed: false,
         authenticated: false,
+        username: None,
     }
 }
 
@@ -506,6 +507,17 @@ pub async fn forge_get_issue(
 ) -> AppResult<ForgeIssue> {
     let (f, _) = resolve_forge(workspace_id, &state).await?;
     f.get_issue(number).await
+}
+
+#[tauri::command]
+pub async fn forge_set_issue_assignee(
+    workspace_id: WorkspaceId,
+    number: u64,
+    assign: bool,
+    state: State<'_, AppState>,
+) -> AppResult<()> {
+    let (f, _) = resolve_forge(workspace_id, &state).await?;
+    f.set_issue_assignee(number, assign).await
 }
 
 #[tauri::command]
