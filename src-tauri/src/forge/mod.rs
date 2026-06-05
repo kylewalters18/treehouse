@@ -10,6 +10,7 @@
 pub mod cli;
 pub mod github;
 pub mod gitlab;
+pub mod netrc;
 pub mod remote;
 pub mod types;
 
@@ -24,10 +25,18 @@ use gitlab::GitlabForge;
 use crate::util::errors::{AppError, AppResult};
 
 /// Resolve the forge remote for a repo root: `git remote get-url origin`,
-/// then parse. `Ok(None)` when there's no origin or we can't classify it.
+/// then parse. A host we can't classify by name (e.g. a self-managed GitLab at
+/// `git.acme.io`) is promoted to GitLab when `~/.netrc` carries a token for it
+/// — so detection follows your configured credentials, not just the hostname.
+/// `Ok(None)` when there's no origin or it can't be classified at all.
 pub async fn detect(repo_root: &Path) -> AppResult<Option<RemoteInfo>> {
     let url = crate::worktree::git_ops::remote_url(repo_root).await?;
-    Ok(url.as_deref().and_then(remote::parse_remote))
+    Ok(url.as_deref().and_then(remote::parse_remote).map(|mut r| {
+        if matches!(r.kind, ForgeKind::Unknown) && netrc::token_for_host(&r.host).is_some() {
+            r.kind = ForgeKind::Gitlab;
+        }
+        r
+    }))
 }
 
 /// Construct the provider for a recognized remote. Errors on `Unknown` kind —
@@ -35,8 +44,9 @@ pub async fn detect(repo_root: &Path) -> AppResult<Option<RemoteInfo>> {
 pub fn build(remote: &RemoteInfo, cwd: &Path) -> AppResult<Forge> {
     match remote.kind {
         ForgeKind::Gitlab => Ok(Forge::Gitlab(GitlabForge {
-            cwd: cwd.to_path_buf(),
+            base: format!("https://{}", remote.host),
             host: remote.host.clone(),
+            token: netrc::token_for_host(&remote.host),
             project: remote.project(),
         })),
         ForgeKind::Github => Ok(Forge::Github(GithubForge {

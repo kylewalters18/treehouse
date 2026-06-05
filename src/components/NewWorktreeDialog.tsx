@@ -104,8 +104,17 @@ export function NewWorktreeDialog({
     return m ? m[1] : null;
   }, [branchName]);
 
-  const unauthed = status && status.installed && !status.authenticated;
-  const notInstalled = status && !status.installed;
+  // Auth hint when issues can't load (no token / invalid). netrc for GitLab.
+  const authHint =
+    !status || status.authenticated
+      ? null
+      : status.kind === "gitlab"
+        ? status.installed
+          ? "GitLab token invalid or expired."
+          : `No GitLab token — add one for ${status.host ?? "this host"} in ~/.netrc.`
+        : status.installed
+          ? "Not signed in — run gh auth login."
+          : "gh is not installed.";
 
   if (!open || !workspaceId) return null;
 
@@ -149,10 +158,9 @@ export function NewWorktreeDialog({
           </select>
         </div>
 
-        {(unauthed || notInstalled) && (
+        {authHint && (
           <div className="border-b border-amber-900/50 bg-amber-950/30 px-3 py-1.5 text-[12px] text-amber-200">
-            {notInstalled ? "glab is not installed." : "Not signed in — run "}
-            {!notInstalled && <code className="font-mono">glab auth login</code>}
+            {authHint}
           </div>
         )}
 

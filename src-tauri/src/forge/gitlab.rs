@@ -1,51 +1,74 @@
-//! GitLab provider — talks to `glab`. Strategy (decided with the user):
-//! `glab api projects/<id>/...` for all structured reads + the positioned
-//! writes (uniform, version-stable REST v4 schema), and porcelain only for
-//! fire-and-forget actions where there's nothing to parse (`auth status`,
-//! `mr merge`, `mr note`).
-//!
-//! The fiddly bit — inline review comments — MUST use `glab api --method POST
-//! .../discussions --form "position[...]"` (multipart). `-f "position[...]"`
-//! (JSON body) and `--input -` (no content-type → 415) both silently fail to
-//! attach the position. Verified empirically against gitlab.com.
+//! GitLab provider — talks to the GitLab REST API v4 directly over HTTP
+//! (`reqwest`), no `glab` CLI. Auth is a personal access token looked up by
+//! host in `~/.netrc` (multi-host: each repo's remote host carries its own
+//! token), sent as the `PRIVATE-TOKEN` header. The endpoint paths mirror what
+//! we previously drove through `glab api`.
 
-use std::path::PathBuf;
+use std::sync::OnceLock;
 
 use serde::Deserialize;
 
-use crate::forge::cli;
+use crate::forge::cli; // tail_bounded
 use crate::forge::remote::percent_encode;
 use crate::forge::types::*;
 use crate::util::errors::{AppError, AppResult};
 
 pub struct GitlabForge {
-    pub cwd: PathBuf,
+    /// API base, e.g. `https://gitlab.com`.
+    pub base: String,
+    /// Host, e.g. `gitlab.com` (for status display).
     pub host: String,
+    /// PAT for this host from `~/.netrc`, if any.
+    pub token: Option<String>,
     /// `owner/repo` (owner may include nested groups).
     pub project: String,
 }
 
+/// Process-wide HTTP client (connection pooling).
+fn client() -> &'static reqwest::Client {
+    static C: OnceLock<reqwest::Client> = OnceLock::new();
+    C.get_or_init(|| reqwest::Client::builder().build().expect("build reqwest client"))
+}
+
 impl GitlabForge {
-    /// URL-encoded project id for `projects/{id}` paths.
     fn pid(&self) -> String {
         percent_encode(&self.project)
     }
 
-    async fn glab(&self, args: &[String]) -> AppResult<String> {
-        cli::run("glab", &self.cwd, Some(&self.host), args).await
+    /// Issue a request to `/api/v4/<path>` with the token header and optional
+    /// form body. Maps a transport error or non-2xx to `AppError::Forge`.
+    async fn send(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        form: &[(&str, String)],
+    ) -> AppResult<String> {
+        let url = format!("{}/api/v4/{}", self.base, path);
+        let mut req = client().request(method, &url);
+        if let Some(t) = &self.token {
+            req = req.header("PRIVATE-TOKEN", t.as_str());
+        }
+        if !form.is_empty() {
+            req = req.form(form);
+        }
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| AppError::Forge(format!("request to {url} failed: {e}")))?;
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        if !status.is_success() {
+            let snippet: String = body.chars().take(300).collect();
+            return Err(AppError::Forge(format!(
+                "GitLab {} on {path}: {snippet}",
+                status.as_u16()
+            )));
+        }
+        Ok(body)
     }
 
-    /// `glab api <args...>`.
-    async fn api(&self, args: &[String]) -> AppResult<String> {
-        let mut a = Vec::with_capacity(args.len() + 1);
-        a.push("api".to_string());
-        a.extend_from_slice(args);
-        self.glab(&a).await
-    }
-
-    /// `glab api <path>` (GET).
-    async fn api_get(&self, path: &str) -> AppResult<String> {
-        self.api(&[path.to_string()]).await
+    async fn get(&self, path: &str) -> AppResult<String> {
+        self.send(reqwest::Method::GET, path, &[]).await
     }
 
     fn parse<T: for<'de> Deserialize<'de>>(label: &str, json: &str) -> AppResult<T> {
@@ -55,16 +78,15 @@ impl GitlabForge {
     // --- status ---
 
     pub async fn status(&self) -> AppResult<ForgeStatus> {
-        let installed = cli::installed("glab").await;
-        let authenticated = if installed {
-            self.glab(&["auth".into(), "status".into()]).await.is_ok()
+        // "installed" → a token is configured for this host.
+        let installed = self.token.is_some();
+        let (authenticated, username) = if installed {
+            match self.current_user().await {
+                Ok(u) => (true, Some(u.username)),
+                Err(_) => (false, None),
+            }
         } else {
-            false
-        };
-        let username = if authenticated {
-            self.current_username().await.ok()
-        } else {
-            None
+            (false, None)
         };
         Ok(ForgeStatus {
             kind: ForgeKind::Gitlab,
@@ -75,23 +97,8 @@ impl GitlabForge {
         })
     }
 
-    /// The authenticated user's username (`glab api user`).
-    async fn current_username(&self) -> AppResult<String> {
-        let raw: GlUser = Self::parse("user", &self.api_get("user").await?)?;
-        Ok(raw.username)
-    }
-
-    /// Assign the issue to the current user, or unassign all (the "I'm taking
-    /// this" toggle).
-    pub async fn set_issue_assignee(&self, number: u64, assign: bool) -> AppResult<()> {
-        let mut args = vec!["issue".into(), "update".into(), number.to_string()];
-        if assign {
-            args.push("--assignee".into());
-            args.push(self.current_username().await?);
-        } else {
-            args.push("--unassign".into());
-        }
-        self.glab(&args).await.map(|_| ())
+    async fn current_user(&self) -> AppResult<GlCurrentUser> {
+        Self::parse("user", &self.get("user").await?)
     }
 
     // --- issues ---
@@ -116,14 +123,27 @@ impl GitlabForge {
         if !q.is_empty() {
             path.push_str(&format!("&search={}", percent_encode(q)));
         }
-        let raw: Vec<GlIssue> = Self::parse("issues", &self.api_get(&path).await?)?;
+        let raw: Vec<GlIssue> = Self::parse("issues", &self.get(&path).await?)?;
         Ok(raw.into_iter().map(GlIssue::normalize).collect())
     }
 
     pub async fn get_issue(&self, number: u64) -> AppResult<ForgeIssue> {
         let path = format!("projects/{}/issues/{}", self.pid(), number);
-        let raw: GlIssue = Self::parse("issue", &self.api_get(&path).await?)?;
+        let raw: GlIssue = Self::parse("issue", &self.get(&path).await?)?;
         Ok(raw.normalize())
+    }
+
+    pub async fn set_issue_assignee(&self, number: u64, assign: bool) -> AppResult<()> {
+        let path = format!("projects/{}/issues/{}", self.pid(), number);
+        // assignee_ids[]=<my id> assigns; assignee_ids[]=0 clears all.
+        let id = if assign {
+            self.current_user().await?.id.to_string()
+        } else {
+            "0".to_string()
+        };
+        self.send(reqwest::Method::PUT, &path, &[("assignee_ids[]", id)])
+            .await
+            .map(|_| ())
     }
 
     // --- merge requests ---
@@ -140,7 +160,7 @@ impl GitlabForge {
             "all" => {}
             _ => path.push_str("&state=opened"),
         }
-        let raw: Vec<GlMr> = Self::parse("merge_requests", &self.api_get(&path).await?)?;
+        let raw: Vec<GlMr> = Self::parse("merge_requests", &self.get(&path).await?)?;
         Ok(raw.into_iter().map(GlMr::normalize).collect())
     }
 
@@ -150,7 +170,7 @@ impl GitlabForge {
             self.pid(),
             percent_encode(branch)
         );
-        let raw: Vec<GlMr> = Self::parse("merge_requests", &self.api_get(&path).await?)?;
+        let raw: Vec<GlMr> = Self::parse("merge_requests", &self.get(&path).await?)?;
         Ok(raw.into_iter().next().map(GlMr::normalize))
     }
 
@@ -167,129 +187,88 @@ impl GitlabForge {
         } else {
             title.to_string()
         };
-        let args = vec![
-            "--method".into(),
-            "POST".into(),
-            format!("projects/{}/merge_requests", self.pid()),
-            "-f".into(),
-            format!("source_branch={source}"),
-            "-f".into(),
-            format!("target_branch={target}"),
-            "-f".into(),
-            format!("title={title}"),
-            "-f".into(),
-            format!("description={body}"),
-            "-f".into(),
-            "remove_source_branch=true".into(),
+        let path = format!("projects/{}/merge_requests", self.pid());
+        let form = [
+            ("source_branch", source.to_string()),
+            ("target_branch", target.to_string()),
+            ("title", title),
+            ("description", body.to_string()),
+            ("remove_source_branch", "true".to_string()),
         ];
-        let mr: GlMr = Self::parse("create_mr", &self.api(&args).await?)?;
+        let mr: GlMr = Self::parse("create_mr", &self.send(reqwest::Method::POST, &path, &form).await?)?;
         Ok(mr.normalize())
     }
 
-    /// Approve the MR (porcelain action).
     pub async fn approve_mr(&self, iid: u64) -> AppResult<()> {
-        self.glab(&["mr".into(), "approve".into(), iid.to_string()])
-            .await
-            .map(|_| ())
+        let path = format!("projects/{}/merge_requests/{}/approve", self.pid(), iid);
+        self.send(reqwest::Method::POST, &path, &[]).await.map(|_| ())
     }
 
-    /// Revoke the current user's approval (porcelain action).
     pub async fn unapprove_mr(&self, iid: u64) -> AppResult<()> {
-        self.glab(&["mr".into(), "revoke".into(), iid.to_string()])
-            .await
-            .map(|_| ())
+        let path = format!("projects/{}/merge_requests/{}/unapprove", self.pid(), iid);
+        self.send(reqwest::Method::POST, &path, &[]).await.map(|_| ())
     }
 
-    /// The current user's approval state, from the approvals endpoint.
     pub async fn approval_state(&self, iid: u64) -> AppResult<ForgeApproval> {
         let path = format!("projects/{}/merge_requests/{}/approvals", self.pid(), iid);
-        let raw: GlApprovals = Self::parse("approvals", &self.api_get(&path).await?)?;
+        let raw: GlApprovals = Self::parse("approvals", &self.get(&path).await?)?;
         Ok(ForgeApproval {
             approved: raw.user_has_approved,
             can_approve: raw.user_can_approve,
         })
     }
 
-    /// Merge the MR, deferring to the project's configured merge method
-    /// (merge commit / rebase-merge / fast-forward). `--auto-merge=false`
-    /// forces an immediate merge so a blocked MR (unresolved discussions,
-    /// failing pipeline, missing approval, conflicts) **errors** instead of
-    /// silently queuing auto-merge and reporting success.
-    ///
-    /// Squash: we read GitLab's own `squash_on_merge` off the live MR — it's
-    /// computed from the project's squash setting (require / encourage / allow
-    /// / never) combined with the MR's choice — and pass `--squash` iff true.
-    /// Nothing hardcoded; a Require-squash project merges cleanly, a Never
-    /// project doesn't get a rejected `--squash`.
+    /// Merge immediately (no merge-when-pipeline-succeeds), squashing iff the
+    /// project/MR calls for it (GitLab's `squash_on_merge`). A non-mergeable MR
+    /// returns a 4xx, surfaced as an error rather than silently queued.
     pub async fn merge_mr(&self, iid: u64) -> AppResult<()> {
-        let detail: GlMergeFlags =
-            Self::parse("mr_merge_flags", &self.api_get(&format!(
-                "projects/{}/merge_requests/{}",
-                self.pid(),
-                iid
-            )).await?)?;
-        let mut args = vec![
-            "mr".into(),
-            "merge".into(),
-            iid.to_string(),
-            "-y".into(),
-            "--auto-merge=false".into(),
-        ];
-        if detail.squash_on_merge {
-            args.push("--squash".into());
-        }
-        self.glab(&args).await.map(|_| ())
+        let detail: GlMergeFlags = Self::parse(
+            "mr_merge_flags",
+            &self
+                .get(&format!("projects/{}/merge_requests/{}", self.pid(), iid))
+                .await?,
+        )?;
+        let path = format!("projects/{}/merge_requests/{}/merge", self.pid(), iid);
+        let form: &[(&str, String)] = if detail.squash_on_merge {
+            &[("squash", String::from("true"))]
+        } else {
+            &[]
+        };
+        self.send(reqwest::Method::PUT, &path, form).await.map(|_| ())
     }
 
     // --- comments / review threads ---
 
-    /// General (non-line) MR comment via porcelain.
     pub async fn post_mr_comment(&self, iid: u64, body: &str) -> AppResult<()> {
-        self.glab(&[
-            "mr".into(),
-            "note".into(),
-            iid.to_string(),
-            "-m".into(),
-            body.to_string(),
-        ])
-        .await
-        .map(|_| ())
+        let path = format!("projects/{}/merge_requests/{}/notes", self.pid(), iid);
+        self.send(reqwest::Method::POST, &path, &[("body", body.to_string())])
+            .await
+            .map(|_| ())
     }
 
-    /// Line-anchored review comments. Fetches the MR's diff_refs (base/start/
-    /// head SHA) and posts one inline discussion per comment via `--form`.
-    /// Collects per-comment failures (e.g. a line outside the diff) and
-    /// surfaces them rather than failing the whole batch silently.
+    /// Line-anchored review comments. Fetches diff_refs, then posts one inline
+    /// discussion per comment with the `position[...]` form fields. Collects
+    /// per-comment failures (e.g. a line outside the diff).
     pub async fn post_review_comments(
         &self,
         iid: u64,
         comments: &[ReviewCommentInput],
     ) -> AppResult<()> {
         let refs = self.diff_refs(iid).await?;
+        let path = format!("projects/{}/merge_requests/{}/discussions", self.pid(), iid);
         let mut failures = Vec::new();
         for c in comments {
-            let args = vec![
-                "--method".into(),
-                "POST".into(),
-                format!("projects/{}/merge_requests/{}/discussions", self.pid(), iid),
-                "--form".into(),
-                format!("body={}", c.body),
-                "--form".into(),
-                "position[position_type]=text".into(),
-                "--form".into(),
-                format!("position[base_sha]={}", refs.base_sha),
-                "--form".into(),
-                format!("position[start_sha]={}", refs.start_sha),
-                "--form".into(),
-                format!("position[head_sha]={}", refs.head_sha),
-                "--form".into(),
-                format!("position[new_path]={}", c.file_path),
-                "--form".into(),
-                format!("position[old_path]={}", c.file_path),
-                "--form".into(),
-                format!("position[new_line]={}", c.line),
+            let form = [
+                ("body", c.body.clone()),
+                ("position[position_type]", "text".to_string()),
+                ("position[base_sha]", refs.base_sha.clone()),
+                ("position[start_sha]", refs.start_sha.clone()),
+                ("position[head_sha]", refs.head_sha.clone()),
+                ("position[new_path]", c.file_path.clone()),
+                ("position[old_path]", c.file_path.clone()),
+                ("position[new_line]", c.line.to_string()),
             ];
-            if let Err(e) = self.api(&args).await {
+            if let Err(e) = self.send(reqwest::Method::POST, &path, &form).await {
                 failures.push(format!("{}:{} — {e}", c.file_path, c.line));
             }
         }
@@ -311,7 +290,7 @@ impl GitlabForge {
             self.pid(),
             iid
         );
-        let raw: Vec<GlDiscussion> = Self::parse("discussions", &self.api_get(&path).await?)?;
+        let raw: Vec<GlDiscussion> = Self::parse("discussions", &self.get(&path).await?)?;
         Ok(raw
             .into_iter()
             .map(GlDiscussion::normalize)
@@ -319,48 +298,38 @@ impl GitlabForge {
             .collect())
     }
 
-    /// Resolve / unresolve a whole discussion thread (projects that require
-    /// all threads resolved before merge depend on this).
+    pub async fn reply_thread(&self, iid: u64, discussion_id: &str, body: &str) -> AppResult<()> {
+        let path = format!(
+            "projects/{}/merge_requests/{}/discussions/{}/notes",
+            self.pid(),
+            iid,
+            discussion_id
+        );
+        self.send(reqwest::Method::POST, &path, &[("body", body.to_string())])
+            .await
+            .map(|_| ())
+    }
+
     pub async fn resolve_thread(
         &self,
         iid: u64,
         discussion_id: &str,
         resolved: bool,
     ) -> AppResult<()> {
-        let args = vec![
-            "--method".into(),
-            "PUT".into(),
-            format!(
-                "projects/{}/merge_requests/{}/discussions/{}",
-                self.pid(),
-                iid,
-                discussion_id
-            ),
-            "-f".into(),
-            format!("resolved={resolved}"),
-        ];
-        self.api(&args).await.map(|_| ())
-    }
-
-    pub async fn reply_thread(&self, iid: u64, discussion_id: &str, body: &str) -> AppResult<()> {
-        let args = vec![
-            "--method".into(),
-            "POST".into(),
-            format!(
-                "projects/{}/merge_requests/{}/discussions/{}/notes",
-                self.pid(),
-                iid,
-                discussion_id
-            ),
-            "-f".into(),
-            format!("body={body}"),
-        ];
-        self.api(&args).await.map(|_| ())
+        let path = format!(
+            "projects/{}/merge_requests/{}/discussions/{}",
+            self.pid(),
+            iid,
+            discussion_id
+        );
+        self.send(reqwest::Method::PUT, &path, &[("resolved", resolved.to_string())])
+            .await
+            .map(|_| ())
     }
 
     async fn diff_refs(&self, iid: u64) -> AppResult<GlDiffRefs> {
         let path = format!("projects/{}/merge_requests/{}", self.pid(), iid);
-        let detail: GlMrDetail = Self::parse("mr_detail", &self.api_get(&path).await?)?;
+        let detail: GlMrDetail = Self::parse("mr_detail", &self.get(&path).await?)?;
         detail
             .diff_refs
             .ok_or_else(|| AppError::Forge("MR has no diff_refs (no diff to anchor to)".into()))
@@ -374,50 +343,44 @@ impl GitlabForge {
             self.pid(),
             percent_encode(branch)
         );
-        let raw: Vec<GlPipeline> = Self::parse("pipelines", &self.api_get(&path).await?)?;
+        let raw: Vec<GlPipeline> = Self::parse("pipelines", &self.get(&path).await?)?;
         Ok(raw.into_iter().map(GlPipeline::normalize).collect())
     }
 
     pub async fn pipeline_jobs(&self, pipeline_id: u64) -> AppResult<Vec<ForgeJob>> {
-        // include_retried so superseded runs are present — needed to order
-        // stages by their earliest job id (a retry gets a higher id and would
-        // otherwise drag its stage out of order). The UI shows only the
-        // current run (retried=false) but orders stages using all of them.
         let path = format!(
             "projects/{}/pipelines/{}/jobs?per_page=100&include_retried=true",
             self.pid(),
             pipeline_id
         );
-        let raw: Vec<GlJob> = Self::parse("jobs", &self.api_get(&path).await?)?;
+        let raw: Vec<GlJob> = Self::parse("jobs", &self.get(&path).await?)?;
         Ok(raw.into_iter().map(GlJob::normalize).collect())
     }
 
     pub async fn job_log(&self, job_id: u64) -> AppResult<String> {
         let path = format!("projects/{}/jobs/{}/trace", self.pid(), job_id);
-        Ok(cli::tail_bounded(&self.api_get(&path).await?, 16_000))
+        Ok(cli::tail_bounded(&self.get(&path).await?, 16_000))
     }
 
     pub async fn retry_pipeline(&self, pipeline_id: u64) -> AppResult<()> {
-        let args = vec![
-            "--method".into(),
-            "POST".into(),
-            format!("projects/{}/pipelines/{}/retry", self.pid(), pipeline_id),
-        ];
-        self.api(&args).await.map(|_| ())
+        let path = format!("projects/{}/pipelines/{}/retry", self.pid(), pipeline_id);
+        self.send(reqwest::Method::POST, &path, &[]).await.map(|_| ())
     }
 
-    /// Retry a single job (creates a fresh run of just that job).
     pub async fn retry_job(&self, job_id: u64) -> AppResult<()> {
-        let args = vec![
-            "--method".into(),
-            "POST".into(),
-            format!("projects/{}/jobs/{}/retry", self.pid(), job_id),
-        ];
-        self.api(&args).await.map(|_| ())
+        let path = format!("projects/{}/jobs/{}/retry", self.pid(), job_id);
+        self.send(reqwest::Method::POST, &path, &[]).await.map(|_| ())
     }
 }
 
 // --- raw GitLab REST shapes (deserialize-only; normalized into TS types) ---
+
+#[derive(Deserialize)]
+struct GlCurrentUser {
+    id: u64,
+    #[serde(default)]
+    username: String,
+}
 
 #[derive(Deserialize)]
 struct GlUser {
@@ -490,8 +453,6 @@ struct GlMrDetail {
     diff_refs: Option<GlDiffRefs>,
 }
 
-/// Just the squash decision GitLab computed for this MR (project setting + MR
-/// choice). `squash_on_merge` is true whenever the merge will squash.
 #[derive(Deserialize)]
 struct GlMergeFlags {
     #[serde(default)]
@@ -573,9 +534,7 @@ struct GlDiscussion {
 impl GlDiscussion {
     fn normalize(self) -> ForgeThread {
         let notes: Vec<GlNote> = self.notes.into_iter().filter(|n| !n.system).collect();
-        let resolvable_notes = notes.iter().filter(|n| n.resolvable).count();
-        let resolvable = resolvable_notes > 0;
-        // Resolved iff every resolvable note is resolved.
+        let resolvable = notes.iter().any(|n| n.resolvable);
         let resolved = resolvable && notes.iter().filter(|n| n.resolvable).all(|n| n.resolved);
         ForgeThread {
             id: self.id,

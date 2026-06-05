@@ -218,18 +218,21 @@ function ForgePane() {
         <div className="mt-1 font-mono text-[11px] text-neutral-500">
           {!status
             ? "checking…"
-            : !status.installed
-              ? "CLI not installed"
-              : status.authenticated
-                ? "authenticated"
-                : status.kind === "gitlab"
-                  ? "not signed in — glab auth login"
-                  : "not signed in — gh auth login"}
+            : status.authenticated
+              ? "authenticated"
+              : status.kind === "gitlab"
+                ? status.installed
+                  ? "token invalid or expired"
+                  : "no token in ~/.netrc for this host"
+                : status.installed
+                  ? "not signed in — gh auth login"
+                  : "gh not installed"}
         </div>
       </div>
       <p className="mt-2 text-[11px] text-neutral-600">
-        Auth is managed by the <code className="font-mono">glab</code> /{" "}
-        <code className="font-mono">gh</code> CLI; sign in from a terminal.
+        GitLab auth is a personal access token in{" "}
+        <code className="font-mono">~/.netrc</code> (per host); GitHub uses the{" "}
+        <code className="font-mono">gh</code> CLI.
       </p>
     </div>
   );
