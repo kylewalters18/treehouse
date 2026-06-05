@@ -1,10 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ForgeJob, ForgePipeline } from "@/ipc/types";
-import {
-  forgePipelineJobs,
-  forgeJobLog,
-  openExternalUrl,
-} from "@/ipc/client";
+import { forgeJobLog, openExternalUrl } from "@/ipc/client";
 import { useForgeStore, forgeBranchKey } from "@/stores/forge";
 import { useUiStore } from "@/stores/ui";
 import { useWorktreesStore } from "@/stores/worktrees";
@@ -36,7 +32,9 @@ export function CIPanel() {
   const retryPipeline = useForgeStore((s) => s.retryPipeline);
 
   const latest: ForgePipeline | undefined = pipelines?.[0];
-  const [jobs, setJobs] = useState<ForgeJob[]>([]);
+  const storeLoadJobs = useForgeStore((s) => s.loadJobs);
+  const jobs: ForgeJob[] =
+    useForgeStore((s) => (latest ? s.jobsByPipeline[latest.id] : undefined)) ?? [];
   const [expandedLog, setExpandedLog] = useState<Record<number, string>>({});
 
   const wsId = workspace?.id ?? null;
@@ -47,36 +45,26 @@ export function CIPanel() {
     if (wsId && branch) void loadPipelines(wsId, branch);
   }, [wsId, branch, loadPipelines]);
 
-  // Load jobs for the latest pipeline.
-  const loadJobs = useCallback(async () => {
-    if (!wsId || !latest) {
-      setJobs([]);
-      return;
-    }
-    try {
-      setJobs(await forgePipelineJobs(wsId, latest.id));
-    } catch (e) {
-      console.warn("load jobs failed", asMessage(e));
-    }
-  }, [wsId, latest]);
-
+  // Load the latest pipeline's jobs into the store (shared with the CI badge,
+  // so a retry/refresh here updates the badge reactively).
   useEffect(() => {
-    void loadJobs();
-  }, [loadJobs]);
+    if (wsId && latest) void storeLoadJobs(wsId, latest.id);
+  }, [wsId, latest, storeLoadJobs]);
 
   // Poll while the latest pipeline is non-terminal.
   const pollRef = useRef<number | null>(null);
   useEffect(() => {
     const active = latest && !TERMINAL_STATES.includes(latest.status);
     if (!active || !wsId || !branch) return;
+    const pipelineId = latest.id;
     pollRef.current = window.setInterval(() => {
       void loadPipelines(wsId, branch);
-      void loadJobs();
+      void storeLoadJobs(wsId, pipelineId);
     }, 5000);
     return () => {
       if (pollRef.current) window.clearInterval(pollRef.current);
     };
-  }, [latest, wsId, branch, loadPipelines, loadJobs]);
+  }, [latest, wsId, branch, loadPipelines, storeLoadJobs]);
 
   if (!selected) {
     return <Empty>Select a worktree to see its pipelines.</Empty>;

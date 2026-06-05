@@ -5,6 +5,7 @@ import type {
   ForgeIssue,
   ForgeMr,
   ForgePipeline,
+  ForgeJob,
   ForgeThread,
   ForgeApproval,
   ReviewCommentInput,
@@ -32,6 +33,9 @@ type ForgeState = {
   mrByBranch: Record<string, ForgeMr | null | undefined>;
   /// Pipelines per (workspace, branch), newest first.
   pipelinesByBranch: Record<string, ForgePipeline[] | undefined>;
+  /// Jobs per pipeline id. Shared by the CI panel and the CI tab badge so a
+  /// retry/refresh in one updates the other reactively.
+  jobsByPipeline: Record<number, ForgeJob[] | undefined>;
   /// Review threads per MR iid (keyed by `${workspaceId}::mr::${iid}`).
   threadsByMr: Record<string, ForgeThread[] | undefined>;
   /// Current user's approval state per MR (keyed `${workspaceId}::mr::${iid}`).
@@ -84,6 +88,7 @@ type ForgeState = {
     resolved: boolean,
   ) => Promise<boolean>;
   loadPipelines: (workspaceId: WorkspaceId, branch: string) => Promise<void>;
+  loadJobs: (workspaceId: WorkspaceId, pipelineId: number) => Promise<void>;
   retryPipeline: (
     workspaceId: WorkspaceId,
     branch: string,
@@ -97,6 +102,7 @@ export const useForgeStore = create<ForgeState>((set, get) => ({
   issuesLoading: false,
   mrByBranch: {},
   pipelinesByBranch: {},
+  jobsByPipeline: {},
   threadsByMr: {},
   approvalByMr: {},
 
@@ -253,6 +259,17 @@ export const useForgeStore = create<ForgeState>((set, get) => ({
       }));
     } catch (e) {
       console.warn("load pipelines failed", asMessage(e));
+    }
+  },
+
+  async loadJobs(workspaceId, pipelineId) {
+    try {
+      const jobs = await ipc.forgePipelineJobs(workspaceId, pipelineId);
+      set((st) => ({
+        jobsByPipeline: { ...st.jobsByPipeline, [pipelineId]: jobs },
+      }));
+    } catch (e) {
+      console.warn("load jobs failed", asMessage(e));
     }
   },
 

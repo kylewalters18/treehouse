@@ -9,17 +9,83 @@
 /// its own to preserve, but the symmetry keeps the implementation
 /// uniform.
 
+import { useEffect } from "react";
 import { ProblemsList, useProblemsCount } from "@/components/ProblemsList";
 import { TerminalPane } from "@/panels/TerminalPane";
 import { CIPanel } from "@/panels/CIPanel";
 import { ReviewPanel } from "@/panels/ReviewPanel";
+import { useForgeStore, forgeBranchKey } from "@/stores/forge";
 import { useUiStore } from "@/stores/ui";
+import { useWorktreesStore } from "@/stores/worktrees";
+import { workspaceForWorktree } from "@/stores/workspace";
 import { cn } from "@/lib/cn";
+
+/// Counts for the Review / CI tab badges. Derived reactively from the forge
+/// store, so an action elsewhere (resolving a thread in the Review tab,
+/// retrying a pipeline in the CI tab) updates the badge immediately — the
+/// store is the single source. A 20s poll only keeps that store fresh for
+/// changes made outside the app. Non-forge / unauth / GitHub repos error
+/// instantly (no process spawned) → zero.
+function useForgeBadges(): { unresolved: number; failedJobs: number } {
+  const selectedWorktreeId = useUiStore((s) => s.selectedWorktreeId);
+  const worktrees = useWorktreesStore((s) => s.worktrees);
+  const selected = worktrees.find((w) => w.id === selectedWorktreeId) ?? null;
+  const workspace = workspaceForWorktree(selected?.workspaceId);
+  const wsId = workspace?.id ?? null;
+  const branch = selected?.branch ?? null;
+
+  const findMr = useForgeStore((s) => s.findMr);
+  const loadThreads = useForgeStore((s) => s.loadThreads);
+  const loadPipelines = useForgeStore((s) => s.loadPipelines);
+  const loadJobs = useForgeStore((s) => s.loadJobs);
+
+  // Reactive reads — these recompute whenever the store changes.
+  const mr = useForgeStore((s) =>
+    wsId && branch ? s.mrByBranch[forgeBranchKey(wsId, branch)] : undefined,
+  );
+  const threads = useForgeStore((s) =>
+    wsId && mr ? s.threadsByMr[`${wsId}::mr::${mr.number}`] : undefined,
+  );
+  const pipelines = useForgeStore((s) =>
+    wsId && branch ? s.pipelinesByBranch[forgeBranchKey(wsId, branch)] : undefined,
+  );
+  const latest = pipelines?.[0];
+  const jobs = useForgeStore((s) => (latest ? s.jobsByPipeline[latest.id] : undefined));
+
+  const unresolved = (threads ?? []).filter((t) => t.resolvable && !t.resolved).length;
+  const failedJobs =
+    latest && latest.status === "failed"
+      ? (jobs ?? []).filter((j) => j.status === "failed").length
+      : 0;
+
+  // Poll to keep the store fresh (the counts above react to it).
+  useEffect(() => {
+    if (!wsId || !branch) return;
+    async function tick() {
+      try {
+        const m = await findMr(wsId!, branch!);
+        if (m) await loadThreads(wsId!, m.number);
+        await loadPipelines(wsId!, branch!);
+        const ps = useForgeStore.getState().pipelinesByBranch[forgeBranchKey(wsId!, branch!)];
+        const lt = ps?.[0];
+        if (lt && lt.status === "failed") await loadJobs(wsId!, lt.id);
+      } catch {
+        // ignore — no forge / not authed / not implemented
+      }
+    }
+    void tick();
+    const h = window.setInterval(tick, 20000);
+    return () => window.clearInterval(h);
+  }, [wsId, branch, findMr, loadThreads, loadPipelines, loadJobs]);
+
+  return { unresolved, failedJobs };
+}
 
 export function BottomPane() {
   const tab = useUiStore((s) => s.bottomPaneTab);
   const setTab = useUiStore((s) => s.setBottomPaneTab);
   const problemsCount = useProblemsCount();
+  const { unresolved, failedJobs } = useForgeBadges();
 
   return (
     <div className="flex h-full flex-col bg-neutral-950">
@@ -50,9 +116,17 @@ export function BottomPane() {
         </TabButton>
         <TabButton active={tab === "review"} onClick={() => setTab("review")}>
           Review
+          {unresolved > 0 && (
+            <TabBadge active={tab === "review"}>{unresolved}</TabBadge>
+          )}
         </TabButton>
         <TabButton active={tab === "ci"} onClick={() => setTab("ci")}>
           CI
+          {failedJobs > 0 && (
+            <TabBadge active={tab === "ci"} danger>
+              {failedJobs}
+            </TabBadge>
+          )}
         </TabButton>
       </div>
       {/* Both views stay mounted; the inactive one is `display:
@@ -79,6 +153,33 @@ export function BottomPane() {
         </div>
       )}
     </div>
+  );
+}
+
+/// Count pill on a tab — red for CI failures, blue-when-active / neutral
+/// otherwise (matching the Problems badge).
+function TabBadge({
+  active,
+  danger,
+  children,
+}: {
+  active: boolean;
+  danger?: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <span
+      className={cn(
+        "ml-1.5 rounded-full px-1.5 py-[1px] text-[10px] font-semibold",
+        danger
+          ? "bg-red-700 text-red-100"
+          : active
+            ? "bg-blue-700 text-blue-100"
+            : "bg-neutral-700 text-neutral-200",
+      )}
+    >
+      {children}
+    </span>
   );
 }
 
