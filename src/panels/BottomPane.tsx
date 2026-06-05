@@ -55,7 +55,7 @@ function useForgeBadges(): { unresolved: number; failedJobs: number } {
   const unresolved = (threads ?? []).filter((t) => t.resolvable && !t.resolved).length;
   const failedJobs =
     latest && latest.status === "failed"
-      ? (jobs ?? []).filter((j) => j.status === "failed").length
+      ? (jobs ?? []).filter((j) => !j.retried && j.status === "failed").length
       : 0;
 
   // Poll to keep the store fresh (the counts above react to it).

@@ -98,6 +98,10 @@ pub struct ForgeJob {
     pub name: String,
     pub stage: String,
     pub status: String,
+    /// True for a superseded run (a later retry replaced it). The current run
+    /// of a job is `retried: false`. Retried runs are kept only so stage order
+    /// can be computed from the earliest job id per stage.
+    pub retried: bool,
 }
 
 /// One review/discussion thread on an MR/PR. `id` is the discussion id used

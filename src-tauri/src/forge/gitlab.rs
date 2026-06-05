@@ -354,8 +354,12 @@ impl GitlabForge {
     }
 
     pub async fn pipeline_jobs(&self, pipeline_id: u64) -> AppResult<Vec<ForgeJob>> {
+        // include_retried so superseded runs are present — needed to order
+        // stages by their earliest job id (a retry gets a higher id and would
+        // otherwise drag its stage out of order). The UI shows only the
+        // current run (retried=false) but orders stages using all of them.
         let path = format!(
-            "projects/{}/pipelines/{}/jobs?per_page=100",
+            "projects/{}/pipelines/{}/jobs?per_page=100&include_retried=true",
             self.pid(),
             pipeline_id
         );
@@ -373,6 +377,16 @@ impl GitlabForge {
             "--method".into(),
             "POST".into(),
             format!("projects/{}/pipelines/{}/retry", self.pid(), pipeline_id),
+        ];
+        self.api(&args).await.map(|_| ())
+    }
+
+    /// Retry a single job (creates a fresh run of just that job).
+    pub async fn retry_job(&self, job_id: u64) -> AppResult<()> {
+        let args = vec![
+            "--method".into(),
+            "POST".into(),
+            format!("projects/{}/jobs/{}/retry", self.pid(), job_id),
         ];
         self.api(&args).await.map(|_| ())
     }
@@ -508,6 +522,8 @@ struct GlJob {
     #[serde(default)]
     stage: String,
     status: String,
+    #[serde(default)]
+    retried: bool,
 }
 
 impl GlJob {
@@ -517,6 +533,7 @@ impl GlJob {
             name: self.name,
             stage: self.stage,
             status: self.status,
+            retried: self.retried,
         }
     }
 }

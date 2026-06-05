@@ -161,6 +161,7 @@ pub fn run() {
             ipc::commands::forge_list_pipelines,
             ipc::commands::forge_pipeline_jobs,
             ipc::commands::forge_retry_pipeline,
+            ipc::commands::forge_retry_job,
             ipc::commands::forge_job_log,
         ])
         .setup(|app| {

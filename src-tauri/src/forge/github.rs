@@ -110,4 +110,7 @@ impl GithubForge {
     pub async fn retry_pipeline(&self, _pipeline_id: u64) -> AppResult<()> {
         todo()
     }
+    pub async fn retry_job(&self, _job_id: u64) -> AppResult<()> {
+        todo()
+    }
 }

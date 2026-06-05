@@ -683,6 +683,13 @@ export function forgeRetryPipeline(
   return invoke<void>("forge_retry_pipeline", { workspaceId, pipelineId });
 }
 
+export function forgeRetryJob(
+  workspaceId: WorkspaceId,
+  jobId: number,
+): Promise<void> {
+  return invoke<void>("forge_retry_job", { workspaceId, jobId });
+}
+
 export function forgeJobLog(
   workspaceId: WorkspaceId,
   jobId: number,

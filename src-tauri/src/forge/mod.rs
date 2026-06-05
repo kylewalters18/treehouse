@@ -195,4 +195,10 @@ impl Forge {
             Forge::Github(g) => g.retry_pipeline(pipeline_id).await,
         }
     }
+    pub async fn retry_job(&self, job_id: u64) -> AppResult<()> {
+        match self {
+            Forge::Gitlab(g) => g.retry_job(job_id).await,
+            Forge::Github(g) => g.retry_job(job_id).await,
+        }
+    }
 }

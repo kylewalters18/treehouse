@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { ForgeJob, ForgePipeline } from "@/ipc/types";
 import { forgeJobLog, openExternalUrl } from "@/ipc/client";
 import { useForgeStore, forgeBranchKey } from "@/stores/forge";
@@ -30,12 +30,39 @@ export function CIPanel() {
   );
   const loadPipelines = useForgeStore((s) => s.loadPipelines);
   const retryPipeline = useForgeStore((s) => s.retryPipeline);
+  const retryJob = useForgeStore((s) => s.retryJob);
 
   const latest: ForgePipeline | undefined = pipelines?.[0];
   const storeLoadJobs = useForgeStore((s) => s.loadJobs);
   const jobs: ForgeJob[] =
     useForgeStore((s) => (latest ? s.jobsByPipeline[latest.id] : undefined)) ?? [];
   const [expandedLog, setExpandedLog] = useState<Record<number, string>>({});
+
+  // Group jobs into stages in execution order. Order stages by the *earliest*
+  // job id seen in each stage across all runs (including retried ones) — a
+  // retry gets a higher id, so first-appearance/sort-by-id would drag its
+  // stage out of order; the earliest id is stable. Show only the current run
+  // of each job (retried=false).
+  const stages = useMemo(() => {
+    const minId = new Map<string, number>();
+    for (const j of jobs) {
+      const st = j.stage || "jobs";
+      minId.set(st, Math.min(minId.get(st) ?? Infinity, j.id));
+    }
+    const byStage = new Map<string, ForgeJob[]>();
+    for (const j of jobs) {
+      if (j.retried) continue;
+      const st = j.stage || "jobs";
+      if (!byStage.has(st)) byStage.set(st, []);
+      byStage.get(st)!.push(j);
+    }
+    return [...byStage.keys()]
+      .sort((a, b) => (minId.get(a) ?? 0) - (minId.get(b) ?? 0))
+      .map((name) => ({
+        name,
+        jobs: byStage.get(name)!.sort((a, b) => a.id - b.id),
+      }));
+  }, [jobs]);
 
   const wsId = workspace?.id ?? null;
   const branch = selected?.branch ?? null;
@@ -145,64 +172,124 @@ export function CIPanel() {
           ↗
         </button>
       </div>
-      <ul className="flex flex-col gap-1">
-        {jobs.map((job) => {
-          const failed = job.status === "failed";
-          // A trace only exists once a job has started; hide the buttons for
-          // not-yet-run jobs (created / manual / skipped) where it'd be empty.
-          const hasLog = !["created", "manual", "skipped"].includes(job.status);
-          return (
-            <li
-              key={job.id}
-              className="rounded border border-neutral-900 bg-neutral-900/40"
-            >
-              <div className="flex items-center gap-2 px-2 py-1.5">
-                <StatusDot status={job.status} />
-                <span className="text-neutral-200">{job.name}</span>
-                {job.stage && (
-                  <span className="font-mono text-[10px] text-neutral-600">
-                    ({job.stage})
-                  </span>
-                )}
-                <span className="flex-1" />
-                {hasLog && (
-                  <>
-                    <button
-                      onClick={() => void toggleLog(job)}
-                      className="rounded border border-neutral-800 px-1.5 py-0.5 text-[11px] text-neutral-300 hover:bg-neutral-800"
-                    >
-                      {expandedLog[job.id] !== undefined ? "Hide log" : "View log"}
-                    </button>
-                    <button
-                      onClick={() => void sendToAgent(job)}
-                      className={cn(
-                        "rounded border px-1.5 py-0.5 text-[11px] font-medium",
-                        failed
-                          ? "border-blue-700 bg-blue-950/40 text-blue-200 hover:bg-blue-950/60"
-                          : "border-neutral-700 text-neutral-300 hover:bg-neutral-800",
-                      )}
-                      title={
-                        failed
-                          ? "Send the failing log to the active agent"
-                          : "Send this job's log to the active agent as context"
-                      }
-                    >
-                      → Send to agent
-                    </button>
-                  </>
-                )}
-              </div>
-              {expandedLog[job.id] !== undefined && (
-                <pre className="max-h-64 overflow-auto border-t border-neutral-800 bg-black px-2 py-1.5 font-mono text-[11px] text-neutral-300">
-                  {expandedLog[job.id]}
-                </pre>
-              )}
-            </li>
-          );
-        })}
-      </ul>
+      <div className="flex flex-col gap-3">
+        {stages.map((stage) => (
+          <div key={stage.name}>
+            <div className="mb-1 flex items-center gap-1.5 px-1">
+              <StatusDot status={stageStatus(stage.jobs)} />
+              <span className="text-[11px] font-medium uppercase tracking-wider text-neutral-400">
+                {stage.name}
+              </span>
+              <span className="text-[10px] text-neutral-600">
+                {stage.jobs.length}
+              </span>
+            </div>
+            <ul className="flex flex-col gap-1 border-l border-neutral-800 pl-2">
+              {stage.jobs.map((job) => (
+                <JobRow
+                  key={job.id}
+                  job={job}
+                  expanded={expandedLog[job.id]}
+                  onToggle={() => void toggleLog(job)}
+                  onSend={() => void sendToAgent(job)}
+                  onRetry={() => {
+                    if (wsId && branch && latest)
+                      void retryJob(wsId, branch, latest.id, job.id);
+                  }}
+                />
+              ))}
+            </ul>
+          </div>
+        ))}
+      </div>
     </div>
   );
+}
+
+/// One job within a stage: status, name, and (once it has a trace) View log /
+/// Send to agent. Send is emphasized blue for failures.
+function JobRow({
+  job,
+  expanded,
+  onToggle,
+  onSend,
+  onRetry,
+}: {
+  job: ForgeJob;
+  expanded: string | undefined;
+  onToggle: () => void;
+  onSend: () => void;
+  onRetry: () => void;
+}) {
+  const failed = job.status === "failed";
+  // A trace only exists once a job has started; hide the log buttons for
+  // not-yet-run jobs (created / manual / skipped) where it'd be empty.
+  const hasLog = !["created", "manual", "skipped"].includes(job.status);
+  // Retry only makes sense for a finished job.
+  const retryable = ["failed", "success", "canceled"].includes(job.status);
+  return (
+    <li className="rounded border border-neutral-900 bg-neutral-900/40">
+      <div className="flex items-center gap-2 px-2 py-1.5">
+        <StatusDot status={job.status} />
+        <span className="text-neutral-200">{job.name}</span>
+        <span className="flex-1" />
+        {retryable && (
+          <button
+            onClick={onRetry}
+            title="Retry this job"
+            className="rounded border border-neutral-800 px-1.5 py-0.5 text-[11px] text-neutral-300 hover:bg-neutral-800"
+          >
+            ⟳
+          </button>
+        )}
+        {hasLog && (
+          <>
+            <button
+              onClick={onToggle}
+              className="rounded border border-neutral-800 px-1.5 py-0.5 text-[11px] text-neutral-300 hover:bg-neutral-800"
+            >
+              {expanded !== undefined ? "Hide log" : "View log"}
+            </button>
+            <button
+              onClick={onSend}
+              className={cn(
+                "rounded border px-1.5 py-0.5 text-[11px] font-medium",
+                failed
+                  ? "border-blue-700 bg-blue-950/40 text-blue-200 hover:bg-blue-950/60"
+                  : "border-neutral-700 text-neutral-300 hover:bg-neutral-800",
+              )}
+              title={
+                failed
+                  ? "Send the failing log to the active agent"
+                  : "Send this job's log to the active agent as context"
+              }
+            >
+              → Send to agent
+            </button>
+          </>
+        )}
+      </div>
+      {expanded !== undefined && (
+        <pre className="max-h-64 overflow-auto border-t border-neutral-800 bg-black px-2 py-1.5 font-mono text-[11px] text-neutral-300">
+          {expanded}
+        </pre>
+      )}
+    </li>
+  );
+}
+
+/// Roll-up status for a stage: failed if any job failed, else running if any
+/// is in flight, else success when all are done (success/skipped/manual).
+function stageStatus(jobs: ForgeJob[]): string {
+  if (jobs.some((j) => j.status === "failed")) return "failed";
+  if (jobs.some((j) => ["running", "pending", "created"].includes(j.status)))
+    return "running";
+  if (
+    jobs.length > 0 &&
+    jobs.every((j) => ["success", "skipped", "manual"].includes(j.status))
+  )
+    return "success";
+  return "";
 }
 
 function Empty({ children }: { children: React.ReactNode }) {

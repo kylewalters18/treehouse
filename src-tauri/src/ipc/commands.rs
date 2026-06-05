@@ -695,6 +695,16 @@ pub async fn forge_retry_pipeline(
 }
 
 #[tauri::command]
+pub async fn forge_retry_job(
+    workspace_id: WorkspaceId,
+    job_id: u64,
+    state: State<'_, AppState>,
+) -> AppResult<()> {
+    let (f, _) = resolve_forge(workspace_id, &state).await?;
+    f.retry_job(job_id).await
+}
+
+#[tauri::command]
 pub async fn forge_job_log(
     workspace_id: WorkspaceId,
     job_id: u64,

@@ -94,6 +94,12 @@ type ForgeState = {
     branch: string,
     pipelineId: number,
   ) => Promise<void>;
+  retryJob: (
+    workspaceId: WorkspaceId,
+    branch: string,
+    pipelineId: number,
+    jobId: number,
+  ) => Promise<void>;
 };
 
 export const useForgeStore = create<ForgeState>((set, get) => ({
@@ -277,8 +283,20 @@ export const useForgeStore = create<ForgeState>((set, get) => ({
     try {
       await ipc.forgeRetryPipeline(workspaceId, pipelineId);
       await get().loadPipelines(workspaceId, branch);
+      await get().loadJobs(workspaceId, pipelineId);
     } catch (e) {
       toastError("Couldn't retry pipeline", asMessage(e));
+    }
+  },
+
+  async retryJob(workspaceId, branch, pipelineId, jobId) {
+    try {
+      await ipc.forgeRetryJob(workspaceId, jobId);
+      // Refresh pipeline status + jobs so the row + badge reflect the rerun.
+      await get().loadPipelines(workspaceId, branch);
+      await get().loadJobs(workspaceId, pipelineId);
+    } catch (e) {
+      toastError("Couldn't retry job", asMessage(e));
     }
   },
 }));
