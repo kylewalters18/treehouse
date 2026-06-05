@@ -25,14 +25,6 @@ type WorktreesState = {
     name: string,
     opts?: { initSubmodules?: boolean; base?: string | null },
   ) => Promise<Worktree | null>;
-  /// Create a worktree+branch from a forge issue (`<number>-<slug>`). Same
-  /// append semantics as `create`; the branch name carries the issue link.
-  /// `base` is the source branch to fork from (null → origin/<default>).
-  createFromIssue: (
-    workspaceId: WorkspaceId,
-    number: number,
-    base?: string | null,
-  ) => Promise<Worktree | null>;
   remove: (
     worktreeId: WorktreeId,
     force?: boolean,
@@ -92,24 +84,6 @@ export const useWorktreesStore = create<WorktreesState>((set, get) => ({
       return result.worktree;
     } catch (e: unknown) {
       toastError(`Couldn't create "${name}"`, asMessage(e));
-      set({ creating: false });
-      return null;
-    }
-  },
-  async createFromIssue(workspaceId, number, base = null) {
-    set({ creating: true });
-    try {
-      const result = await ipc.forgeCreateWorktreeFromIssue(workspaceId, number, base);
-      set({
-        worktrees: [...get().worktrees, result.worktree],
-        creating: false,
-      });
-      if (result.warning) {
-        toastInfo(`${result.worktree.branch}: ${result.warning}`);
-      }
-      return result.worktree;
-    } catch (e: unknown) {
-      toastError(`Couldn't create worktree for #${number}`, asMessage(e));
       set({ creating: false });
       return null;
     }

@@ -508,39 +508,6 @@ pub async fn forge_get_issue(
     f.get_issue(number).await
 }
 
-/// Create a worktree + branch from an issue: `<number>-<slugified-title>`
-/// (so the branch carries the issue link), then the shared post-create wiring.
-#[tauri::command]
-pub async fn forge_create_worktree_from_issue(
-    workspace_id: WorkspaceId,
-    number: u64,
-    base: Option<String>,
-    app: AppHandle,
-    state: State<'_, AppState>,
-) -> AppResult<CreateWorktreeResult> {
-    let (f, _) = resolve_forge(workspace_id, &state).await?;
-    let issue = f.get_issue(number).await?;
-    let slug: String = worktree::git_ops::slugify(&issue.title)
-        .chars()
-        .take(50)
-        .collect();
-    let name = if slug.is_empty() {
-        number.to_string()
-    } else {
-        format!("{number}-{slug}")
-    };
-    let result = worktree::create(
-        Some(&app),
-        workspace_id,
-        &name,
-        CreateOptions { init_submodules: false, base },
-        &state,
-    )
-    .await?;
-    finish_create(&app, workspace_id, &result);
-    Ok(result)
-}
-
 #[tauri::command]
 pub async fn forge_list_mrs(
     workspace_id: WorkspaceId,

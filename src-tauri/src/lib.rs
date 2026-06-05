@@ -146,7 +146,6 @@ pub fn run() {
             ipc::commands::forge_status,
             ipc::commands::forge_list_issues,
             ipc::commands::forge_get_issue,
-            ipc::commands::forge_create_worktree_from_issue,
             ipc::commands::forge_list_mrs,
             ipc::commands::forge_find_mr_for_branch,
             ipc::commands::forge_create_mr,

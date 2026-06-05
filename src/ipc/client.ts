@@ -545,18 +545,6 @@ export function forgeGetIssue(
   return invoke<ForgeIssue>("forge_get_issue", { workspaceId, number });
 }
 
-export function forgeCreateWorktreeFromIssue(
-  workspaceId: WorkspaceId,
-  number: number,
-  base: string | null,
-): Promise<CreateWorktreeResult> {
-  return invoke<CreateWorktreeResult>("forge_create_worktree_from_issue", {
-    workspaceId,
-    number,
-    base,
-  });
-}
-
 export function forgeListMrs(
   workspaceId: WorkspaceId,
   stateFilter: "open" | "merged" | "closed" | "all",
