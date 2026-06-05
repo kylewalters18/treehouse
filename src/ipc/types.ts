@@ -53,3 +53,15 @@ export type { HookRunSummary } from "./bindings/HookRunSummary";
 export type { HookFailure } from "./bindings/HookFailure";
 
 export type { AppFileContent } from "./bindings/AppFileContent";
+
+export type { ForgeKind } from "./bindings/ForgeKind";
+export type { ForgeStatus } from "./bindings/ForgeStatus";
+export type { ForgeIssue } from "./bindings/ForgeIssue";
+export type { ForgeMr } from "./bindings/ForgeMr";
+export type { ForgePipeline } from "./bindings/ForgePipeline";
+export type { ForgeJob } from "./bindings/ForgeJob";
+export type { ForgeThread } from "./bindings/ForgeThread";
+export type { ForgeApproval } from "./bindings/ForgeApproval";
+export type { ForgeNote } from "./bindings/ForgeNote";
+export type { ForgePosition } from "./bindings/ForgePosition";
+export type { ReviewCommentInput } from "./bindings/ReviewCommentInput";

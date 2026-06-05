@@ -19,6 +19,10 @@ pub struct Worktree {
     pub path: PathBuf,
     pub branch: String,
     pub base_ref: String,
+    /// The branch this worktree was forked from (name, no `origin/` prefix) —
+    /// chosen at create time, defaulting to the repo's default branch. Used as
+    /// the MR/PR target. Adopted / main-clone entries fall back to the default.
+    pub base_branch: String,
     pub head: String,
     pub dirty: bool,
     /// The main repository's own workdir — not a true worktree. Rendered at

@@ -20,9 +20,13 @@ use super::{git_ops, Worktree};
 const DESTROY_HOOK_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Tunable knobs for `create`. Pass `Default::default()` for "old" behavior.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct CreateOptions {
     pub init_submodules: bool,
+    /// Branch/ref to fork the new branch from (e.g. `origin/main`, `develop`).
+    /// `None`/empty → `origin/<default_branch>`. Chosen at create time; this is
+    /// independent of the Changes-pane diff base.
+    pub base: Option<String>,
 }
 
 /// What `create` returns: the worktree, plus an optional non-fatal warning
@@ -160,10 +164,37 @@ pub async fn create(
         .await
         .unwrap_or(false);
 
-    // Default's current tip — used as the fallback anchor for fresh
-    // branches (where merge-base == default tip) and as the head fallback
-    // if rev-parse on the new branch fails for any reason.
-    let default_sha = git_ops::rev_parse(&ws.root, &ws.default_branch).await?;
+    // Where this new branch forks from — chosen at create time (the base
+    // picker), defaulting to the freshly-fetched `origin/<default_branch>`.
+    // Independent of the Changes-pane diff base, which is purely a review
+    // concern. Only used when creating a genuinely new branch below.
+    let requested_base = opts
+        .base
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("origin/{}", ws.default_branch));
+    // Fall back to the local default branch when the requested base can't be
+    // resolved — no remote configured, or `origin/<default>` not fetched yet.
+    let base_ref = if git_ops::rev_parse(&ws.root, &requested_base).await.is_ok() {
+        requested_base
+    } else {
+        ws.default_branch.clone()
+    };
+    // The MR/PR target: the base as a plain branch name (no `origin/` prefix).
+    let base_branch = base_ref
+        .strip_prefix("origin/")
+        .unwrap_or(&base_ref)
+        .to_string();
+
+    // Base tip's current sha — the fallback anchor for fresh branches (where
+    // merge-base == base tip) and the head fallback if rev-parse on the new
+    // branch fails.
+    let default_sha = match git_ops::rev_parse(&ws.root, &base_ref).await {
+        Ok(s) => s,
+        Err(_) => git_ops::rev_parse(&ws.root, &ws.default_branch).await?,
+    };
 
     let head_sha = if local_exists {
         tracing::info!(%branch, "reusing existing local branch");
@@ -181,17 +212,16 @@ pub async fn create(
             .unwrap_or_else(|_| default_sha.clone())
     } else {
         emit_step(&format!("Creating new branch '{branch}'"));
-        git_ops::add(&ws.root, &path, &branch, &ws.default_branch).await?;
+        git_ops::add(&ws.root, &path, &branch, &base_ref).await?;
         default_sha.clone()
     };
 
-    // Anchor the Changes pane at `merge-base(default, branch)` — the
-    // fork point. For a fresh branch this equals default's current
-    // tip (so behavior is unchanged); for a reused branch that forked
-    // from an older default, this avoids showing default's own
-    // commits as phantom changes on the worktree's diff.
+    // Anchor the Changes pane at `merge-base(base_ref, branch)` — the fork
+    // point. For a fresh branch this equals the base tip (so behavior is
+    // unchanged); for a reused branch that forked from an older base, this
+    // avoids showing the base's own commits as phantom changes on the diff.
     emit_step("Computing diff anchor");
-    let base_sha = git_ops::merge_base(&ws.root, &ws.default_branch, &branch)
+    let base_sha = git_ops::merge_base(&ws.root, &base_ref, &branch)
         .await
         .unwrap_or_else(|_| default_sha.clone());
 
@@ -201,6 +231,7 @@ pub async fn create(
         path,
         branch,
         base_ref: base_sha,
+        base_branch,
         head: head_sha,
         dirty: false,
         is_main_clone: false,
@@ -558,6 +589,9 @@ pub async fn reconcile(workspace_id: WorkspaceId, state: &AppState) -> AppResult
             path: entry.path,
             branch,
             base_ref,
+            // Adopted from disk — we don't know its original fork point; assume
+            // the repo default as the MR target.
+            base_branch: ws.default_branch.clone(),
             head,
             dirty: false,
             is_main_clone: false,
@@ -600,6 +634,7 @@ pub async fn register_main_clone(
         path: ws.root.clone(),
         branch,
         base_ref: head.clone(),
+        base_branch: ws.default_branch.clone(),
         head,
         dirty: false,
         is_main_clone: true,

@@ -17,6 +17,11 @@ where
     let out = Command::new("git")
         .arg("-C")
         .arg(repo_root)
+        // Never let a git op block on an interactive credential prompt — we run
+        // headless from a GUI with no controlling terminal, so a missing/expired
+        // credential should fail fast (and surface as an error) rather than hang
+        // forever on a prompt nothing can answer.
+        .env("GIT_TERMINAL_PROMPT", "0")
         .args(args)
         .output()
         .await?;
@@ -25,6 +30,44 @@ where
         return Err(AppError::GitError(stderr));
     }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// `git remote get-url origin`. Returns `Ok(None)` when there's no `origin`
+/// (a local-only repo) rather than erroring — matches `show_blob`'s convention
+/// so the forge layer can treat "no remote" as "no forge."
+pub async fn remote_url(repo_root: &Path) -> AppResult<Option<String>> {
+    match git(repo_root, ["remote", "get-url", "origin"]).await {
+        Ok(s) => {
+            let s = s.trim().to_string();
+            Ok((!s.is_empty()).then_some(s))
+        }
+        Err(_) => Ok(None),
+    }
+}
+
+/// Push a branch to `origin` with upstream tracking. Used before opening an
+/// MR/PR — `gh pr create` / `glab mr create` need the branch to already exist
+/// on the remote. Honors the user's credential helper via the git CLI.
+///
+/// Bounded by a timeout so a stalled remote (or a credential setup that, despite
+/// `GIT_TERMINAL_PROMPT=0`, still blocks) can't hang the caller forever. Auth
+/// failures come back as a clear, actionable error rather than a spinner.
+pub async fn push_branch(repo_root: &Path, branch: &str) -> AppResult<()> {
+    let fut = git(repo_root, ["push", "-u", "origin", branch]);
+    match tokio::time::timeout(std::time::Duration::from_secs(120), fut).await {
+        Ok(Ok(_)) => Ok(()),
+        Ok(Err(e)) => Err(AppError::GitError(format!(
+            "couldn't push '{branch}' to origin: {e}. \
+             Check your git credentials for the remote — e.g. configure glab/gh \
+             as a credential helper (`git config --global \
+             credential.<host>.helper '!glab auth git-credential'`)."
+        ))),
+        Err(_) => Err(AppError::GitError(format!(
+            "pushing '{branch}' to origin timed out after 120s — the remote didn't \
+             respond or git is waiting on credentials. Check your network and git \
+             credential setup."
+        ))),
+    }
 }
 
 /// One parsed row from `git worktree list --porcelain`.

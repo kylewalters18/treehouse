@@ -7,6 +7,7 @@ import { useWorktreesStore } from "@/stores/worktrees";
 import { useWorkspaceStore } from "@/stores/workspace";
 import { useDiffsStore } from "@/stores/diffs";
 import { BaseRefPicker } from "@/components/BaseRefPicker";
+import { MrBar } from "@/components/MrBar";
 import { useLspStore } from "@/stores/lsp";
 import { useNavigationStore } from "@/stores/navigation";
 import { onDiffUpdated, readBlobAtRef, readFile } from "@/ipc/client";
@@ -46,6 +47,9 @@ function DiffView({ worktreeId }: { worktreeId: WorktreeId }) {
   );
   const workspace = useWorkspaceStore((s) =>
     s.workspaces.find((w) => w.id === workspaceId),
+  );
+  const branch = useWorktreesStore(
+    (s) => s.worktrees.find((w) => w.id === worktreeId)?.branch ?? null,
   );
   const diff = useDiffsStore((s) => s.byWorktree[worktreeId]);
   const error = useDiffsStore((s) => s.error[worktreeId]);
@@ -128,9 +132,13 @@ function DiffView({ worktreeId }: { worktreeId: WorktreeId }) {
   }
 
   return (
+    <div className="flex h-full flex-col">
+      {workspace && branch && (
+        <MrBar workspaceId={workspace.id} branch={branch} />
+      )}
     <PanelGroup
       direction="horizontal"
-      className="flex h-full"
+      className="flex min-h-0 flex-1"
       autoSaveId="diff-sidebar"
     >
       <Panel defaultSize={22} minSize={12} maxSize={50}>
@@ -323,6 +331,7 @@ function DiffView({ worktreeId }: { worktreeId: WorktreeId }) {
         </section>
       </Panel>
     </PanelGroup>
+    </div>
   );
 }
 

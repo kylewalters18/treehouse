@@ -31,6 +31,11 @@ pub struct AppState {
     /// Memoizes `effectively_merged` by `(branch_head_sha, base_head_sha)`
     /// so event bursts that don't move HEAD don't redo the merge-tree call.
     pub merge_check_cache: MergeCheckCache,
+    /// Cached forge remote per workspace (parsed `origin` URL → host/owner/repo/kind).
+    /// `None` means "detected, but no recognized forge" — cached so a local-only
+    /// repo doesn't re-fork `git remote get-url` on every forge poll. Evicted in
+    /// `close_workspace`.
+    pub forge_remotes: Arc<DashMap<WorkspaceId, Option<crate::forge::RemoteInfo>>>,
 }
 
 impl AppState {
@@ -46,6 +51,7 @@ impl AppState {
             merge_lock: Arc::new(AsyncMutex::new(())),
             worktree_status: Arc::new(DashMap::new()),
             merge_check_cache: Arc::new(DashMap::new()),
+            forge_remotes: Arc::new(DashMap::new()),
         }
     }
 }

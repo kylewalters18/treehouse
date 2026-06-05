@@ -33,6 +33,14 @@ import type {
   Worktree,
   WorktreeActivity,
   WorktreeId,
+  ForgeStatus,
+  ForgeIssue,
+  ForgeMr,
+  ForgePipeline,
+  ForgeJob,
+  ForgeThread,
+  ForgeApproval,
+  ReviewCommentInput,
 } from "./types";
 
 // --- Workspace ---
@@ -115,12 +123,13 @@ export function listWorktrees(workspaceId: WorkspaceId): Promise<Worktree[]> {
 export function createWorktree(
   workspaceId: WorkspaceId,
   name: string,
-  opts: { initSubmodules?: boolean } = {},
+  opts: { initSubmodules?: boolean; base?: string | null } = {},
 ): Promise<CreateWorktreeResult> {
   return invoke<CreateWorktreeResult>("create_worktree", {
     workspaceId,
     name,
     initSubmodules: opts.initSubmodules ?? false,
+    base: opts.base ?? null,
   });
 }
 
@@ -507,4 +516,188 @@ export function onLspServersChanged(
   handler: () => void,
 ): Promise<UnlistenFn> {
   return listen(`workspace://${workspaceId}/lsp-servers-changed`, handler);
+}
+
+// --- Forge (GitLab / GitHub via glab / gh) ---
+
+export function forgeStatus(workspaceId: WorkspaceId): Promise<ForgeStatus> {
+  return invoke<ForgeStatus>("forge_status", { workspaceId });
+}
+
+export function forgeListIssues(
+  workspaceId: WorkspaceId,
+  query: string,
+  stateFilter: "open" | "closed" | "all",
+  limit: number,
+): Promise<ForgeIssue[]> {
+  return invoke<ForgeIssue[]>("forge_list_issues", {
+    workspaceId,
+    query,
+    stateFilter,
+    limit,
+  });
+}
+
+export function forgeGetIssue(
+  workspaceId: WorkspaceId,
+  number: number,
+): Promise<ForgeIssue> {
+  return invoke<ForgeIssue>("forge_get_issue", { workspaceId, number });
+}
+
+export function forgeCreateWorktreeFromIssue(
+  workspaceId: WorkspaceId,
+  number: number,
+  base: string | null,
+): Promise<CreateWorktreeResult> {
+  return invoke<CreateWorktreeResult>("forge_create_worktree_from_issue", {
+    workspaceId,
+    number,
+    base,
+  });
+}
+
+export function forgeListMrs(
+  workspaceId: WorkspaceId,
+  stateFilter: "open" | "merged" | "closed" | "all",
+  limit: number,
+): Promise<ForgeMr[]> {
+  return invoke<ForgeMr[]>("forge_list_mrs", { workspaceId, stateFilter, limit });
+}
+
+export function forgeFindMrForBranch(
+  workspaceId: WorkspaceId,
+  branch: string,
+): Promise<ForgeMr | null> {
+  return invoke<ForgeMr | null>("forge_find_mr_for_branch", {
+    workspaceId,
+    branch,
+  });
+}
+
+export function forgeCreateMr(
+  workspaceId: WorkspaceId,
+  branch: string,
+  title: string,
+  body: string | null,
+  draft: boolean,
+): Promise<ForgeMr> {
+  return invoke<ForgeMr>("forge_create_mr", {
+    workspaceId,
+    branch,
+    title,
+    body,
+    draft,
+  });
+}
+
+export function forgeApproveMr(
+  workspaceId: WorkspaceId,
+  iid: number,
+): Promise<void> {
+  return invoke<void>("forge_approve_mr", { workspaceId, iid });
+}
+
+export function forgeUnapproveMr(
+  workspaceId: WorkspaceId,
+  iid: number,
+): Promise<void> {
+  return invoke<void>("forge_unapprove_mr", { workspaceId, iid });
+}
+
+export function forgeMrApproval(
+  workspaceId: WorkspaceId,
+  iid: number,
+): Promise<ForgeApproval> {
+  return invoke<ForgeApproval>("forge_mr_approval", { workspaceId, iid });
+}
+
+export function forgeMergeMr(
+  workspaceId: WorkspaceId,
+  iid: number,
+): Promise<void> {
+  return invoke<void>("forge_merge_mr", { workspaceId, iid });
+}
+
+export function forgePostMrComment(
+  workspaceId: WorkspaceId,
+  iid: number,
+  body: string,
+): Promise<void> {
+  return invoke<void>("forge_post_mr_comment", { workspaceId, iid, body });
+}
+
+export function forgePostReviewComments(
+  workspaceId: WorkspaceId,
+  iid: number,
+  comments: ReviewCommentInput[],
+): Promise<void> {
+  return invoke<void>("forge_post_review_comments", {
+    workspaceId,
+    iid,
+    comments,
+  });
+}
+
+export function forgeListThreads(
+  workspaceId: WorkspaceId,
+  iid: number,
+): Promise<ForgeThread[]> {
+  return invoke<ForgeThread[]>("forge_list_threads", { workspaceId, iid });
+}
+
+export function forgeReplyThread(
+  workspaceId: WorkspaceId,
+  iid: number,
+  discussionId: string,
+  body: string,
+): Promise<void> {
+  return invoke<void>("forge_reply_thread", {
+    workspaceId,
+    iid,
+    discussionId,
+    body,
+  });
+}
+
+export function forgeResolveThread(
+  workspaceId: WorkspaceId,
+  iid: number,
+  discussionId: string,
+  resolved: boolean,
+): Promise<void> {
+  return invoke<void>("forge_resolve_thread", {
+    workspaceId,
+    iid,
+    discussionId,
+    resolved,
+  });
+}
+
+export function forgeListPipelines(
+  workspaceId: WorkspaceId,
+  branch: string,
+): Promise<ForgePipeline[]> {
+  return invoke<ForgePipeline[]>("forge_list_pipelines", { workspaceId, branch });
+}
+
+export function forgePipelineJobs(
+  workspaceId: WorkspaceId,
+  pipelineId: number,
+): Promise<ForgeJob[]> {
+  return invoke<ForgeJob[]>("forge_pipeline_jobs", { workspaceId, pipelineId });
+}
+
+export function forgeRetryPipeline(
+  workspaceId: WorkspaceId,
+  pipelineId: number,
+): Promise<void> {
+  return invoke<void>("forge_retry_pipeline", { workspaceId, pipelineId });
+}
+
+export function forgeJobLog(
+  workspaceId: WorkspaceId,
+  jobId: number,
+): Promise<string> {
+  return invoke<string>("forge_job_log", { workspaceId, jobId });
 }

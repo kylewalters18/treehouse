@@ -2,7 +2,13 @@
 import type { WorkspaceId } from "./WorkspaceId";
 import type { WorktreeId } from "./WorktreeId";
 
-export type Worktree = { id: WorktreeId, workspaceId: WorkspaceId, path: string, branch: string, baseRef: string, head: string, dirty: boolean, 
+export type Worktree = { id: WorktreeId, workspaceId: WorkspaceId, path: string, branch: string, baseRef: string, 
+/**
+ * The branch this worktree was forked from (name, no `origin/` prefix) —
+ * chosen at create time, defaulting to the repo's default branch. Used as
+ * the MR/PR target. Adopted / main-clone entries fall back to the default.
+ */
+baseBranch: string, head: string, dirty: boolean, 
 /**
  * The main repository's own workdir — not a true worktree. Rendered at
  * the top of the sidebar with a distinct style; launch / merge /

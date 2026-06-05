@@ -1,5 +1,6 @@
 mod agent;
 mod diff;
+mod forge;
 mod fs_api;
 mod fs_watch;
 mod ipc;
@@ -142,6 +143,26 @@ pub fn run() {
             ipc::commands::list_log_files,
             ipc::commands::worktree_setup_steps,
             ipc::commands::worktree_mark_setup_ran,
+            ipc::commands::forge_status,
+            ipc::commands::forge_list_issues,
+            ipc::commands::forge_get_issue,
+            ipc::commands::forge_create_worktree_from_issue,
+            ipc::commands::forge_list_mrs,
+            ipc::commands::forge_find_mr_for_branch,
+            ipc::commands::forge_create_mr,
+            ipc::commands::forge_approve_mr,
+            ipc::commands::forge_unapprove_mr,
+            ipc::commands::forge_mr_approval,
+            ipc::commands::forge_merge_mr,
+            ipc::commands::forge_post_mr_comment,
+            ipc::commands::forge_post_review_comments,
+            ipc::commands::forge_list_threads,
+            ipc::commands::forge_reply_thread,
+            ipc::commands::forge_resolve_thread,
+            ipc::commands::forge_list_pipelines,
+            ipc::commands::forge_pipeline_jobs,
+            ipc::commands::forge_retry_pipeline,
+            ipc::commands::forge_job_log,
         ])
         .setup(|app| {
             use tauri::{Emitter, Manager};

@@ -1,6 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useSettingsStore } from "@/stores/settings";
 import { useLspStore } from "@/stores/lsp";
+import { useForgeStore } from "@/stores/forge";
+import { useUiStore } from "@/stores/ui";
+import { useWorktreesStore } from "@/stores/worktrees";
+import { useWorkspaceStore, workspaceForWorktree } from "@/stores/workspace";
 import type {
   AgentBackendKind,
   LspConfig,
@@ -110,8 +114,78 @@ export function SettingsMenu() {
           <div className="mt-3 border-t border-neutral-800 pt-3">
             <LanguagesSection />
           </div>
+          <div className="mt-3 border-t border-neutral-800 pt-3">
+            <ForgeSection />
+          </div>
         </div>
       )}
+    </div>
+  );
+}
+
+/// Read-only forge availability/auth line for the active workspace.
+function ForgeSection() {
+  const selectedWorktreeId = useUiStore((s) => s.selectedWorktreeId);
+  const worktrees = useWorktreesStore((s) => s.worktrees);
+  const selected = worktrees.find((w) => w.id === selectedWorktreeId) ?? null;
+  const activeWorkspace =
+    workspaceForWorktree(selected?.workspaceId) ??
+    useWorkspaceStore.getState().workspaces[0] ??
+    null;
+  const status = useForgeStore((s) =>
+    activeWorkspace ? s.status[activeWorkspace.id] : undefined,
+  );
+  const loadStatus = useForgeStore((s) => s.loadStatus);
+
+  useEffect(() => {
+    if (activeWorkspace) void loadStatus(activeWorkspace.id);
+  }, [activeWorkspace, loadStatus]);
+
+  const kindLabel =
+    status?.kind === "gitlab"
+      ? "GitLab"
+      : status?.kind === "github"
+        ? "GitHub"
+        : "—";
+
+  return (
+    <div>
+      <div className="mb-1 text-[11px] uppercase tracking-wider text-neutral-500">
+        Forge
+      </div>
+      <div className="rounded border border-neutral-800 px-2 py-1.5 text-xs">
+        <div className="flex items-center gap-1.5">
+          <span
+            className={cn(
+              "h-2 w-2 rounded-full",
+              !status
+                ? "bg-neutral-600"
+                : status.authenticated
+                  ? "bg-emerald-500"
+                  : status.installed
+                    ? "bg-amber-500"
+                    : "bg-red-500",
+            )}
+          />
+          <span className="font-medium text-neutral-100">{kindLabel}</span>
+          {status?.host && (
+            <span className="font-mono text-[11px] text-neutral-500">
+              {status.host}
+            </span>
+          )}
+        </div>
+        <div className="mt-0.5 font-mono text-[11px] text-neutral-500">
+          {!status
+            ? "checking…"
+            : !status.installed
+              ? "CLI not installed"
+              : status.authenticated
+                ? "authenticated"
+                : status.kind === "gitlab"
+                  ? "not signed in — glab auth login"
+                  : "not signed in — gh auth login"}
+        </div>
+      </div>
     </div>
   );
 }

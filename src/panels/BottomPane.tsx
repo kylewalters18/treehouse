@@ -11,6 +11,8 @@
 
 import { ProblemsList, useProblemsCount } from "@/components/ProblemsList";
 import { TerminalPane } from "@/panels/TerminalPane";
+import { CIPanel } from "@/panels/CIPanel";
+import { ReviewPanel } from "@/panels/ReviewPanel";
 import { useUiStore } from "@/stores/ui";
 import { cn } from "@/lib/cn";
 
@@ -46,6 +48,12 @@ export function BottomPane() {
             </span>
           )}
         </TabButton>
+        <TabButton active={tab === "review"} onClick={() => setTab("review")}>
+          Review
+        </TabButton>
+        <TabButton active={tab === "ci"} onClick={() => setTab("ci")}>
+          CI
+        </TabButton>
       </div>
       {/* Both views stay mounted; the inactive one is `display:
           none` so xterm sessions, scrollback, agent state, etc.
@@ -58,6 +66,18 @@ export function BottomPane() {
       <div className={cn("flex-1 min-h-0", tab !== "problems" && "hidden")}>
         <ProblemsList />
       </div>
+      {/* Review + CI mount only when active — they hit the forge, so we don't
+          want them fetching in the background behind the terminal. */}
+      {tab === "review" && (
+        <div className="flex-1 min-h-0">
+          <ReviewPanel />
+        </div>
+      )}
+      {tab === "ci" && (
+        <div className="flex-1 min-h-0">
+          <CIPanel />
+        </div>
+      )}
     </div>
   );
 }

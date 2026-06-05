@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import Editor, { type OnMount } from "@monaco-editor/react";
 import * as monaco from "monaco-editor";
@@ -17,12 +17,14 @@ import type {
   AgentSessionId,
   Comment,
   FileContent,
+  ForgeThread,
   WorktreeId,
 } from "@/ipc/types";
 import {
   formatCommentForAgent,
   useCommentsStore,
 } from "@/stores/comments";
+import { useForgeStore, forgeBranchKey } from "@/stores/forge";
 import { useLspStore } from "@/stores/lsp";
 import { useNavigationStore } from "@/stores/navigation";
 import { useSettingsStore } from "@/stores/settings";
@@ -551,17 +553,22 @@ function ConflictBanner({
 
 type ZoneDesc =
   | { key: string; kind: "widget"; line: number; heightLines: number; comment: Comment }
-  | { key: string; kind: "composer"; line: number; heightLines: number };
+  | { key: string; kind: "composer"; line: number; heightLines: number }
+  | { key: string; kind: "thread"; line: number; heightLines: number; thread: ForgeThread };
 
 type ZoneEntry = {
   desc: ZoneDesc;
   viewZoneId: string;
   widget: MonacoEditor.IOverlayWidget;
   domNode: HTMLDivElement;
+  /// The live IViewZone object Monaco holds — we mutate `heightInPx` and
+  /// `layoutZone(id)` to grow a thread zone to its measured content height.
+  zone: MonacoEditor.IViewZone;
 };
 
 const WIDGET_HEIGHT_LINES = 5;
 const COMPOSER_HEIGHT_LINES = 6;
+const THREAD_HEIGHT_LINES = 7;
 
 /// Renders review comments inline using the ZoneWidget pattern VSCode uses
 /// internally: a Monaco view zone reserves vertical space (pushing code down)
@@ -617,6 +624,64 @@ export function CommentOverlay({
         (showResolved || c.resolvedAt === null),
     );
   }, [allComments, workspaceRoot, branch, filePath, showResolved]);
+
+  // Teammates' MR review threads, rendered inline on the lines they commented
+  // on (the same threads also appear in the Review tab). Look up the MR for
+  // this branch, load its discussions, keep the inline ones anchored here.
+  const findMr = useForgeStore((s) => s.findMr);
+  const loadThreads = useForgeStore((s) => s.loadThreads);
+  const replyThread = useForgeStore((s) => s.replyThread);
+  const resolveThread = useForgeStore((s) => s.resolveThread);
+  const mr = useForgeStore((s) =>
+    workspace ? s.mrByBranch[forgeBranchKey(workspace.id, branch)] : undefined,
+  );
+  const mrThreads = useForgeStore((s) =>
+    workspace && mr ? s.threadsByMr[`${workspace.id}::mr::${mr.number}`] : undefined,
+  );
+
+  useEffect(() => {
+    if (workspace && branch && mr === undefined) void findMr(workspace.id, branch);
+  }, [workspace, branch, mr, findMr]);
+  useEffect(() => {
+    if (workspace && mr) void loadThreads(workspace.id, mr.number);
+  }, [workspace, mr, loadThreads]);
+
+  const fileThreads = useMemo(() => {
+    if (!mrThreads) return [] as { thread: ForgeThread; line: number }[];
+    const out: { thread: ForgeThread; line: number }[] = [];
+    for (const t of mrThreads) {
+      const anchored = t.notes.find(
+        (n) => n.position?.newPath === filePath && n.position?.newLine != null,
+      );
+      if (anchored?.position?.newLine != null) {
+        out.push({ thread: t, line: anchored.position.newLine });
+      }
+    }
+    return out;
+  }, [mrThreads, filePath]);
+
+  const mrNumber = mr ? mr.number : null;
+  const onReply = (discussionId: string, body: string) => {
+    if (!workspace || mrNumber == null) return Promise.resolve(false);
+    return replyThread(workspace.id, mrNumber, discussionId, body);
+  };
+  const onResolveThread = (discussionId: string, resolved: boolean) => {
+    if (!workspace || mrNumber == null) return Promise.resolve(false);
+    return resolveThread(workspace.id, mrNumber, discussionId, resolved);
+  };
+
+  // Grow a thread's view zone to its measured content height (no cap — match
+  // GitLab, which shows the whole thread). `contentPx` is the rendered
+  // widget's natural height; add the domNode's vertical padding (6+6).
+  const editorRef = useRef(editor);
+  editorRef.current = editor;
+  const setZoneHeight = useCallback((entry: ZoneEntry, contentPx: number) => {
+    const target = Math.ceil(contentPx) + 14;
+    if (Math.abs((entry.zone.heightInPx ?? -1) - target) < 2) return;
+    entry.zone.heightInLines = undefined;
+    entry.zone.heightInPx = target;
+    editorRef.current.changeViewZones((acc) => acc.layoutZone(entry.viewZoneId));
+  }, []);
 
   // Track the editor content area (for overlay-widget left/width sync).
   const [layout, setLayout] = useState<{
@@ -760,6 +825,22 @@ export function CommentOverlay({
         comment: c,
       });
     }
+    for (const ft of fileThreads) {
+      const noteLines = ft.thread.notes.reduce((acc, n) => {
+        const newlines = (n.body.match(/\n/g)?.length ?? 0) + 1;
+        const wrapped = Math.ceil(n.body.length / 70);
+        return acc + 1 + Math.max(newlines, wrapped);
+      }, 0);
+      want.push({
+        key: `t:${ft.thread.id}`,
+        kind: "thread",
+        line: ft.line,
+        // Initial estimate only — `ThreadWidget` measures its real content
+        // height after mount and grows the zone to fit (no cap).
+        heightLines: Math.max(THREAD_HEIGHT_LINES, 3 + noteLines),
+        thread: ft.thread,
+      });
+    }
     if (composerLine !== null) {
       want.push({
         key: "composer",
@@ -801,7 +882,7 @@ export function CommentOverlay({
         editor.addOverlayWidget(widget);
 
         const spacer = document.createElement("div");
-        const viewZoneId = acc.addZone({
+        const zone: MonacoEditor.IViewZone = {
           afterLineNumber: desc.line,
           heightInLines: desc.heightLines,
           domNode: spacer,
@@ -812,9 +893,10 @@ export function CommentOverlay({
           onComputedHeight: (height: number) => {
             domNode.style.height = `${height}px`;
           },
-        });
+        };
+        const viewZoneId = acc.addZone(zone);
 
-        next.push({ desc, viewZoneId, widget, domNode });
+        next.push({ desc, viewZoneId, widget, domNode, zone });
       }
     });
 
@@ -827,7 +909,7 @@ export function CommentOverlay({
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editor, visible, composerLine]);
+  }, [editor, visible, composerLine, fileThreads]);
 
   // Keep the overlay widgets' horizontal position/width in sync with the
   // editor's content area as the layout changes (resizes, wrapping toggle,
@@ -871,6 +953,18 @@ export function CommentOverlay({
               onDelete={() => void removeComment(c.id)}
               onUpdateText={(text) => void updateText(c.id, text)}
               onSendTo={(agentId) => sendOne(c, agentId)}
+            />,
+            e.domNode,
+            desc.key,
+          );
+        }
+        if (desc.kind === "thread") {
+          return createPortal(
+            <ThreadWidget
+              thread={desc.thread}
+              onReply={(body) => onReply(desc.thread.id, body)}
+              onResolve={(resolved) => onResolveThread(desc.thread.id, resolved)}
+              onHeight={(px) => setZoneHeight(e, px)}
             />,
             e.domNode,
             desc.key,
@@ -934,6 +1028,103 @@ async function sendOne(c: Comment, agentId: AgentSessionId | null) {
   } catch (e) {
     toastError("Couldn't send", asMessage(e));
   }
+}
+
+/// Read-only render of a teammate's inline MR review thread, anchored on the
+/// line they commented on, with a reply box. The same thread also appears in
+/// the Review tab. Measures its content and grows the zone to fit (no cap).
+function ThreadWidget({
+  thread,
+  onReply,
+  onResolve,
+  onHeight,
+}: {
+  thread: ForgeThread;
+  onReply: (body: string) => Promise<boolean>;
+  onResolve: (resolved: boolean) => Promise<boolean>;
+  onHeight: (px: number) => void;
+}) {
+  const [reply, setReply] = useState("");
+  const [busy, setBusy] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const onHeightRef = useRef(onHeight);
+  onHeightRef.current = onHeight;
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const report = () => onHeightRef.current(el.scrollHeight);
+    report();
+    const ro = new ResizeObserver(report);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [thread]);
+
+  async function submit() {
+    const body = reply.trim();
+    if (!body) return;
+    setBusy(true);
+    const ok = await onReply(body);
+    setBusy(false);
+    if (ok) setReply("");
+  }
+
+  async function toggleResolved() {
+    setBusy(true);
+    await onResolve(!thread.resolved);
+    setBusy(false);
+  }
+
+  return (
+    <div ref={ref} className="flex flex-col gap-1.5 text-xs">
+      <div className="flex items-center gap-2">
+        <span className="text-[10px] uppercase tracking-wider text-violet-300/80">
+          💬 MR thread
+        </span>
+        {thread.resolvable && (
+          <button
+            disabled={busy}
+            onClick={() => void toggleResolved()}
+            className={cn(
+              "ml-auto rounded border px-1.5 py-[1px] text-[10px] font-medium disabled:opacity-50",
+              thread.resolved
+                ? "border-neutral-700 text-neutral-400 hover:bg-neutral-800"
+                : "border-emerald-700 bg-emerald-950/40 text-emerald-200 hover:bg-emerald-950/60",
+            )}
+          >
+            {thread.resolved ? "✓ Resolved" : "Resolve"}
+          </button>
+        )}
+      </div>
+      {thread.notes.map((n) => (
+        <div
+          key={n.id}
+          className="rounded border border-neutral-800 bg-neutral-950/60 px-2 py-1"
+        >
+          <div className="text-[10px] text-neutral-400">@{n.author}</div>
+          <div className="whitespace-pre-wrap text-neutral-200">{n.body}</div>
+        </div>
+      ))}
+      <div className="flex items-center gap-1">
+        <input
+          value={reply}
+          onChange={(e) => setReply(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") void submit();
+          }}
+          placeholder="Reply…"
+          className="flex-1 rounded border border-neutral-800 bg-neutral-900 px-2 py-0.5 text-neutral-100 focus:border-neutral-600 focus:outline-none"
+        />
+        <button
+          disabled={busy || !reply.trim()}
+          onClick={() => void submit()}
+          className="rounded border border-blue-700 bg-blue-950/40 px-2 py-0.5 text-[11px] font-medium text-blue-200 hover:bg-blue-950/60 disabled:opacity-40"
+        >
+          {busy ? "…" : "Reply"}
+        </button>
+      </div>
+    </div>
+  );
 }
 
 function CommentWidget({

@@ -3,6 +3,7 @@ import { pasteAndSubmit } from "@/lib/agent";
 import { listAgentsForWorktree } from "@/ipc/client";
 import type { AgentSession, AgentSessionId } from "@/ipc/types";
 import { useCommentsStore, formatBatchForAgent } from "@/stores/comments";
+import { useForgeStore, forgeBranchKey } from "@/stores/forge";
 import { useDiffsStore } from "@/stores/diffs";
 import { useUiStore } from "@/stores/ui";
 import { useWorktreesStore } from "@/stores/worktrees";
@@ -39,7 +40,24 @@ export function SendQueueButton() {
   const [showPreview, setShowPreview] = useState(false);
   const [agents, setAgents] = useState<AgentSession[]>([]);
   const [targetAgentId, setTargetAgentId] = useState<AgentSessionId | null>(null);
+  const [destination, setDestination] = useState<"agent" | "mr">("agent");
   const ref = useRef<HTMLDivElement>(null);
+
+  // Linked MR for the selected worktree's branch (for the "MR review" destination).
+  const findMr = useForgeStore((s) => s.findMr);
+  const postReviewComments = useForgeStore((s) => s.postReviewComments);
+  const mr = useForgeStore((s) =>
+    workspace && selected
+      ? s.mrByBranch[forgeBranchKey(workspace.id, selected.branch)]
+      : undefined,
+  );
+
+  // Resolve the MR lazily when the user switches to the MR destination.
+  useEffect(() => {
+    if (open && destination === "mr" && workspace && selected && mr === undefined) {
+      void findMr(workspace.id, selected.branch);
+    }
+  }, [open, destination, workspace, selected, mr, findMr]);
 
   // Queued comments scoped to the currently-selected worktree's branch.
   const queued = useMemo(() => {
@@ -124,6 +142,10 @@ export function SendQueueButton() {
   }
 
   async function send() {
+    if (destination === "mr") {
+      await sendToMr();
+      return;
+    }
     if (!targetAgentId) {
       toastInfo("No agent selected");
       return;
@@ -141,6 +163,27 @@ export function SendQueueButton() {
       toastError("Couldn't send batch", asMessage(e));
     }
   }
+
+  async function sendToMr() {
+    if (!workspace || !mr) return;
+    const inputs = queued.map((c) => ({
+      filePath: c.filePath,
+      line: c.line,
+      body: c.text,
+    }));
+    const ok = await postReviewComments(workspace.id, mr.number, inputs);
+    if (ok) {
+      toastSuccess(
+        `Posted ${queued.length} review comment${queued.length === 1 ? "" : "s"} to !${mr.number}`,
+        "Marking as resolved.",
+      );
+      for (const c of queued) {
+        await resolveComment(c.id);
+      }
+    }
+  }
+
+  const mrSendable = destination === "agent" ? !!targetAgentId : !!mr;
 
   return (
     <div ref={ref} className="relative">
@@ -199,10 +242,35 @@ export function SendQueueButton() {
             )}
           </div>
           <div className="border-t border-neutral-800 px-3 py-2">
-            <div className="mb-1 text-[11px] uppercase tracking-wider text-neutral-500">
-              Send to
+            <div className="mb-1.5 flex items-center gap-1">
+              <DestButton
+                active={destination === "agent"}
+                onClick={() => setDestination("agent")}
+              >
+                Agent
+              </DestButton>
+              <DestButton
+                active={destination === "mr"}
+                onClick={() => setDestination("mr")}
+              >
+                MR review
+              </DestButton>
             </div>
-            {agents.length === 0 ? (
+            {destination === "mr" ? (
+              mr === undefined ? (
+                <div className="text-[11px] text-neutral-500">Looking up MR…</div>
+              ) : mr === null ? (
+                <div className="text-[11px] text-neutral-500">
+                  No open MR for this branch — create one first.
+                </div>
+              ) : (
+                <div className="rounded border border-neutral-800 px-2 py-1 text-xs text-neutral-200">
+                  Posting as inline review on{" "}
+                  <span className="font-mono text-neutral-100">!{mr.number}</span>{" "}
+                  {mr.title}
+                </div>
+              )
+            ) : agents.length === 0 ? (
               <div className="text-[11px] text-neutral-500">
                 No running agents in this worktree
               </div>
@@ -245,15 +313,40 @@ export function SendQueueButton() {
           <div className="flex items-center justify-end gap-2 border-t border-neutral-800 px-3 py-2">
             <button
               onClick={send}
-              disabled={!targetAgentId}
+              disabled={!mrSendable}
               className="rounded border border-blue-700 bg-blue-950/40 px-2 py-1 text-[11px] font-medium text-blue-200 hover:bg-blue-950/60 disabled:cursor-not-allowed disabled:opacity-40"
             >
-              Send all ({queued.length})
+              {destination === "mr" ? "Post review" : "Send all"} ({queued.length})
             </button>
           </div>
         </div>
       )}
     </div>
+  );
+}
+
+/// Small segmented-control button for the Agent / MR destination toggle.
+function DestButton({
+  active,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={cn(
+        "rounded px-2 py-0.5 text-[11px] font-medium",
+        active
+          ? "bg-blue-950/60 text-blue-200"
+          : "text-neutral-400 hover:bg-neutral-800",
+      )}
+    >
+      {children}
+    </button>
   );
 }
 

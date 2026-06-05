@@ -34,7 +34,7 @@ type UiState = {
   /// VS Code-style — both views share the same panel space; the
   /// terminal stays mounted (with its sessions alive) when the
   /// user flips to Problems and back.
-  bottomPaneTab: "terminal" | "problems";
+  bottomPaneTab: "terminal" | "problems" | "review" | "ci";
   selectWorktree: (id: WorktreeId | null) => void;
   toggleFocusMode: () => void;
   setFocusMode: (on: boolean) => void;
@@ -53,7 +53,7 @@ type UiState = {
   ) => void;
   openSystemFileViewer: (kind: AppFileKind) => void;
   closeSystemFileViewer: () => void;
-  setBottomPaneTab: (tab: "terminal" | "problems") => void;
+  setBottomPaneTab: (tab: "terminal" | "problems" | "review" | "ci") => void;
   toggleProblemsTab: () => void;
   reset: () => void;
 };

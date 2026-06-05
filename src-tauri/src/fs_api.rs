@@ -358,6 +358,7 @@ mod tests {
                 path: repo.root.clone(),
                 branch: "main".into(),
                 base_ref: head.clone(),
+                base_branch: "main".into(),
                 head,
                 dirty: false,
                 is_main_clone: true,

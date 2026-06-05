@@ -7,6 +7,7 @@ import { useUiStore } from "@/stores/ui";
 import { useSettingsStore } from "@/stores/settings";
 import {
   listAgentActivity,
+  listBranches,
   mergeWorktree,
   onWorktreeCreateStep,
   onWorktreesChanged,
@@ -18,6 +19,7 @@ import type {
   MergeBackStrategy,
   SyncStrategy,
   Workspace,
+  WorkspaceId,
   Worktree,
   WorktreeActivity,
   WorktreeId,
@@ -43,6 +45,10 @@ export function WorktreeSidebar() {
   // Per-repo create form state — keyed by workspaceId so concurrent
   // creates in different repos don't collide on a single input.
   const [createNames, setCreateNames] = useState<Record<string, string>>({});
+  // Per-repo chosen base branch to fork from (undefined → origin/<default>).
+  const [createBases, setCreateBases] = useState<Record<string, string>>({});
+  // Branch lists per workspace, fetched lazily when a repo is expanded.
+  const [branchesByWs, setBranchesByWs] = useState<Record<string, string[]>>({});
   const [creatingNames, setCreatingNames] = useState<
     Record<string, string | null>
   >({});
@@ -149,6 +155,16 @@ export function WorktreeSidebar() {
     });
   }, [selectedId, worktrees]);
 
+  // Lazily load branch lists for expanded repos so the base picker has options.
+  useEffect(() => {
+    for (const wsId of expandedRepos) {
+      if (branchesByWs[wsId]) continue;
+      listBranches(wsId as WorkspaceId)
+        .then((bs) => setBranchesByWs((p) => ({ ...p, [wsId]: bs })))
+        .catch(() => {});
+    }
+  }, [expandedRepos, branchesByWs]);
+
   function toggleRepoExpanded(workspaceId: string) {
     setExpandedRepos((prev) => {
       const next = new Set(prev);
@@ -166,6 +182,8 @@ export function WorktreeSidebar() {
     try {
       const wt = await createWt(workspaceId, trimmed, {
         initSubmodules: initSubmodulesDefault,
+        // undefined → backend forks from origin/<default>
+        base: createBases[workspaceId] ?? null,
       });
       if (wt) {
         setCreateNames((prev) => ({ ...prev, [workspaceId]: "" }));
@@ -565,35 +583,46 @@ export function WorktreeSidebar() {
                   e.preventDefault();
                   void onCreateForWorkspace(ws.id);
                 }}
-                className="flex gap-2 px-3 py-2"
+                className="flex flex-col gap-1.5 px-3 py-2"
               >
-                <input
-                  value={createNames[ws.id] ?? ""}
-                  onChange={(e) =>
-                    setCreateNames((prev) => ({
-                      ...prev,
-                      [ws.id]: e.target.value,
-                    }))
-                  }
-                  placeholder="new worktree name"
-                  autoCapitalize="off"
-                  autoCorrect="off"
-                  autoComplete="off"
-                  spellCheck={false}
-                  className="flex-1 rounded border border-neutral-800 bg-neutral-950 px-2 py-1 text-xs placeholder:text-neutral-600 focus:border-neutral-700 focus:outline-none"
+                <div className="flex gap-2">
+                  <input
+                    value={createNames[ws.id] ?? ""}
+                    onChange={(e) =>
+                      setCreateNames((prev) => ({
+                        ...prev,
+                        [ws.id]: e.target.value,
+                      }))
+                    }
+                    placeholder="new worktree name"
+                    autoCapitalize="off"
+                    autoCorrect="off"
+                    autoComplete="off"
+                    spellCheck={false}
+                    className="flex-1 rounded border border-neutral-800 bg-neutral-950 px-2 py-1 text-xs placeholder:text-neutral-600 focus:border-neutral-700 focus:outline-none"
+                    disabled={creating || !!liveName}
+                  />
+                  <button
+                    type="submit"
+                    disabled={
+                      !(createNames[ws.id] ?? "").trim() ||
+                      creating ||
+                      !!liveName
+                    }
+                    className="flex items-center justify-center rounded bg-blue-600 px-3 py-1 text-xs font-medium text-white hover:bg-blue-500 disabled:opacity-50"
+                  >
+                    {liveName ? <Spinner /> : "+"}
+                  </button>
+                </div>
+                <BaseSelect
+                  branches={branchesByWs[ws.id] ?? []}
+                  defaultBranch={ws.defaultBranch}
+                  value={createBases[ws.id]}
                   disabled={creating || !!liveName}
-                />
-                <button
-                  type="submit"
-                  disabled={
-                    !(createNames[ws.id] ?? "").trim() ||
-                    creating ||
-                    !!liveName
+                  onChange={(v) =>
+                    setCreateBases((prev) => ({ ...prev, [ws.id]: v }))
                   }
-                  className="flex items-center justify-center rounded bg-blue-600 px-3 py-1 text-xs font-medium text-white hover:bg-blue-500 disabled:opacity-50"
-                >
-                  {liveName ? <Spinner /> : "+"}
-                </button>
+                />
               </form>
 
               {liveName && (
@@ -724,6 +753,51 @@ export function WorktreeSidebar() {
 
 /// Small tag chip next to a branch row showing which repo it belongs
 /// to. Only rendered when more than one workspace is open.
+/// Source-branch picker for a new worktree. Defaults to `origin/<default>`
+/// (the freshly-fetched upstream tip) when present, else the local default.
+/// This is the *fork point* — independent of the Changes-pane diff base.
+function BaseSelect({
+  branches,
+  defaultBranch,
+  value,
+  disabled,
+  onChange,
+}: {
+  branches: string[];
+  defaultBranch: string;
+  value: string | undefined;
+  disabled: boolean;
+  onChange: (v: string) => void;
+}) {
+  const origin = `origin/${defaultBranch}`;
+  const preferred = branches.includes(origin)
+    ? origin
+    : branches.includes(defaultBranch)
+      ? defaultBranch
+      : origin;
+  const current = value ?? preferred;
+  const base = branches.length ? branches : [preferred];
+  const options = base.includes(current) ? base : [current, ...base];
+  return (
+    <label className="flex items-center gap-1.5 text-[10px] text-neutral-500">
+      <span className="shrink-0">from</span>
+      <select
+        value={current}
+        disabled={disabled}
+        onChange={(e) => onChange(e.target.value)}
+        className="min-w-0 flex-1 rounded border border-neutral-800 bg-neutral-950 px-1 py-0.5 text-[11px] text-neutral-300 focus:border-neutral-700 focus:outline-none disabled:opacity-50"
+        title="Branch to fork the new worktree from"
+      >
+        {options.map((b) => (
+          <option key={b} value={b}>
+            {b}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
 function RepoChip({ workspace }: { workspace: Workspace | undefined }) {
   if (!workspace) return null;
   return (

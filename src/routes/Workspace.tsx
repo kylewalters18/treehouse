@@ -17,6 +17,7 @@ import { BottomPane } from "@/panels/BottomPane";
 import { AgentPane } from "@/panels/AgentPane";
 import { SettingsMenu } from "@/components/SettingsMenu";
 import { SendQueueButton } from "@/components/SendQueueButton";
+import { IssuesPanel } from "@/components/IssuesPanel";
 import { FileFinder } from "@/components/FileFinder";
 import { CommandPalette } from "@/components/CommandPalette";
 import { SystemFileViewer } from "@/components/SystemFileViewer";
@@ -50,6 +51,8 @@ export function Workspace() {
   const [fileFinderOpen, setFileFinderOpen] = useState(false);
   // Cmd+Shift+P command palette — same global ownership as Cmd+P.
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
+  // Forge issue browser modal.
+  const [issuesOpen, setIssuesOpen] = useState(false);
 
   // Reflect store state onto the Panel imperatively. Keeping state in the
   // store (not inside the Panel) lets the sidebar content + keyboard shortcut
@@ -160,6 +163,14 @@ export function Workspace() {
           )}
         </div>
         <div className="flex items-center gap-2">
+          <button
+            onClick={() => setIssuesOpen(true)}
+            disabled={!activeWorkspace}
+            title="Browse forge issues"
+            className="rounded border border-neutral-700 px-2 py-1 text-neutral-300 hover:bg-neutral-800 disabled:opacity-50"
+          >
+            Issues
+          </button>
           <SendQueueButton />
           <SettingsMenu />
           <button
@@ -254,6 +265,11 @@ export function Workspace() {
       <CommandPalette
         open={commandPaletteOpen}
         onClose={() => setCommandPaletteOpen(false)}
+      />
+      <IssuesPanel
+        workspaceId={activeWorkspace?.id ?? null}
+        open={issuesOpen}
+        onClose={() => setIssuesOpen(false)}
       />
       <SystemFileViewerMount />
     </div>

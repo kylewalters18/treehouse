@@ -5,6 +5,10 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::agent::{self, AgentBackendKind, AgentEvent, AgentSession, WorktreeActivity};
 use crate::diff::{self, DiffMode, DiffSet};
+use crate::forge::{
+    self, ForgeApproval, ForgeIssue, ForgeJob, ForgeMr, ForgePipeline, ForgeStatus, ForgeThread,
+    ReviewCommentInput,
+};
 use crate::fs_api::{self, FileContent, TreeEntry};
 use crate::lsp::{self, LspConfig, LspEvent, LspServerSession};
 use crate::storage::{self, Comment, RecentWorkspace, Settings};
@@ -289,6 +293,7 @@ pub async fn create_worktree(
     workspace_id: WorkspaceId,
     name: String,
     init_submodules: bool,
+    base: Option<String>,
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> AppResult<CreateWorktreeResult> {
@@ -296,14 +301,21 @@ pub async fn create_worktree(
         Some(&app),
         workspace_id,
         &name,
-        CreateOptions { init_submodules },
+        CreateOptions { init_submodules, base },
         &state,
     )
     .await?;
-    prime_worktree_watch(&app, &result.worktree);
-    worktree::status::spawn_recompute(&app, result.worktree.id);
-    let _ = app.emit(&events::worktrees_changed(workspace_id), ());
+    finish_create(&app, workspace_id, &result);
     Ok(result)
+}
+
+/// Post-create wiring shared by `create_worktree` and
+/// `forge_create_worktree_from_issue`: start the watcher + initial diff,
+/// kick a status recompute, and fan out the sidebar refresh signal.
+fn finish_create(app: &AppHandle, workspace_id: WorkspaceId, result: &CreateWorktreeResult) {
+    prime_worktree_watch(app, &result.worktree);
+    worktree::status::spawn_recompute(app, result.worktree.id);
+    let _ = app.emit(&events::worktrees_changed(workspace_id), ());
 }
 
 #[tauri::command]
@@ -409,6 +421,320 @@ pub async fn merge_worktree(
         }
     }
     Ok(result)
+}
+
+// --- Forge (GitLab / GitHub via glab / gh) ---
+
+/// Resolve the workspace root and build the active forge provider, using the
+/// `forge_remotes` cache to avoid re-forking `git remote get-url` per call.
+/// Errors with `AppError::Forge` when the workspace has no recognized remote.
+async fn resolve_forge(
+    workspace_id: WorkspaceId,
+    state: &AppState,
+) -> AppResult<(forge::Forge, PathBuf)> {
+    let root = state
+        .workspaces
+        .get(&workspace_id)
+        .map(|e| e.value().root.clone())
+        .ok_or_else(|| AppError::Unknown(format!("unknown workspace: {workspace_id}")))?;
+    let remote = forge_remote(workspace_id, &root, state).await?;
+    let remote =
+        remote.ok_or_else(|| AppError::Forge("no recognized GitLab/GitHub remote".into()))?;
+    Ok((forge::build(&remote, &root)?, root))
+}
+
+/// Get-or-detect the cached `RemoteInfo` for a workspace (caches negatives too).
+async fn forge_remote(
+    workspace_id: WorkspaceId,
+    root: &std::path::Path,
+    state: &AppState,
+) -> AppResult<Option<forge::RemoteInfo>> {
+    if let Some(cached) = state.forge_remotes.get(&workspace_id) {
+        return Ok(cached.value().clone());
+    }
+    let detected = forge::detect(root).await?;
+    state.forge_remotes.insert(workspace_id, detected.clone());
+    Ok(detected)
+}
+
+/// Forge availability + auth. Always returns a well-formed status (never a hard
+/// error) so the UI can render an install / `glab auth login` prompt — even
+/// when the remote is unrecognized or absent.
+#[tauri::command]
+pub async fn forge_status(
+    workspace_id: WorkspaceId,
+    state: State<'_, AppState>,
+) -> AppResult<ForgeStatus> {
+    let root = match state.workspaces.get(&workspace_id).map(|e| e.value().root.clone()) {
+        Some(r) => r,
+        None => return Ok(unknown_status(None)),
+    };
+    match forge_remote(workspace_id, &root, &state).await? {
+        Some(r) if !matches!(r.kind, forge::ForgeKind::Unknown) => {
+            forge::build(&r, &root)?.status().await
+        }
+        other => Ok(unknown_status(other)),
+    }
+}
+
+fn unknown_status(remote: Option<forge::RemoteInfo>) -> ForgeStatus {
+    ForgeStatus {
+        kind: remote.as_ref().map(|r| r.kind).unwrap_or(forge::ForgeKind::Unknown),
+        host: remote.map(|r| r.host),
+        installed: false,
+        authenticated: false,
+    }
+}
+
+#[tauri::command]
+pub async fn forge_list_issues(
+    workspace_id: WorkspaceId,
+    query: String,
+    state_filter: String,
+    limit: u32,
+    state: State<'_, AppState>,
+) -> AppResult<Vec<ForgeIssue>> {
+    let (f, _) = resolve_forge(workspace_id, &state).await?;
+    f.list_issues(&query, &state_filter, limit).await
+}
+
+#[tauri::command]
+pub async fn forge_get_issue(
+    workspace_id: WorkspaceId,
+    number: u64,
+    state: State<'_, AppState>,
+) -> AppResult<ForgeIssue> {
+    let (f, _) = resolve_forge(workspace_id, &state).await?;
+    f.get_issue(number).await
+}
+
+/// Create a worktree + branch from an issue: `<number>-<slugified-title>`
+/// (so the branch carries the issue link), then the shared post-create wiring.
+#[tauri::command]
+pub async fn forge_create_worktree_from_issue(
+    workspace_id: WorkspaceId,
+    number: u64,
+    base: Option<String>,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> AppResult<CreateWorktreeResult> {
+    let (f, _) = resolve_forge(workspace_id, &state).await?;
+    let issue = f.get_issue(number).await?;
+    let slug: String = worktree::git_ops::slugify(&issue.title)
+        .chars()
+        .take(50)
+        .collect();
+    let name = if slug.is_empty() {
+        number.to_string()
+    } else {
+        format!("{number}-{slug}")
+    };
+    let result = worktree::create(
+        Some(&app),
+        workspace_id,
+        &name,
+        CreateOptions { init_submodules: false, base },
+        &state,
+    )
+    .await?;
+    finish_create(&app, workspace_id, &result);
+    Ok(result)
+}
+
+#[tauri::command]
+pub async fn forge_list_mrs(
+    workspace_id: WorkspaceId,
+    state_filter: String,
+    limit: u32,
+    state: State<'_, AppState>,
+) -> AppResult<Vec<ForgeMr>> {
+    let (f, _) = resolve_forge(workspace_id, &state).await?;
+    f.list_mrs(&state_filter, limit).await
+}
+
+#[tauri::command]
+pub async fn forge_find_mr_for_branch(
+    workspace_id: WorkspaceId,
+    branch: String,
+    state: State<'_, AppState>,
+) -> AppResult<Option<ForgeMr>> {
+    let (f, _) = resolve_forge(workspace_id, &state).await?;
+    f.find_mr_for_branch(&branch).await
+}
+
+/// Push the branch to origin, then open an MR/PR. Body defaults to
+/// `Closes #<n>` when the branch name carries an `<n>-…` issue prefix.
+#[tauri::command]
+pub async fn forge_create_mr(
+    workspace_id: WorkspaceId,
+    branch: String,
+    title: String,
+    body: Option<String>,
+    draft: bool,
+    state: State<'_, AppState>,
+) -> AppResult<ForgeMr> {
+    let (f, root) = resolve_forge(workspace_id, &state).await?;
+    // Target the branch this worktree was forked from (chosen at create time),
+    // falling back to the repo default for adopted worktrees we don't track.
+    let target = state
+        .worktrees
+        .iter()
+        .find(|e| e.value().workspace_id == workspace_id && e.value().branch == branch)
+        .map(|e| e.value().base_branch.clone())
+        .or_else(|| {
+            state
+                .workspaces
+                .get(&workspace_id)
+                .map(|e| e.value().default_branch.clone())
+        })
+        .ok_or_else(|| AppError::Unknown(format!("unknown workspace: {workspace_id}")))?;
+    worktree::git_ops::push_branch(&root, &branch).await?;
+    let body = body.unwrap_or_else(|| match issue_number_from_branch(&branch) {
+        Some(n) => format!("Closes #{n}"),
+        None => String::new(),
+    });
+    f.create_mr(&branch, &target, &title, &body, draft).await
+}
+
+/// Parse a leading issue number from a `<n>-slug` branch name.
+fn issue_number_from_branch(branch: &str) -> Option<u64> {
+    branch.split('-').next()?.parse().ok()
+}
+
+#[tauri::command]
+pub async fn forge_approve_mr(
+    workspace_id: WorkspaceId,
+    iid: u64,
+    state: State<'_, AppState>,
+) -> AppResult<()> {
+    let (f, _) = resolve_forge(workspace_id, &state).await?;
+    f.approve_mr(iid).await
+}
+
+#[tauri::command]
+pub async fn forge_unapprove_mr(
+    workspace_id: WorkspaceId,
+    iid: u64,
+    state: State<'_, AppState>,
+) -> AppResult<()> {
+    let (f, _) = resolve_forge(workspace_id, &state).await?;
+    f.unapprove_mr(iid).await
+}
+
+#[tauri::command]
+pub async fn forge_mr_approval(
+    workspace_id: WorkspaceId,
+    iid: u64,
+    state: State<'_, AppState>,
+) -> AppResult<ForgeApproval> {
+    let (f, _) = resolve_forge(workspace_id, &state).await?;
+    f.approval_state(iid).await
+}
+
+#[tauri::command]
+pub async fn forge_merge_mr(
+    workspace_id: WorkspaceId,
+    iid: u64,
+    state: State<'_, AppState>,
+) -> AppResult<()> {
+    let (f, _) = resolve_forge(workspace_id, &state).await?;
+    f.merge_mr(iid).await
+}
+
+#[tauri::command]
+pub async fn forge_post_mr_comment(
+    workspace_id: WorkspaceId,
+    iid: u64,
+    body: String,
+    state: State<'_, AppState>,
+) -> AppResult<()> {
+    let (f, _) = resolve_forge(workspace_id, &state).await?;
+    f.post_mr_comment(iid, &body).await
+}
+
+#[tauri::command]
+pub async fn forge_post_review_comments(
+    workspace_id: WorkspaceId,
+    iid: u64,
+    comments: Vec<ReviewCommentInput>,
+    state: State<'_, AppState>,
+) -> AppResult<()> {
+    let (f, _) = resolve_forge(workspace_id, &state).await?;
+    f.post_review_comments(iid, &comments).await
+}
+
+#[tauri::command]
+pub async fn forge_resolve_thread(
+    workspace_id: WorkspaceId,
+    iid: u64,
+    discussion_id: String,
+    resolved: bool,
+    state: State<'_, AppState>,
+) -> AppResult<()> {
+    let (f, _) = resolve_forge(workspace_id, &state).await?;
+    f.resolve_thread(iid, &discussion_id, resolved).await
+}
+
+#[tauri::command]
+pub async fn forge_list_threads(
+    workspace_id: WorkspaceId,
+    iid: u64,
+    state: State<'_, AppState>,
+) -> AppResult<Vec<ForgeThread>> {
+    let (f, _) = resolve_forge(workspace_id, &state).await?;
+    f.list_threads(iid).await
+}
+
+#[tauri::command]
+pub async fn forge_reply_thread(
+    workspace_id: WorkspaceId,
+    iid: u64,
+    discussion_id: String,
+    body: String,
+    state: State<'_, AppState>,
+) -> AppResult<()> {
+    let (f, _) = resolve_forge(workspace_id, &state).await?;
+    f.reply_thread(iid, &discussion_id, &body).await
+}
+
+#[tauri::command]
+pub async fn forge_list_pipelines(
+    workspace_id: WorkspaceId,
+    branch: String,
+    state: State<'_, AppState>,
+) -> AppResult<Vec<ForgePipeline>> {
+    let (f, _) = resolve_forge(workspace_id, &state).await?;
+    f.list_pipelines(&branch).await
+}
+
+#[tauri::command]
+pub async fn forge_pipeline_jobs(
+    workspace_id: WorkspaceId,
+    pipeline_id: u64,
+    state: State<'_, AppState>,
+) -> AppResult<Vec<ForgeJob>> {
+    let (f, _) = resolve_forge(workspace_id, &state).await?;
+    f.pipeline_jobs(pipeline_id).await
+}
+
+#[tauri::command]
+pub async fn forge_retry_pipeline(
+    workspace_id: WorkspaceId,
+    pipeline_id: u64,
+    state: State<'_, AppState>,
+) -> AppResult<()> {
+    let (f, _) = resolve_forge(workspace_id, &state).await?;
+    f.retry_pipeline(pipeline_id).await
+}
+
+#[tauri::command]
+pub async fn forge_job_log(
+    workspace_id: WorkspaceId,
+    job_id: u64,
+    state: State<'_, AppState>,
+) -> AppResult<String> {
+    let (f, _) = resolve_forge(workspace_id, &state).await?;
+    f.job_log(job_id).await
 }
 
 // --- Agents ---

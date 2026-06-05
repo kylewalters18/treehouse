@@ -21,6 +21,9 @@ pub enum AppError {
     #[error("already open: {0}")]
     AlreadyOpen(String),
 
+    #[error("forge error: {0}")]
+    Forge(String),
+
     #[error("{0}")]
     Unknown(String),
 }
@@ -40,6 +43,7 @@ pub enum AppErrorKind {
     GitError,
     Io,
     AlreadyOpen,
+    Forge,
     Unknown,
 }
 
@@ -51,6 +55,7 @@ impl AppError {
             AppError::GitError(_) => AppErrorKind::GitError,
             AppError::Io(_) => AppErrorKind::Io,
             AppError::AlreadyOpen(_) => AppErrorKind::AlreadyOpen,
+            AppError::Forge(_) => AppErrorKind::Forge,
             AppError::Unknown(_) => AppErrorKind::Unknown,
         }
     }
