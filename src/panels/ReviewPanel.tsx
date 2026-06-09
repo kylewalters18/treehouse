@@ -5,6 +5,10 @@ import { useUiStore } from "@/stores/ui";
 import { useWorktreesStore } from "@/stores/worktrees";
 import { useDiffsStore } from "@/stores/diffs";
 import { workspaceForWorktree } from "@/stores/workspace";
+import { pasteAndSubmit, resolveSendableAgent } from "@/lib/agent";
+import { formatNoteForAgent, formatThreadForAgent } from "@/lib/forge-prompt";
+import { toastError, toastInfo, toastSuccess } from "@/stores/toasts";
+import { asMessage } from "@/lib/errors";
 import { cn } from "@/lib/cn";
 
 /// Bottom-pane "Review" tab: all MR discussion in one place — inline review
@@ -13,6 +17,11 @@ import { cn } from "@/lib/cn";
 /// a preview keep the list scannable when collapsed.
 export function ReviewPanel() {
   const selectedWorktreeId = useUiStore((s) => s.selectedWorktreeId);
+  const activeAgentId = useUiStore((s) =>
+    s.selectedWorktreeId
+      ? s.activeAgentByWorktree[s.selectedWorktreeId] ?? null
+      : null,
+  );
   const worktrees = useWorktreesStore((s) => s.worktrees);
   const selected = worktrees.find((w) => w.id === selectedWorktreeId) ?? null;
   const workspace = workspaceForWorktree(selected?.workspaceId);
@@ -91,6 +100,24 @@ export function ReviewPanel() {
     return resolveThread(wsId, mr.number, discussionId, resolved);
   }
 
+  /// Send a formatted thread/comment to the worktree's agent (prefers the
+  /// active tab). `label` names the unit for the toast. Mirrors the
+  /// Send-queue's agent path — no MR write, just hands the agent the text.
+  async function sendToAgent(text: string, label: string) {
+    if (!selectedWorktreeId) return;
+    try {
+      const agentId = await resolveSendableAgent(selectedWorktreeId, activeAgentId);
+      if (!agentId) {
+        toastInfo("No running agent in this worktree");
+        return;
+      }
+      await pasteAndSubmit(agentId, text);
+      toastSuccess(`Sent ${label} to agent`);
+    } catch (e) {
+      toastError("Couldn't send to agent", asMessage(e));
+    }
+  }
+
   async function resolveAll() {
     if (!wsId || !mr) return;
     setResolvingAll(true);
@@ -154,6 +181,7 @@ export function ReviewPanel() {
                 }
                 onReply={(body) => reply(thread.id, body)}
                 onResolve={(resolved) => resolve(thread.id, resolved)}
+                onSendToAgent={sendToAgent}
               />
             ))}
           </div>
@@ -170,6 +198,7 @@ export function ReviewPanel() {
                 thread={thread}
                 onReply={(body) => reply(thread.id, body)}
                 onResolve={(resolved) => resolve(thread.id, resolved)}
+                onSendToAgent={sendToAgent}
               />
             ))}
           </div>
@@ -207,15 +236,22 @@ function ThreadCard({
   anchor,
   onReply,
   onResolve,
+  onSendToAgent,
 }: {
   thread: ForgeThread;
   anchor?: React.ReactNode;
   onReply: (body: string) => Promise<boolean>;
   onResolve: (resolved: boolean) => Promise<boolean>;
+  onSendToAgent: (text: string, label: string) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [reply, setReply] = useState("");
   const [busy, setBusy] = useState(false);
+
+  function sendThread(e: React.MouseEvent) {
+    e.stopPropagation();
+    onSendToAgent(formatThreadForAgent(thread), "thread");
+  }
 
   const first = thread.notes[0];
   const author = first?.author ?? "unknown";
@@ -269,6 +305,13 @@ function ThreadCard({
           <span className="rounded-full bg-neutral-800 px-1.5 py-[1px] text-[10px] text-neutral-400">
             {thread.notes.length}
           </span>
+          <button
+            onClick={sendThread}
+            title="Send this whole thread to the agent"
+            className="rounded border border-violet-700 bg-violet-950/40 px-1.5 py-[1px] text-[10px] font-medium text-violet-200 hover:bg-violet-950/60"
+          >
+            → Agent
+          </button>
           {thread.resolvable && (
             <button
               onClick={toggleResolved}
@@ -290,10 +333,19 @@ function ThreadCard({
       {open && (
         <div className="flex flex-col gap-1.5 border-t border-neutral-800 px-2 py-2">
           {thread.notes.map((n) => (
-            <div key={n.id} className="flex gap-2">
+            <div key={n.id} className="group flex gap-2">
               <Avatar name={n.author} />
               <div className="min-w-0 flex-1">
-                <div className="text-[10px] text-neutral-500">@{n.author}</div>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[10px] text-neutral-500">@{n.author}</span>
+                  <button
+                    onClick={() => onSendToAgent(formatNoteForAgent(n), "comment")}
+                    title="Send just this comment to the agent"
+                    className="rounded border border-violet-800/70 px-1.5 py-[1px] text-[10px] font-medium text-violet-300 opacity-0 transition-opacity hover:bg-violet-950/50 group-hover:opacity-100"
+                  >
+                    → Agent
+                  </button>
+                </div>
                 <div className="whitespace-pre-wrap text-neutral-200">{n.body}</div>
               </div>
             </div>
