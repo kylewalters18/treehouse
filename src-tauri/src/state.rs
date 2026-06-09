@@ -5,7 +5,7 @@ use tokio::sync::Mutex as AsyncMutex;
 
 use crate::agent::supervisor::AgentRegistry;
 use crate::diff::DiffSet;
-use crate::fs_watch::WatchRegistry;
+use crate::fs_watch::{WatchRegistry, WorkspaceWatchRegistry};
 use crate::lsp::registry::LspRegistry;
 use crate::pty::manager::TerminalRegistry;
 use crate::util::ids::{WorkspaceId, WorktreeId};
@@ -19,6 +19,9 @@ pub struct AppState {
     pub worktrees: Arc<DashMap<WorktreeId, Worktree>>,
     pub diffs: Arc<DashMap<WorktreeId, DiffSet>>,
     pub watchers: Arc<WatchRegistry>,
+    /// Watchers on each open workspace's `<repo>__worktrees/` root —
+    /// surfaces worktrees created/removed outside treehouse.
+    pub workspace_watchers: Arc<WorkspaceWatchRegistry>,
     pub terminals: Arc<TerminalRegistry>,
     pub agents: Arc<AgentRegistry>,
     pub lsp: Arc<LspRegistry>,
@@ -45,6 +48,7 @@ impl AppState {
             worktrees: Arc::new(DashMap::new()),
             diffs: Arc::new(DashMap::new()),
             watchers: Arc::new(WatchRegistry::new()),
+            workspace_watchers: Arc::new(WorkspaceWatchRegistry::new()),
             terminals: Arc::new(TerminalRegistry::new()),
             agents: Arc::new(AgentRegistry::new()),
             lsp: Arc::new(LspRegistry::new()),

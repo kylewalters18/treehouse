@@ -536,7 +536,18 @@ pub fn list_for_workspace(workspace_id: WorkspaceId, state: &AppState) -> Vec<Wo
 /// Walk `git worktree list --porcelain` for the given workspace, find entries
 /// that live under our `<repo>__worktrees/` dir, and adopt any we don't already
 /// track. Also prunes git's metadata for any worktree whose path has vanished.
-pub async fn reconcile(workspace_id: WorkspaceId, state: &AppState) -> AppResult<()> {
+/// What a `reconcile` pass changed in the in-memory worktree registry.
+/// Empty `added` + empty `removed` means the on-disk set already matched
+/// state — callers use this to skip redundant priming / event fan-out.
+#[derive(Debug, Default, Clone)]
+pub struct ReconcileDelta {
+    /// Worktrees freshly adopted from disk this pass.
+    pub added: Vec<WorktreeId>,
+    /// Worktrees dropped because their dir no longer exists on disk.
+    pub removed: Vec<WorktreeId>,
+}
+
+pub async fn reconcile(workspace_id: WorkspaceId, state: &AppState) -> AppResult<ReconcileDelta> {
     let ws = state
         .workspaces
         .get(&workspace_id)
@@ -558,12 +569,20 @@ pub async fn reconcile(workspace_id: WorkspaceId, state: &AppState) -> AppResult
         .map(|e| e.value().path.clone())
         .collect();
 
+    // Canonicalized paths of every convention worktree currently on disk.
+    // Drives the removal pass below: anything in state but not here has
+    // vanished (deleted externally; `git worktree prune` above already
+    // cleared its admin entry, so it won't appear in `entries`).
+    let mut on_disk: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+    let mut delta = ReconcileDelta::default();
+
     for entry in entries {
         let canon_entry =
             dunce::canonicalize(&entry.path).unwrap_or_else(|_| entry.path.clone());
         if !canon_entry.starts_with(&canon_root) {
             continue; // user-managed worktree outside our convention
         }
+        on_disk.insert(canon_entry);
         if existing_paths.contains(&entry.path) {
             continue;
         }
@@ -597,10 +616,40 @@ pub async fn reconcile(workspace_id: WorkspaceId, state: &AppState) -> AppResult
             is_main_clone: false,
         };
         tracing::info!(id = %worktree.id, path = %worktree.path.display(), "adopted worktree");
+        delta.added.push(worktree.id);
         state.worktrees.insert(worktree.id, worktree);
     }
 
-    Ok(())
+    // Removal pass: drop worktrees whose dir is gone from disk. The main
+    // clone (the repo root itself) is never a convention worktree and is
+    // skipped. Tear down the same per-worktree resources `close_workspace`
+    // does — a watcher / agent pinned to a deleted dir is already broken.
+    let vanished: Vec<(WorktreeId, PathBuf)> = state
+        .worktrees
+        .iter()
+        .filter(|e| {
+            let v = e.value();
+            v.workspace_id == workspace_id && !v.is_main_clone
+        })
+        .filter_map(|e| {
+            let path = e.value().path.clone();
+            let canon = dunce::canonicalize(&path).unwrap_or_else(|_| path.clone());
+            (!on_disk.contains(&canon)).then(|| (*e.key(), path))
+        })
+        .collect();
+    for (id, path) in vanished {
+        tracing::info!(%id, path = %path.display(), "dropping vanished worktree");
+        state.watchers.stop(&id);
+        crate::pty::manager::close_for_worktree(&state.terminals, id);
+        crate::agent::supervisor::kill_for_worktree(&state.agents, id);
+        crate::lsp::supervisor::kill_for_worktree(&state.lsp, id);
+        state.diffs.remove(&id);
+        super::status::drop_for(state, id);
+        state.worktrees.remove(&id);
+        delta.removed.push(id);
+    }
+
+    Ok(delta)
 }
 
 /// Create the synthetic entry for the main repo's own workdir, so the sidebar
@@ -1032,6 +1081,46 @@ mod tests {
             .find(|e| e.value().branch == "agent/orphan")
             .map(|e| e.value().clone());
         assert!(adopted.is_some(), "orphan worktree should be adopted");
+    }
+
+    #[tokio::test]
+    async fn reconcile_reports_added_and_drops_vanished_worktree() {
+        let repo = TempRepo::new();
+        let (state, ws_id) = setup(&repo);
+        let wt_dir = super::git_ops::worktrees_root_for(&repo.root).join("ephemeral");
+        std::fs::create_dir_all(wt_dir.parent().unwrap()).unwrap();
+        run_in(
+            &repo.root,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "agent/ephemeral",
+                wt_dir.to_str().unwrap(),
+                "main",
+            ],
+        );
+
+        // First pass adopts it and reports it as added.
+        let delta = reconcile(ws_id, &state).await.unwrap();
+        assert_eq!(delta.added.len(), 1, "fresh worktree reported as added");
+        assert!(delta.removed.is_empty());
+        let id = delta.added[0];
+        assert!(state.worktrees.contains_key(&id));
+
+        // Re-running with nothing changed is a no-op.
+        let delta = reconcile(ws_id, &state).await.unwrap();
+        assert!(delta.added.is_empty() && delta.removed.is_empty());
+
+        // Delete the dir out from under us (simulate an external script
+        // removing the worktree), then reconcile: it should be dropped.
+        std::fs::remove_dir_all(&wt_dir).unwrap();
+        let delta = reconcile(ws_id, &state).await.unwrap();
+        assert_eq!(delta.removed, vec![id], "vanished worktree reported removed");
+        assert!(
+            !state.worktrees.contains_key(&id),
+            "vanished worktree dropped from state"
+        );
     }
 
     fn run_in(root: &std::path::Path, args: &[&str]) {

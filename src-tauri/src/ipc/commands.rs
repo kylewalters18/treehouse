@@ -67,6 +67,11 @@ pub async fn open_workspace(
         }
         prime_worktree_watch(&app, &wt);
     }
+    // Watch the worktrees root so worktrees created/removed outside
+    // treehouse (e.g. a script running `git worktree add`) surface live.
+    if let Err(e) = fs_watch::start_workspace(app.clone(), ws.id, ws.root.clone()) {
+        tracing::warn!(?e, "fs_watch start_workspace failed");
+    }
     // Seed the status cache so the first activity poll returns real data.
     worktree::status::recompute_all_for_workspace(&app, ws.id).await;
     Ok(ws)
@@ -239,6 +244,7 @@ pub async fn close_workspace(
     // Tear down everything tied to this workspace: agents, terminals,
     // watchers, cached diffs, then the worktrees and the workspace itself.
     // On-disk worktree dirs and their branches are left intact.
+    fs_watch::stop_workspace(&app, &workspace_id);
     let wt_ids: Vec<WorktreeId> = state
         .worktrees
         .iter()

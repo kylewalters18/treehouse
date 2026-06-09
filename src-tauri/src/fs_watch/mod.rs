@@ -18,9 +18,13 @@ use tauri::{AppHandle, Emitter, Manager};
 use crate::diff;
 use crate::state::AppState;
 use crate::util::errors::{AppError, AppResult};
-use crate::util::ids::WorktreeId;
+use crate::util::ids::{WorkspaceId, WorktreeId};
 
 const DEBOUNCE_MS: u64 = 150;
+/// Worktree create/remove is a coarse event — a longer debounce than the
+/// per-file watcher coalesces the burst `git worktree add` writes into one
+/// reconcile pass.
+const WORKSPACE_DEBOUNCE_MS: u64 = 300;
 const BUILTIN_IGNORES: &[&str] = &[
     ".git",
     "node_modules",
@@ -53,6 +57,28 @@ impl WatchRegistry {
     }
 
     pub fn stop(&self, id: &WorktreeId) {
+        self.inner.remove(id);
+    }
+}
+
+/// Watchers on each workspace's `<repo>__worktrees/` root, one per open
+/// workspace. Separate from the per-worktree `WatchRegistry` — these fire
+/// on worktree dirs appearing/disappearing, not file churn inside them.
+#[derive(Default)]
+pub struct WorkspaceWatchRegistry {
+    inner: DashMap<WorkspaceId, WatcherHandle>,
+}
+
+impl WorkspaceWatchRegistry {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn is_watching(&self, id: &WorkspaceId) -> bool {
+        self.inner.contains_key(id)
+    }
+
+    pub fn stop(&self, id: &WorkspaceId) {
         self.inner.remove(id);
     }
 }
@@ -182,6 +208,123 @@ pub fn start(
 pub fn stop(app: &AppHandle, id: &WorktreeId) {
     let state = app.state::<AppState>();
     state.watchers.stop(id);
+}
+
+/// Watch a workspace's `<repo>__worktrees/` root for worktrees created or
+/// removed outside treehouse (e.g. a script running `git worktree add`).
+/// On any direct child appearing/disappearing we re-run `reconcile`, prime
+/// watchers for newly-adopted worktrees, and fan out `worktrees-changed`
+/// so the sidebar refreshes. `NonRecursive`: file churn *inside* a worktree
+/// is handled by that worktree's own watcher — here we only care about the
+/// top-level dirs themselves. Safe to call twice for the same id — the
+/// second call replaces the first. Best-effort: a watch-setup failure logs
+/// and returns Ok so it never blocks `open_workspace`.
+pub fn start_workspace(
+    app: AppHandle,
+    workspace_id: WorkspaceId,
+    repo_root: PathBuf,
+) -> AppResult<()> {
+    let state = app.state::<AppState>();
+    let registry = state.workspace_watchers.clone();
+
+    if registry.is_watching(&workspace_id) {
+        registry.stop(&workspace_id);
+    }
+
+    let root = crate::worktree::git_ops::worktrees_root_for(&repo_root);
+    // The dir may not exist yet (workspace has no worktrees). Create it so
+    // there's something to watch — an empty sibling dir is harmless, and
+    // `git worktree add` would create it anyway.
+    if let Err(e) = std::fs::create_dir_all(&root) {
+        tracing::warn!(?e, path = %root.display(), "could not create worktrees root to watch");
+        return Ok(());
+    }
+
+    let app_for_events = app.clone();
+    let watch_root = root.clone();
+
+    let mut debouncer = new_debouncer(
+        Duration::from_millis(WORKSPACE_DEBOUNCE_MS),
+        None,
+        move |result: DebounceEventResult| {
+            let events = match result {
+                Ok(e) => e,
+                Err(errs) => {
+                    for err in errs {
+                        tracing::warn!(?err, "workspace watch error");
+                    }
+                    return;
+                }
+            };
+            // Only react to a create/remove touching something under the
+            // root. Reconcile is the source of truth for *what* changed —
+            // this is just the trigger, and it no-ops if nothing did.
+            let relevant = events.iter().any(|ev| {
+                matches!(ev.event.kind, EventKind::Create(_) | EventKind::Remove(_))
+                    && ev.event.paths.iter().any(|p| p.starts_with(&watch_root))
+            });
+            if !relevant {
+                return;
+            }
+
+            let app = app_for_events.clone();
+            tauri::async_runtime::spawn(async move {
+                let state = app.state::<AppState>();
+                let delta = match crate::worktree::reconcile(workspace_id, &state).await {
+                    Ok(d) => d,
+                    Err(e) => {
+                        tracing::warn!(?e, %workspace_id, "autodiscover reconcile failed");
+                        return;
+                    }
+                };
+                if delta.added.is_empty() && delta.removed.is_empty() {
+                    return; // on-disk set already matched state
+                }
+                // Start watchers + compute the initial diff for each
+                // newly-adopted worktree, mirroring `open_workspace`.
+                for id in &delta.added {
+                    if let Some(wt) = state.worktrees.get(id).map(|e| e.value().clone()) {
+                        crate::ipc::commands::prime_worktree_watch(&app, &wt);
+                    }
+                }
+                if !delta.added.is_empty() {
+                    crate::worktree::status::recompute_all_for_workspace(&app, workspace_id)
+                        .await;
+                }
+                tracing::info!(
+                    %workspace_id,
+                    added = delta.added.len(),
+                    removed = delta.removed.len(),
+                    "autodiscovered worktree change",
+                );
+                let _ = app.emit(&crate::ipc::events::worktrees_changed(workspace_id), ());
+                // Removals tore down LSP servers; nudge the sidebar's LSP view too.
+                if !delta.removed.is_empty() {
+                    let _ = app.emit(&crate::ipc::events::lsp_servers_changed(workspace_id), ());
+                }
+            });
+        },
+    )
+    .map_err(|e| AppError::Unknown(format!("workspace watcher init: {e}")))?;
+
+    debouncer
+        .watcher()
+        .watch(&root, RecursiveMode::NonRecursive)
+        .map_err(|e| AppError::Unknown(format!("workspace watcher watch: {e}")))?;
+
+    registry.inner.insert(
+        workspace_id,
+        WatcherHandle {
+            _debouncer: Box::new(debouncer),
+        },
+    );
+    tracing::info!(id = %workspace_id, path = %root.display(), "watching worktrees root");
+    Ok(())
+}
+
+pub fn stop_workspace(app: &AppHandle, id: &WorkspaceId) {
+    let state = app.state::<AppState>();
+    state.workspace_watchers.stop(id);
 }
 
 /// Recompute the cached DiffSet for a worktree and emit `diff_updated`.
