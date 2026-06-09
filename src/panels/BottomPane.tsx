@@ -18,6 +18,7 @@ import { useForgeStore, forgeBranchKey } from "@/stores/forge";
 import { useUiStore } from "@/stores/ui";
 import { useWorktreesStore } from "@/stores/worktrees";
 import { workspaceForWorktree } from "@/stores/workspace";
+import { latestJobsPerName } from "@/lib/forge-jobs";
 import { cn } from "@/lib/cn";
 
 /// Counts for the Review / CI tab badges. Derived reactively from the forge
@@ -55,7 +56,7 @@ function useForgeBadges(): { unresolved: number; failedJobs: number } {
   const unresolved = (threads ?? []).filter((t) => t.resolvable && !t.resolved).length;
   const failedJobs =
     latest && latest.status === "failed"
-      ? (jobs ?? []).filter((j) => !j.retried && j.status === "failed").length
+      ? latestJobsPerName(jobs ?? []).filter((j) => j.status === "failed").length
       : 0;
 
   // Poll to keep the store fresh (the counts above react to it).

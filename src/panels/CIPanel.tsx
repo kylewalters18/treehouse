@@ -6,6 +6,7 @@ import { useUiStore } from "@/stores/ui";
 import { useWorktreesStore } from "@/stores/worktrees";
 import { workspaceForWorktree } from "@/stores/workspace";
 import { pasteAndSubmit } from "@/lib/agent";
+import { latestJobsPerName } from "@/lib/forge-jobs";
 import { toastError, toastInfo, toastSuccess } from "@/stores/toasts";
 import { asMessage } from "@/lib/errors";
 import { cn } from "@/lib/cn";
@@ -41,8 +42,8 @@ export function CIPanel() {
   // Group jobs into stages in execution order. Order stages by the *earliest*
   // job id seen in each stage across all runs (including retried ones) — a
   // retry gets a higher id, so first-appearance/sort-by-id would drag its
-  // stage out of order; the earliest id is stable. Show only the current run
-  // of each job (retried=false).
+  // stage out of order; the earliest id is stable. Show only the latest run
+  // of each job (`latestJobsPerName`) so retried failures aren't duplicated.
   const stages = useMemo(() => {
     const minId = new Map<string, number>();
     for (const j of jobs) {
@@ -50,8 +51,7 @@ export function CIPanel() {
       minId.set(st, Math.min(minId.get(st) ?? Infinity, j.id));
     }
     const byStage = new Map<string, ForgeJob[]>();
-    for (const j of jobs) {
-      if (j.retried) continue;
+    for (const j of latestJobsPerName(jobs)) {
       const st = j.stage || "jobs";
       if (!byStage.has(st)) byStage.set(st, []);
       byStage.get(st)!.push(j);
