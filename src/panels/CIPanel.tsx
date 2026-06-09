@@ -7,6 +7,8 @@ import { useWorktreesStore } from "@/stores/worktrees";
 import { workspaceForWorktree } from "@/stores/workspace";
 import { pasteAndSubmit } from "@/lib/agent";
 import { latestJobsPerName } from "@/lib/forge-jobs";
+import { ciStatusVisual, stageStatus } from "@/lib/ci-status";
+import { ansiToSegments, stripAnsi } from "@/lib/ansi";
 import { toastError, toastInfo, toastSuccess } from "@/stores/toasts";
 import { asMessage } from "@/lib/errors";
 import { cn } from "@/lib/cn";
@@ -118,7 +120,7 @@ export function CIPanel() {
       const ask = failed
         ? "Please diagnose and fix the cause."
         : "Use it as context.";
-      const prompt = `${lead} Log:\n\n\`\`\`\n${log}\n\`\`\`\n\n${ask}`;
+      const prompt = `${lead} Log:\n\n\`\`\`\n${stripAnsi(log)}\n\`\`\`\n\n${ask}`;
       await pasteAndSubmit(activeAgentId, prompt);
       toastSuccess(`Sent ${job.name} log to agent`, failed ? "Asked it to fix." : "Sent as context.");
     } catch (e) {
@@ -269,27 +271,24 @@ function JobRow({
           </>
         )}
       </div>
-      {expanded !== undefined && (
-        <pre className="max-h-64 overflow-auto border-t border-neutral-800 bg-black px-2 py-1.5 font-mono text-[11px] text-neutral-300">
-          {expanded}
-        </pre>
-      )}
+      {expanded !== undefined && <AnsiLog text={expanded} />}
     </li>
   );
 }
 
-/// Roll-up status for a stage: failed if any job failed, else running if any
-/// is in flight, else success when all are done (success/skipped/manual).
-function stageStatus(jobs: ForgeJob[]): string {
-  if (jobs.some((j) => j.status === "failed")) return "failed";
-  if (jobs.some((j) => ["running", "pending", "created"].includes(j.status)))
-    return "running";
-  if (
-    jobs.length > 0 &&
-    jobs.every((j) => ["success", "skipped", "manual"].includes(j.status))
-  )
-    return "success";
-  return "";
+/// Render a CI trace with its ANSI colors intact. Segments come from
+/// `ansiToSegments`; newlines are preserved by the `<pre>`.
+function AnsiLog({ text }: { text: string }) {
+  const segments = useMemo(() => ansiToSegments(text), [text]);
+  return (
+    <pre className="max-h-64 overflow-auto border-t border-neutral-800 bg-black px-2 py-1.5 font-mono text-[11px] text-neutral-300">
+      {segments.map((s, i) => (
+        <span key={i} style={s.style}>
+          {s.text}
+        </span>
+      ))}
+    </pre>
+  );
 }
 
 function Empty({ children }: { children: React.ReactNode }) {
@@ -301,13 +300,11 @@ function Empty({ children }: { children: React.ReactNode }) {
 }
 
 function StatusDot({ status }: { status: string }) {
-  const color =
-    status === "success"
-      ? "bg-emerald-500"
-      : status === "failed"
-        ? "bg-red-500"
-        : status === "running" || status === "pending" || status === "created"
-          ? "bg-amber-500"
-          : "bg-neutral-600";
-  return <span className={cn("h-2 w-2 shrink-0 rounded-full", color)} />;
+  const v = ciStatusVisual(status);
+  return (
+    <span
+      title={v.label}
+      className={cn("h-2 w-2 shrink-0 rounded-full", v.dot, v.pulse && "animate-pulse")}
+    />
+  );
 }
