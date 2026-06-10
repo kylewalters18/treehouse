@@ -121,13 +121,12 @@ The tauri-dev log is the place to look for runtime signals. Default log level is
 - Open repo, multiple worktrees, multiple tabbed agents per worktree (Claude Code / Codex / Kiro), live diff, tabbed terminals per worktree, merge-back with three strategies (merge / squash / rebase), sync-down (merge or rebase), ring-buffer agent reattach, error toasts, graceful shutdown.
 - Inline review comments: gutter `+`, queued, batch-sent to the active agent as one prompt.
 - Opt-in LSPs (Rust / TS / Python / Go / C-C++ / Ruby / Lua + `languages.toml` extensions) — hover, completions, signature help, diagnostics, cmd-click goto (same-file + cross-file within the worktree).
-- Monaco editor with Markdown preview tab, live refresh when agents write the open file.
+- Editable Monaco editor (⌘S save → sandboxed `write_worktree_file`, dirty-state tracking, reload-from-disk conflict flow when an agent writes a file you have open) with Markdown preview tab, live refresh when agents write the open file.
 - Typed ID newtypes (`WorktreeId`, `AgentSessionId`, `TerminalId`, `WorkspaceId`, `LspServerId`) all ULID-backed.
 - Persisted state under `~/Library/Application Support/com.treehouse.app/` (recent workspaces, comments, settings).
 - macOS only.
 
 **Deferred (post-MVP):**
-- Editor write-back (Monaco is mounted read-only)
 - Codex / Kiro backends ship but haven't been road-tested like Claude Code
 - Linux / Windows
 - Sandboxing (macOS `sandbox-exec`)
