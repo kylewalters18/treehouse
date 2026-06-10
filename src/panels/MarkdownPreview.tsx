@@ -15,6 +15,7 @@ import { onDiffUpdated } from "@/ipc/client";
 import type { FileContent, WorktreeId } from "@/ipc/types";
 import { asMessage } from "@/lib/errors";
 import { getMarkdownHighlighter, highlightCode } from "./markdown-shiki";
+import { renderMermaid } from "./markdown-mermaid";
 
 type Props = {
   worktreeId: WorktreeId;
@@ -118,6 +119,10 @@ function codeComponents(highlighter: Highlighter | null) {
         );
       }
       const code = String(children ?? "").replace(/\n$/, "");
+      // Mermaid fences render as diagrams, not highlighted source.
+      if (match[1] === "mermaid") {
+        return <MermaidDiagram chart={code} />;
+      }
       // Highlighter still loading — render plain so the file is at
       // least readable; the next render after the highlighter
       // resolves will replace this with the highlighted version.
@@ -144,6 +149,51 @@ function codeComponents(highlighter: Highlighter | null) {
       return <>{props.children}</>;
     },
   };
+}
+
+/// Renders a single ` ```mermaid ` fence to an inline SVG diagram.
+/// Re-renders when the source changes (live agent writes), shows the
+/// raw source plus the parser message on a syntax error so a broken
+/// diagram is debuggable rather than blank, and renders nothing while
+/// the (lazy-loaded) mermaid bundle resolves on first use.
+function MermaidDiagram({ chart }: { chart: string }) {
+  const [svg, setSvg] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setError(null);
+    void renderMermaid(chart).then((res) => {
+      if (cancelled) return;
+      if (res.error !== null) {
+        setSvg(null);
+        setError(res.error);
+      } else {
+        setSvg(res.svg);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [chart]);
+
+  if (error) {
+    return (
+      <div className="my-3 overflow-x-auto rounded border border-red-900/60 bg-red-950/40 p-3 text-xs">
+        <div className="mb-2 text-red-300">Invalid mermaid diagram: {error}</div>
+        <pre className="text-neutral-400">
+          <code>{chart}</code>
+        </pre>
+      </div>
+    );
+  }
+  if (!svg) return null;
+  return (
+    <div
+      className="mermaid-diagram my-3 flex justify-center overflow-x-auto rounded border border-neutral-800 bg-neutral-900/40 p-3 [&_svg]:max-w-full"
+      dangerouslySetInnerHTML={{ __html: svg }}
+    />
+  );
 }
 
 /// Same detection as `inferLanguage` uses for Markdown, pulled out so the
