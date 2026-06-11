@@ -163,6 +163,7 @@ export function SettingsMenu() {
                     value={settings.defaultAgentBackend}
                     onChange={(v) => void setDefaultAgent(v)}
                   />
+                  <AgentCommandsSection />
                   <AgentPatternsSection />
                 </div>
               )}
@@ -1048,6 +1049,43 @@ function LanguageEditor({
             {isBuiltin ? "Reset to default" : "Delete"}
           </button>
         )}
+      </div>
+    </div>
+  );
+}
+
+/// Per-backend default launch command. Full command line (binary + args);
+/// the AgentPane pre-fills its launch field from this and shell-splits it
+/// into argv. Editing here only changes the starting value — per-launch
+/// edits in the pane aren't saved back.
+function AgentCommandsSection() {
+  const commands = useSettingsStore((s) => s.settings.agentCommands);
+  const setAgentCommand = useSettingsStore((s) => s.setAgentCommand);
+  return (
+    <div>
+      <div className="mb-1.5 text-[11px] uppercase tracking-wider text-neutral-500">
+        Launch commands
+      </div>
+      <p className="mb-2 text-[11px] text-neutral-600">
+        Default CLI command pre-filled in the Agent pane launcher for each
+        backend. Edit freely per launch in the pane; this sets the starting
+        value. Quote args with spaces, e.g.{" "}
+        <code className="font-mono">claude --agent "code reviewer"</code>.
+      </p>
+      <div className="flex flex-col gap-2">
+        {AGENT_OPTIONS.map((o) => (
+          <LangField key={o.value} label={o.label}>
+            <input
+              className={FIELD_CLS}
+              value={commands[o.value]}
+              onChange={(e) => void setAgentCommand(o.value, e.target.value)}
+              placeholder={o.sub}
+              spellCheck={false}
+              autoCapitalize="off"
+              autoCorrect="off"
+            />
+          </LangField>
+        ))}
       </div>
     </div>
   );

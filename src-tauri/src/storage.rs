@@ -187,6 +187,28 @@ async fn write_open(app: &AppHandle, items: &[PathBuf]) -> AppResult<()> {
 /// Storage is `Vec<String>` rather than `BTreeSet<String>` purely so
 /// JSON round-trips as a flat array — internally we treat it as a
 /// set (sort + dedup at write time).
+/// Per-backend default CLI command, pre-filled in the AgentPane launcher.
+/// Stored as a full command line (binary + args); the frontend shell-splits
+/// it into argv at launch. Defaults mirror `AgentBackendKind::default_argv`.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", default)]
+#[ts(export)]
+pub struct AgentCommands {
+    pub claude_code: String,
+    pub codex: String,
+    pub kiro: String,
+}
+
+impl Default for AgentCommands {
+    fn default() -> Self {
+        Self {
+            claude_code: "claude".to_string(),
+            codex: "codex".to_string(),
+            kiro: "kiro-cli".to_string(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase", default)]
 #[ts(export)]
@@ -205,6 +227,10 @@ pub struct Settings {
     /// Persisted so users who always reach for the same agent don't have
     /// to reselect it on every new session.
     pub default_agent_backend: AgentBackendKind,
+    /// Per-backend default launch command, pre-filled (and editable) in the
+    /// AgentPane launcher. See `AgentCommands`.
+    #[serde(default)]
+    pub agent_commands: AgentCommands,
     /// LSP languages the user has flipped on. See struct-level rustdoc.
     #[serde(default)]
     pub enabled_lsp_languages: Vec<String>,
@@ -223,6 +249,7 @@ impl Default for Settings {
             merge_back_strategy: MergeBackStrategy::default(),
             init_submodules: false,
             default_agent_backend: AgentBackendKind::ClaudeCode,
+            agent_commands: AgentCommands::default(),
             enabled_lsp_languages: Vec::new(),
             base_refs: std::collections::BTreeMap::new(),
         }

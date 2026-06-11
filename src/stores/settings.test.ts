@@ -12,6 +12,7 @@ function freshState() {
       mergeBackStrategy: "rebaseFf",
       initSubmodules: false,
       defaultAgentBackend: "claudeCode",
+      agentCommands: { claudeCode: "claude", codex: "codex", kiro: "kiro-cli" },
       enabledLspLanguages: [],
       baseRefs: {},
     },
@@ -31,6 +32,7 @@ describe("settings store", () => {
       mergeBackStrategy: "squash",
       initSubmodules: true,
       defaultAgentBackend: "kiro",
+      agentCommands: { claudeCode: "claude", codex: "codex", kiro: "kiro-cli" },
       enabledLspLanguages: [],
       baseRefs: {},
     });
@@ -56,6 +58,7 @@ describe("settings store", () => {
       mergeBackStrategy: "rebaseFf",
       initSubmodules: false,
       defaultAgentBackend: "claudeCode",
+      agentCommands: { claudeCode: "claude", codex: "codex", kiro: "kiro-cli" },
       enabledLspLanguages: [],
       baseRefs: {},
     });
@@ -72,6 +75,7 @@ describe("settings store", () => {
       mergeBackStrategy: "rebaseFf",
       initSubmodules: true,
       defaultAgentBackend: "claudeCode",
+      agentCommands: { claudeCode: "claude", codex: "codex", kiro: "kiro-cli" },
       enabledLspLanguages: [],
       baseRefs: {},
     });
@@ -88,6 +92,7 @@ describe("settings store", () => {
       mergeBackStrategy: "rebaseFf",
       initSubmodules: false,
       defaultAgentBackend: "kiro",
+      agentCommands: { claudeCode: "claude", codex: "codex", kiro: "kiro-cli" },
       enabledLspLanguages: [],
       baseRefs: {},
     });
@@ -95,6 +100,37 @@ describe("settings store", () => {
     expect(useSettingsStore.getState().settings.defaultAgentBackend).toBe("kiro");
     expect(ipcMocked.updateSettings).toHaveBeenCalledWith(
       expect.objectContaining({ defaultAgentBackend: "kiro" }),
+    );
+  });
+
+  it("setAgentCommand updates only the targeted backend and persists", async () => {
+    ipcMocked.updateSettings.mockResolvedValueOnce({
+      syncStrategy: "rebase",
+      mergeBackStrategy: "rebaseFf",
+      initSubmodules: false,
+      defaultAgentBackend: "claudeCode",
+      agentCommands: {
+        claudeCode: "claude --model opus",
+        codex: "codex",
+        kiro: "kiro-cli",
+      },
+      enabledLspLanguages: [],
+      baseRefs: {},
+    });
+    await useSettingsStore
+      .getState()
+      .setAgentCommand("claudeCode", "claude --model opus");
+    const cmds = useSettingsStore.getState().settings.agentCommands;
+    expect(cmds.claudeCode).toBe("claude --model opus");
+    // Other backends untouched.
+    expect(cmds.codex).toBe("codex");
+    expect(cmds.kiro).toBe("kiro-cli");
+    expect(ipcMocked.updateSettings).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentCommands: expect.objectContaining({
+          claudeCode: "claude --model opus",
+        }),
+      }),
     );
   });
 });

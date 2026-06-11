@@ -15,6 +15,7 @@ type SettingsState = {
   setMergeBackStrategy: (s: MergeBackStrategy) => Promise<void>;
   setInitSubmodules: (on: boolean) => Promise<void>;
   setDefaultAgentBackend: (b: AgentBackendKind) => Promise<void>;
+  setAgentCommand: (b: AgentBackendKind, command: string) => Promise<void>;
   setEnabledLspLanguages: (ids: string[]) => Promise<void>;
 };
 
@@ -23,6 +24,7 @@ const DEFAULT_SETTINGS: Settings = {
   mergeBackStrategy: "rebaseFf",
   initSubmodules: false,
   defaultAgentBackend: "claudeCode",
+  agentCommands: { claudeCode: "claude", codex: "codex", kiro: "kiro-cli" },
   enabledLspLanguages: [],
   baseRefs: {},
 };
@@ -63,6 +65,17 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   },
   async setDefaultAgentBackend(b) {
     const next: Settings = { ...get().settings, defaultAgentBackend: b };
+    set({ settings: next });
+    try {
+      await ipc.updateSettings(next);
+    } catch {}
+  },
+  async setAgentCommand(b, command) {
+    const cur = get().settings;
+    const next: Settings = {
+      ...cur,
+      agentCommands: { ...cur.agentCommands, [b]: command },
+    };
     set({ settings: next });
     try {
       await ipc.updateSettings(next);

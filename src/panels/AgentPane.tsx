@@ -4,18 +4,14 @@ import "xterm/css/xterm.css";
 import { useSettingsStore } from "@/stores/settings";
 import { useUiStore } from "@/stores/ui";
 import { useWorktreesStore } from "@/stores/worktrees";
-import {
-  killAgent,
-  listAgentsForWorktree,
-  listBackendAgents,
-} from "@/ipc/client";
+import { killAgent, listAgentsForWorktree } from "@/ipc/client";
 import type {
   AgentBackendKind,
   AgentSessionId,
-  BackendAgent,
   WorktreeId,
 } from "@/ipc/types";
 import { cn } from "@/lib/cn";
+import { splitCommand } from "@/lib/shell-words";
 import { fitAndPin } from "./xterm-fit";
 import {
   createAgentLeafState,
@@ -62,28 +58,6 @@ type Tab = {
   label: string;
 };
 
-/// Build an argv that pre-selects a sub-agent on the backend's CLI.
-/// `null` agentName = use the backend default (no `--agent` flag).
-function argvForAgent(
-  backend: AgentBackendKind,
-  agentName: string | null,
-): string[] | undefined {
-  if (!agentName) return undefined;
-  switch (backend) {
-    case "claudeCode":
-      return ["claude", "--agent", agentName];
-    case "kiro":
-      // kiro-cli's default subcommand is `chat`; --agent only attaches there.
-      return ["kiro-cli", "chat", "--agent", agentName];
-    case "codex":
-      return undefined;
-  }
-}
-
-function backendSupportsAgents(backend: AgentBackendKind): boolean {
-  return backend === "claudeCode" || backend === "kiro";
-}
-
 /// Pull the sub-agent name back out of an argv so adopted sessions get
 /// the same `Claude 1 (foo)` label as freshly-launched ones, instead of
 /// just `Claude 1`. Returns the bracketed suffix or "" if no `--agent`.
@@ -101,21 +75,32 @@ function AgentTabs({ worktreeId }: { worktreeId: WorktreeId }) {
   /// worktree switch. Mirrors TerminalPane's `leafStatesByWorktree`.
   const leafStates = useMemo(() => getAgentLeafStates(worktreeId), [worktreeId]);
   const defaultBackend = useSettingsStore((s) => s.settings.defaultAgentBackend);
+  const agentCommands = useSettingsStore((s) => s.settings.agentCommands);
   const [backend, setBackend] = useState<AgentBackendKind>(defaultBackend);
-  const [agentName, setAgentName] = useState<string | null>(null);
-  const [agentsByBackend, setAgentsByBackend] = useState<
-    Partial<Record<AgentBackendKind, BackendAgent[]>>
-  >({});
+  // The full CLI command to launch, editable per-launch. Seeded from the
+  // per-backend default configured in Settings; reset to that backend's
+  // default whenever the backend dropdown changes.
+  const [command, setCommand] = useState<string>(
+    () => agentCommands[defaultBackend],
+  );
   // If settings load after this component mounted, and the user hasn't
-  // touched the dropdown yet, pick up the persisted default. Guarded by a
-  // ref so we only do this once per mount — subsequent Settings edits
-  // shouldn't stomp an active in-flight selection.
+  // touched the controls yet, pick up the persisted default backend +
+  // its command. Guarded by a ref so we only do this once per mount —
+  // subsequent Settings edits shouldn't stomp an in-flight edit.
   const pickedUpDefault = useRef(false);
   useEffect(() => {
     if (pickedUpDefault.current) return;
     pickedUpDefault.current = true;
     setBackend(defaultBackend);
-  }, [defaultBackend]);
+    setCommand(agentCommands[defaultBackend]);
+  }, [defaultBackend, agentCommands]);
+
+  // Switching backend swaps the command field to that backend's configured
+  // default. A `function` (not a value) keeps the two state writes atomic.
+  function selectBackend(next: AgentBackendKind) {
+    setBackend(next);
+    setCommand(agentCommands[next]);
+  }
   const [initLoading, setInitLoading] = useState(true);
   const sessionIds = useRef<Map<string, AgentSessionId>>(new Map());
   const setActiveAgent = useUiStore((s) => s.setActiveAgent);
@@ -252,34 +237,6 @@ function AgentTabs({ worktreeId }: { worktreeId: WorktreeId }) {
     };
   }, [worktreeId]);
 
-  // Lazily fetch the agent list for the currently-selected backend.
-  // CLI shell-out costs ~100ms; cache per-backend for the lifetime of the
-  // pane so toggling the backend dropdown back and forth is instant.
-  useEffect(() => {
-    if (!backendSupportsAgents(backend)) return;
-    if (agentsByBackend[backend] !== undefined) return;
-    let cancelled = false;
-    (async () => {
-      try {
-        const list = await listBackendAgents(backend, worktreeId);
-        if (cancelled) return;
-        setAgentsByBackend((prev) => ({ ...prev, [backend]: list }));
-      } catch {
-        if (cancelled) return;
-        setAgentsByBackend((prev) => ({ ...prev, [backend]: [] }));
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [backend, worktreeId, agentsByBackend]);
-
-  // Dropping into a backend that doesn't support agents (Codex) — clear
-  // any stale selection so we don't pass a name the new backend can't use.
-  useEffect(() => {
-    if (!backendSupportsAgents(backend)) setAgentName(null);
-  }, [backend]);
-
   // Mirror tabs into the ref every render. This is a ref write, not a
   // setState — safe to do during render.
   tabsRef.current = tabs;
@@ -315,8 +272,11 @@ function AgentTabs({ worktreeId }: { worktreeId: WorktreeId }) {
 
   function onLaunch() {
     counters.current[backend] = (counters.current[backend] ?? 0) + 1;
-    const argv = argvForAgent(backend, agentName);
-    const labelSuffix = agentName ? ` (${agentName})` : "";
+    // Empty field → undefined argv, which the Rust side resolves to the
+    // backend's built-in default command. Otherwise the typed command wins.
+    const parsed = splitCommand(command);
+    const argv = parsed.length > 0 ? parsed : undefined;
+    const labelSuffix = argv ? argvAgentSuffix(argv) : "";
     const next: Tab = {
       localId: crypto.randomUUID(),
       mode: { kind: "launch", backend, argv },
@@ -328,7 +288,7 @@ function AgentTabs({ worktreeId }: { worktreeId: WorktreeId }) {
   }
 
   // Run the latest `onLaunch` when the global launch nonce changes.
-  // A ref holds the current closure (capturing live `backend`/`agentName`)
+  // A ref holds the current closure (capturing live `backend`/`command`)
   // so the effect can depend on the nonce alone without re-firing when the
   // backend dropdown changes. `lastLaunchNonce` seeds to the mount-time
   // value so remounting on worktree switch never spuriously launches.
@@ -430,11 +390,11 @@ function AgentTabs({ worktreeId }: { worktreeId: WorktreeId }) {
 
   return (
     <div className="flex h-full flex-col border-l border-neutral-800 bg-neutral-950">
-      <div className="flex shrink-0 items-center justify-end gap-1 border-b border-neutral-800 px-1 py-0.5">
+      <div className="flex shrink-0 items-center gap-1 border-b border-neutral-800 px-1 py-0.5">
         <select
           value={backend}
-          onChange={(e) => setBackend(e.target.value as AgentBackendKind)}
-          className="rounded border border-neutral-800 bg-neutral-900 px-1 py-0.5 text-[11px] focus:outline-none"
+          onChange={(e) => selectBackend(e.target.value as AgentBackendKind)}
+          className="shrink-0 rounded border border-neutral-800 bg-neutral-900 px-1 py-0.5 text-[11px] focus:outline-none"
         >
           {BACKENDS.map((b) => (
             <option key={b.value} value={b.value}>
@@ -442,25 +402,26 @@ function AgentTabs({ worktreeId }: { worktreeId: WorktreeId }) {
             </option>
           ))}
         </select>
-        {backendSupportsAgents(backend) && (
-          <select
-            value={agentName ?? ""}
-            onChange={(e) => setAgentName(e.target.value || null)}
-            title="Sub-agent profile"
-            className="max-w-[12rem] rounded border border-neutral-800 bg-neutral-900 px-1 py-0.5 text-[11px] focus:outline-none"
-          >
-            <option value="">Default</option>
-            {(agentsByBackend[backend] ?? []).map((a) => (
-              <option key={a.name} value={a.name}>
-                {a.name}
-              </option>
-            ))}
-          </select>
-        )}
+        <input
+          value={command}
+          onChange={(e) => setCommand(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              onLaunch();
+            }
+          }}
+          title="Full launch command — edit freely; quote args with spaces"
+          placeholder={agentCommands[backend] || "command…"}
+          spellCheck={false}
+          autoCapitalize="off"
+          autoCorrect="off"
+          className="min-w-0 flex-1 rounded border border-neutral-800 bg-neutral-900 px-1.5 py-0.5 font-mono text-[11px] text-neutral-200 focus:border-blue-600 focus:outline-none"
+        />
         <button
           onClick={onLaunch}
           title="Launch new agent"
-          className="rounded bg-blue-600 px-2 py-0.5 text-[11px] font-medium text-white hover:bg-blue-500"
+          className="shrink-0 rounded bg-blue-600 px-2 py-0.5 text-[11px] font-medium text-white hover:bg-blue-500"
         >
           + Launch
         </button>
