@@ -33,9 +33,21 @@ type LspState = {
   /// flipping the toggle in Settings works because that mutates
   /// `configs`, which IS a dep.
   restartEpoch: Record<WorktreeId, number>;
+  /// IDs of the code-seeded built-in languages. Used by Settings to
+  /// distinguish a built-in row (which "Reset"s to its default) from a
+  /// purely custom one (which "Delete"s).
+  builtinIds: string[];
+  /// IDs that currently have a `[[lsp.language]]` entry in
+  /// `treehouse.toml` — customized built-ins plus all custom languages.
+  customizedIds: string[];
 
   load: () => Promise<void>;
   refreshResolution: () => Promise<void>;
+  /// Persist a language config to `treehouse.toml` and refresh state.
+  upsertLanguage: (config: LspConfig) => Promise<void>;
+  /// Drop a language's `treehouse.toml` entry (reset built-in / delete
+  /// custom) and refresh state.
+  resetLanguage: (languageId: string) => Promise<void>;
   markNotFoundNotified: (worktreeId: string, languageId: string) => void;
   hasNotifiedNotFound: (worktreeId: string, languageId: string) => boolean;
   setProgress: (
@@ -54,16 +66,36 @@ export const useLspStore = create<LspState>((set, get) => ({
   notFoundNotified: new Set(),
   progress: {},
   restartEpoch: {},
+  builtinIds: [],
+  customizedIds: [],
 
   async load() {
     set({ loading: true, error: null });
     try {
-      const configs = await ipc.lspListConfigs();
-      set({ configs, loading: false });
+      const [configs, builtinIds, customizedIds] = await Promise.all([
+        ipc.lspListConfigs(),
+        ipc.lspBuiltinIds(),
+        ipc.lspCustomizedIds(),
+      ]);
+      set({ configs, builtinIds, customizedIds, loading: false });
       void get().refreshResolution();
     } catch (e) {
       set({ error: asMessage(e), loading: false });
     }
+  },
+
+  async upsertLanguage(config) {
+    const configs = await ipc.lspUpsertLanguage(config);
+    const customizedIds = await ipc.lspCustomizedIds();
+    set({ configs, customizedIds });
+    void get().refreshResolution();
+  },
+
+  async resetLanguage(languageId) {
+    const configs = await ipc.lspResetLanguage(languageId);
+    const customizedIds = await ipc.lspCustomizedIds();
+    set({ configs, customizedIds });
+    void get().refreshResolution();
   },
 
   async refreshResolution() {

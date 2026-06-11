@@ -16,8 +16,13 @@ import type {
   HookStep,
   LspConfig,
   LspEvent,
+  LspOverride,
   LspServerId,
   LspServerSession,
+  WorktreeHooks,
+  WorktreeHookEntry,
+  AgentPatternsView,
+  BackendPatterns,
   MergeResult,
   MergeBackStrategy,
   SyncResult,
@@ -437,6 +442,84 @@ export function lspListConfigs(): Promise<LspConfig[]> {
 
 export function lspResolveCommand(command: string): Promise<string | null> {
   return invoke<string | null>("lsp_resolve_command", { command });
+}
+
+/// Insert or replace a language's `[[lsp.language]]` entry in
+/// `treehouse.toml` (matched by `config.id`), forking a built-in if
+/// needed. Running servers for that language are killed so they
+/// respawn with the new config. Resolves to the refreshed merged
+/// config list.
+export function lspUpsertLanguage(config: LspConfig): Promise<LspConfig[]> {
+  return invoke<LspConfig[]>("lsp_upsert_language", { config });
+}
+
+/// Drop a language's `treehouse.toml` entry — restores the built-in
+/// default, or deletes a purely custom language. Resolves to the
+/// refreshed merged config list.
+export function lspResetLanguage(languageId: string): Promise<LspConfig[]> {
+  return invoke<LspConfig[]>("lsp_reset_language", { languageId });
+}
+
+/// IDs of the code-seeded built-in languages.
+export function lspBuiltinIds(): Promise<string[]> {
+  return invoke<string[]>("lsp_builtin_ids");
+}
+
+/// IDs that currently have a `[[lsp.language]]` entry in
+/// `treehouse.toml` (customized built-ins + custom languages).
+export function lspCustomizedIds(): Promise<string[]> {
+  return invoke<string[]>("lsp_customized_ids");
+}
+
+/// Per-workspace `[[lsp.override]]` entries from `treehouse.toml`.
+export function lspOverridesGet(): Promise<LspOverride[]> {
+  return invoke<LspOverride[]>("lsp_overrides_get");
+}
+
+/// Replace the whole `[[lsp.override]]` list. Applies on the next file
+/// open / "Restart language servers" (read fresh at session spawn, not
+/// mid-session). Resolves to the persisted list.
+export function lspOverridesSet(
+  overrides: LspOverride[],
+): Promise<LspOverride[]> {
+  return invoke<LspOverride[]>("lsp_overrides_set", { overrides });
+}
+
+/// User-level worktree lifecycle hooks (`[[worktree.on_create]]` /
+/// `[[worktree.on_destroy]]`).
+export function worktreeHooksGet(): Promise<WorktreeHooks> {
+  return invoke<WorktreeHooks>("worktree_hooks_get");
+}
+
+/// Replace both worktree hook arrays. Read fresh on the next worktree
+/// create/destroy. Resolves to the persisted lists.
+export function worktreeHooksSet(
+  onCreate: WorktreeHookEntry[],
+  onDestroy: WorktreeHookEntry[],
+): Promise<WorktreeHooks> {
+  return invoke<WorktreeHooks>("worktree_hooks_set", { onCreate, onDestroy });
+}
+
+/// Effective agent status patterns (defaults filled in for uncustomized
+/// backends) + the list of explicitly-customized backend keys.
+export function agentPatternsGet(): Promise<AgentPatternsView> {
+  return invoke<AgentPatternsView>("agent_patterns_get");
+}
+
+/// Persist one backend's status patterns. Applied live to running
+/// agents (shared pattern handle; takes effect on the next PTY chunk).
+export function agentPatternsSet(
+  backend: AgentBackendKind,
+  patterns: BackendPatterns,
+): Promise<AgentPatternsView> {
+  return invoke<AgentPatternsView>("agent_patterns_set", { backend, patterns });
+}
+
+/// Drop one backend's customization so its built-in defaults apply.
+export function agentPatternsReset(
+  backend: AgentBackendKind,
+): Promise<AgentPatternsView> {
+  return invoke<AgentPatternsView>("agent_patterns_reset", { backend });
 }
 
 /// Ensure `treehouse.toml` exists (seeded with a header + schema

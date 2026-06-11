@@ -52,6 +52,12 @@ export type { HookStep } from "./bindings/HookStep";
 export type { HookRunSummary } from "./bindings/HookRunSummary";
 export type { HookFailure } from "./bindings/HookFailure";
 
+export type { WorktreeHookEntry } from "./bindings/WorktreeHookEntry";
+export type { WorktreeHooks } from "./bindings/WorktreeHooks";
+export type { AgentPatterns } from "./bindings/AgentPatterns";
+export type { BackendPatterns } from "./bindings/BackendPatterns";
+export type { AgentPatternsView } from "./bindings/AgentPatternsView";
+
 export type { AppFileContent } from "./bindings/AppFileContent";
 
 export type { ForgeKind } from "./bindings/ForgeKind";

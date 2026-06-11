@@ -1141,6 +1141,56 @@ pub async fn lsp_resolve_command(command: String) -> AppResult<Option<String>> {
     lsp::config::resolve_command(&command).await
 }
 
+/// Write an `[[lsp.language]]` entry to `treehouse.toml` (insert or
+/// replace by `config.id`), then kill any running servers for that
+/// language so the next file open respawns with the new command/args/
+/// env. Editing a built-in forks it; see `user_config::upsert_language`.
+/// Returns the freshly-merged config list (built-ins + customs) so the
+/// renderer can refresh without a second round-trip.
+#[tauri::command]
+pub async fn lsp_upsert_language(
+    config: LspConfig,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> AppResult<Vec<LspConfig>> {
+    crate::user_config::upsert_language(&app, &config).await?;
+    lsp::supervisor::kill_for_language(&state.lsp, &config.id);
+    lsp::config::list(&app).await
+}
+
+/// Remove a language's `[[lsp.language]]` entry from `treehouse.toml`
+/// (restoring the built-in default, or deleting a purely custom
+/// language), then kill its running servers. Returns the refreshed
+/// merged config list.
+#[tauri::command]
+pub async fn lsp_reset_language(
+    language_id: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> AppResult<Vec<LspConfig>> {
+    crate::user_config::remove_language(&app, &language_id).await?;
+    lsp::supervisor::kill_for_language(&state.lsp, &language_id);
+    lsp::config::list(&app).await
+}
+
+/// IDs of the code-seeded built-in languages — lets the renderer tell
+/// a built-in row apart from a user-defined one.
+#[tauri::command]
+pub async fn lsp_builtin_ids() -> AppResult<Vec<String>> {
+    Ok(lsp::config::builtin_ids()
+        .into_iter()
+        .map(|s| s.to_string())
+        .collect())
+}
+
+/// IDs that currently have a `[[lsp.language]]` entry in
+/// `treehouse.toml` — i.e. customized built-ins plus all custom
+/// languages. Drives the "Reset to default" vs "Delete" labeling.
+#[tauri::command]
+pub async fn lsp_customized_ids(app: AppHandle) -> AppResult<Vec<String>> {
+    crate::user_config::language_ids(&app).await
+}
+
 /// Sweep the Rust LSP registry by `worktree_id`, killing every
 /// server attached to that worktree regardless of language. Used by
 /// the renderer's "Restart language servers" command — important
@@ -1166,6 +1216,129 @@ pub async fn lsp_kill_for_worktree(
         let _ = app.emit(&events::lsp_servers_changed(ws_id), ());
     }
     Ok(())
+}
+
+/// The per-workspace `[[lsp.override]]` list from `treehouse.toml`.
+/// Read fresh, so the renderer always sees what's actually on disk.
+#[tauri::command]
+pub async fn lsp_overrides_get(app: AppHandle) -> AppResult<Vec<lsp::overrides::LspOverride>> {
+    Ok(crate::user_config::load(&app).await?.lsp.overrides)
+}
+
+/// Replace the whole `[[lsp.override]]` list. Returns the persisted
+/// list so the renderer refreshes without a second round-trip. We
+/// don't kill running servers here — overrides are read fresh at the
+/// next session spawn (or the "Restart language servers" command), so
+/// changes apply on next file open rather than mid-session.
+#[tauri::command]
+pub async fn lsp_overrides_set(
+    overrides: Vec<lsp::overrides::LspOverride>,
+    app: AppHandle,
+) -> AppResult<Vec<lsp::overrides::LspOverride>> {
+    crate::user_config::set_overrides(&app, &overrides).await?;
+    Ok(crate::user_config::load(&app).await?.lsp.overrides)
+}
+
+/// The two worktree hook arrays from `treehouse.toml`, in IPC
+/// (camelCase) shape.
+#[derive(Debug, serde::Serialize, serde::Deserialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct WorktreeHooks {
+    pub on_create: Vec<crate::user_config::WorktreeHookEntry>,
+    pub on_destroy: Vec<crate::user_config::WorktreeHookEntry>,
+}
+
+/// Read the user-level worktree lifecycle hooks.
+#[tauri::command]
+pub async fn worktree_hooks_get(app: AppHandle) -> AppResult<WorktreeHooks> {
+    let w = crate::user_config::load(&app).await?.worktree;
+    Ok(WorktreeHooks {
+        on_create: w.on_create,
+        on_destroy: w.on_destroy,
+    })
+}
+
+/// Replace both worktree hook arrays. Read fresh on the next worktree
+/// create/destroy, so no state invalidation is needed. Returns the
+/// persisted lists.
+#[tauri::command]
+pub async fn worktree_hooks_set(
+    on_create: Vec<crate::user_config::WorktreeHookEntry>,
+    on_destroy: Vec<crate::user_config::WorktreeHookEntry>,
+    app: AppHandle,
+) -> AppResult<WorktreeHooks> {
+    crate::user_config::set_worktree_hooks(&app, &on_create, &on_destroy).await?;
+    let w = crate::user_config::load(&app).await?.worktree;
+    Ok(WorktreeHooks {
+        on_create: w.on_create,
+        on_destroy: w.on_destroy,
+    })
+}
+
+/// The effective agent status patterns (built-in defaults filled in
+/// for any backend the user hasn't customized) plus the list of
+/// backends that *are* explicitly customized in `treehouse.toml` —
+/// drives the per-backend "Reset to default" affordance.
+#[derive(Debug, serde::Serialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct AgentPatternsView {
+    pub patterns: agent::patterns::AgentPatterns,
+    /// camelCase backend keys (`claudeCode` / `kiro` / `codex`).
+    pub customized: Vec<String>,
+}
+
+/// camelCase serde/TOML key for a backend — the section name under
+/// `[agent.status]`.
+fn backend_key(b: agent::AgentBackendKind) -> &'static str {
+    match b {
+        agent::AgentBackendKind::ClaudeCode => "claudeCode",
+        agent::AgentBackendKind::Codex => "codex",
+        agent::AgentBackendKind::Kiro => "kiro",
+    }
+}
+
+async fn agent_patterns_view(app: &AppHandle) -> AppResult<AgentPatternsView> {
+    Ok(AgentPatternsView {
+        patterns: agent::patterns::load(app).await?,
+        customized: crate::user_config::customized_backends(app).await?,
+    })
+}
+
+/// Read the effective agent status patterns + customized-backend list.
+#[tauri::command]
+pub async fn agent_patterns_get(app: AppHandle) -> AppResult<AgentPatternsView> {
+    agent_patterns_view(&app).await
+}
+
+/// Persist one backend's status patterns and apply them live: reader
+/// threads share an `Arc<RwLock<AgentPatterns>>`, so reloading it here
+/// means running agents pick up the new patterns on their next PTY
+/// chunk — no respawn. Returns the refreshed view.
+#[tauri::command]
+pub async fn agent_patterns_set(
+    backend: agent::AgentBackendKind,
+    patterns: agent::patterns::BackendPatterns,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> AppResult<AgentPatternsView> {
+    crate::user_config::upsert_agent_backend(&app, backend_key(backend), &patterns).await?;
+    state.agents.set_patterns(agent::patterns::load(&app).await?);
+    agent_patterns_view(&app).await
+}
+
+/// Drop one backend's customization so its built-in defaults apply
+/// again, then reload the live pattern set. Returns the refreshed view.
+#[tauri::command]
+pub async fn agent_patterns_reset(
+    backend: agent::AgentBackendKind,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> AppResult<AgentPatternsView> {
+    crate::user_config::remove_agent_backend(&app, backend_key(backend)).await?;
+    state.agents.set_patterns(agent::patterns::load(&app).await?);
+    agent_patterns_view(&app).await
 }
 
 /// Resolve the post-create hook steps for a worktree. Looks up the
