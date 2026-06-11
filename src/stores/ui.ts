@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import type { AppFileKind } from "@/ipc/client";
-import type { AgentSessionId, WorktreeId } from "@/ipc/types";
+import type { AgentSessionId, WorkspaceId, WorktreeId } from "@/ipc/types";
 
 type UiState = {
   selectedWorktreeId: WorktreeId | null;
@@ -35,6 +35,17 @@ type UiState = {
   /// terminal stays mounted (with its sessions alive) when the
   /// user flips to Problems and back.
   bottomPaneTab: "terminal" | "problems" | "review" | "ci";
+  /// Monotonic one-shot intent for "launch a new agent". Agent tabs
+  /// live in AgentPane-local state, so the Cmd+Shift+A global shortcut
+  /// can't create one directly — it bumps this counter and the mounted
+  /// AgentPane (for the active worktree) reacts by running its launch
+  /// handler. Carries no payload: the pane launches with whatever
+  /// backend its dropdown currently shows, same as clicking "+".
+  agentLaunchNonce: number;
+  /// Which workspace the New Worktree dialog is open for, if any. Lifted
+  /// out of WorktreeSidebar-local state so the Cmd+Shift+N global
+  /// shortcut can open it for the active workspace.
+  newWorktreeWorkspace: WorkspaceId | null;
   selectWorktree: (id: WorktreeId | null) => void;
   toggleFocusMode: () => void;
   setFocusMode: (on: boolean) => void;
@@ -55,6 +66,9 @@ type UiState = {
   closeSystemFileViewer: () => void;
   setBottomPaneTab: (tab: "terminal" | "problems" | "review" | "ci") => void;
   toggleProblemsTab: () => void;
+  requestAgentLaunch: () => void;
+  openNewWorktreeDialog: (workspaceId: WorkspaceId) => void;
+  closeNewWorktreeDialog: () => void;
   reset: () => void;
 };
 
@@ -68,6 +82,8 @@ export const useUiStore = create<UiState>((set) => ({
   agentTabOrderByWorktree: {},
   systemFileViewer: null,
   bottomPaneTab: "terminal",
+  agentLaunchNonce: 0,
+  newWorktreeWorkspace: null,
   selectWorktree(id) {
     set({ selectedWorktreeId: id });
   },
@@ -131,6 +147,15 @@ export const useUiStore = create<UiState>((set) => ({
       bottomPaneTab: s.bottomPaneTab === "problems" ? "terminal" : "problems",
     }));
   },
+  requestAgentLaunch() {
+    set((s) => ({ agentLaunchNonce: s.agentLaunchNonce + 1 }));
+  },
+  openNewWorktreeDialog(workspaceId) {
+    set({ newWorktreeWorkspace: workspaceId });
+  },
+  closeNewWorktreeDialog() {
+    set({ newWorktreeWorkspace: null });
+  },
   reset() {
     set({
       selectedWorktreeId: null,
@@ -142,6 +167,8 @@ export const useUiStore = create<UiState>((set) => ({
       agentTabOrderByWorktree: {},
       systemFileViewer: null,
       bottomPaneTab: "terminal",
+      agentLaunchNonce: 0,
+      newWorktreeWorkspace: null,
     });
   },
 }));

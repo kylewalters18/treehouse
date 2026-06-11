@@ -35,13 +35,20 @@ const AGENT_OPTIONS: { value: AgentBackendKind; label: string; sub: string }[] =
   { value: "kiro", label: "Kiro", sub: "kiro-cli" },
 ];
 
-type Category = "workflow" | "agents" | "languages" | "hooks" | "forge";
+type Category =
+  | "workflow"
+  | "agents"
+  | "languages"
+  | "hooks"
+  | "forge"
+  | "keybindings";
 const CATEGORIES: { id: Category; label: string }[] = [
   { id: "workflow", label: "Workflow" },
   { id: "agents", label: "Agents" },
   { id: "languages", label: "Languages" },
   { id: "hooks", label: "Hooks" },
   { id: "forge", label: "Forge" },
+  { id: "keybindings", label: "Keybindings" },
 ];
 
 /// Settings as a categorized modal: a left rail of sections + a content pane
@@ -163,6 +170,7 @@ export function SettingsMenu() {
               {active === "languages" && <LanguagesPane />}
               {active === "hooks" && <HooksPane />}
               {active === "forge" && <ForgePane />}
+              {active === "keybindings" && <KeybindingsPane />}
             </div>
           </div>
         </div>
@@ -244,6 +252,126 @@ function ForgePane() {
         <code className="font-mono">~/.netrc</code> (per host); GitHub uses the{" "}
         <code className="font-mono">gh</code> CLI.
       </p>
+    </div>
+  );
+}
+
+/// A single keyboard chord rendered as <kbd> caps. Each token is one
+/// cap; a token may itself be a glyph (⌘) or a label ("1 – 9", "Enter").
+function Kbd({ keys }: { keys: string[] }) {
+  return (
+    <span className="inline-flex items-center gap-0.5">
+      {keys.map((k, i) => (
+        <kbd
+          key={i}
+          className="rounded border border-neutral-700 bg-neutral-950 px-1.5 py-0.5 font-mono text-[11px] leading-none text-neutral-200 shadow-[0_1px_0_rgb(0_0_0/0.5)]"
+        >
+          {k}
+        </kbd>
+      ))}
+    </span>
+  );
+}
+
+/// One reference row: a list of chords (joined by "/") and a label.
+type Binding = { combos: string[][]; label: string };
+
+const KEYBINDING_GROUPS: { group: string; items: Binding[] }[] = [
+  {
+    group: "Create",
+    items: [
+      { combos: [["⌘", "T"]], label: "New terminal tab" },
+      { combos: [["⌘", "⇧", "A"]], label: "New agent tab" },
+      { combos: [["⌘", "⇧", "N"]], label: "New worktree" },
+    ],
+  },
+  {
+    group: "View & navigation",
+    items: [
+      { combos: [["⌘", "B"]], label: "Toggle worktree sidebar" },
+      { combos: [["⌘", "\\"]], label: "Toggle focus mode" },
+      { combos: [["⌘", "⇧", "M"]], label: "Toggle Problems / Terminal" },
+      { combos: [["⌘", "P"]], label: "Go to file" },
+      { combos: [["⌘", "⇧", "P"]], label: "Command palette" },
+      { combos: [["⌘", "["]], label: "Navigate back (cursor history)" },
+      { combos: [["⌘", "]"]], label: "Navigate forward (cursor history)" },
+    ],
+  },
+  {
+    group: "Editor",
+    items: [{ combos: [["⌘", "S"]], label: "Save file" }],
+  },
+  {
+    group: "Terminal",
+    items: [
+      { combos: [["⌘", "F"]], label: "Find in terminal" },
+      { combos: [["Enter"]], label: "Find next match (terminal search)" },
+      { combos: [["⇧", "Enter"]], label: "Find previous match (terminal search)" },
+      { combos: [["⇧", "Enter"]], label: "Agent input: newline without sending" },
+    ],
+  },
+  {
+    group: "Review comments",
+    items: [
+      { combos: [["⌘", "Enter"]], label: "Save / post comment" },
+      { combos: [["⌘", "⇧", "Enter"]], label: "Save comment and send to agent" },
+    ],
+  },
+  {
+    group: "Dialogs & pickers",
+    items: [
+      { combos: [["Esc"]], label: "Close dialog / menu" },
+      { combos: [["↑"], ["↓"]], label: "Move selection" },
+      { combos: [["Enter"]], label: "Confirm selection" },
+    ],
+  },
+];
+
+/// Read-only reference of every keyboard shortcut. Remapping is a
+/// follow-up — for now this documents what's wired up. macOS glyphs:
+/// ⌘ Command · ⇧ Shift · ⌃ Control · ⌥ Option.
+function KeybindingsPane() {
+  return (
+    <div>
+      <div className="mb-1 text-[11px] uppercase tracking-wider text-neutral-500">
+        Keybindings
+      </div>
+      <p className="mb-3 text-[11px] text-neutral-600">
+        Read-only for now — custom remapping is coming. Glyphs:{" "}
+        <span className="font-mono">⌘</span> Command,{" "}
+        <span className="font-mono">⇧</span> Shift,{" "}
+        <span className="font-mono">⌃</span> Control,{" "}
+        <span className="font-mono">⌥</span> Option.
+      </p>
+      <div className="flex flex-col gap-4">
+        {KEYBINDING_GROUPS.map((g) => (
+          <div key={g.group}>
+            <div className="mb-1.5 text-[11px] uppercase tracking-wider text-neutral-500">
+              {g.group}
+            </div>
+            <div className="flex flex-col divide-y divide-neutral-800/60 rounded border border-neutral-800">
+              {g.items.map((b, i) => (
+                <div
+                  key={i}
+                  className="flex items-center justify-between gap-3 px-2.5 py-1.5"
+                >
+                  <span className="text-xs text-neutral-200">{b.label}</span>
+                  <span className="flex shrink-0 items-center gap-1">
+                    {b.combos.map((combo, ci) => (
+                      <span key={ci} className="flex items-center gap-1">
+                        {ci > 0 && (
+                          <span className="text-[11px] text-neutral-600">/</span>
+                        )}
+                        <Kbd keys={combo} />
+                      </span>
+                    ))}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

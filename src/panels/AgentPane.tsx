@@ -122,6 +122,9 @@ function AgentTabs({ worktreeId }: { worktreeId: WorktreeId }) {
   const setAgentLabel = useUiStore((s) => s.setAgentLabel);
   const clearAgentLabel = useUiStore((s) => s.clearAgentLabel);
   const setAgentTabOrder = useUiStore((s) => s.setAgentTabOrder);
+  // Cmd+Shift+A global shortcut → launch a new agent. The shortcut bumps
+  // this nonce; we react by running `onLaunch` (same as the "+" button).
+  const agentLaunchNonce = useUiStore((s) => s.agentLaunchNonce);
   // Capture the persisted state at first render — refs ensure later
   // effects (in particular the mirror-active-agent effect, which writes
   // `null` to the store on initial mount) can't clobber the values
@@ -323,6 +326,20 @@ function AgentTabs({ worktreeId }: { worktreeId: WorktreeId }) {
     setTabs((prev) => [...prev, next]);
     setActiveId(next.localId);
   }
+
+  // Run the latest `onLaunch` when the global launch nonce changes.
+  // A ref holds the current closure (capturing live `backend`/`agentName`)
+  // so the effect can depend on the nonce alone without re-firing when the
+  // backend dropdown changes. `lastLaunchNonce` seeds to the mount-time
+  // value so remounting on worktree switch never spuriously launches.
+  const onLaunchRef = useRef(onLaunch);
+  onLaunchRef.current = onLaunch;
+  const lastLaunchNonce = useRef(agentLaunchNonce);
+  useEffect(() => {
+    if (agentLaunchNonce === lastLaunchNonce.current) return;
+    lastLaunchNonce.current = agentLaunchNonce;
+    onLaunchRef.current();
+  }, [agentLaunchNonce]);
 
   async function closeTab(localId: string) {
     const agentId = sessionIds.current.get(localId);

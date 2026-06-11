@@ -10,6 +10,7 @@ import { useWorktreesStore } from "@/stores/worktrees";
 import { useDiffsStore } from "@/stores/diffs";
 import { useLspStore } from "@/stores/lsp";
 import { useNavigationStore } from "@/stores/navigation";
+import { useTerminalLayoutStore } from "@/stores/terminal-layout";
 import { useUiStore } from "@/stores/ui";
 import { WorktreeSidebar } from "@/panels/WorktreeSidebar";
 import { DiffPane } from "@/panels/DiffPane";
@@ -130,6 +131,27 @@ export function Workspace() {
         const nav = useNavigationStore.getState();
         if (e.key === "[") nav.back(selectedWorktreeId);
         else nav.forward(selectedWorktreeId);
+      } else if (!e.shiftKey && (e.key === "t" || e.key === "T")) {
+        // ⌘T — new terminal tab in the active worktree.
+        if (!selectedWorktreeId) return;
+        e.preventDefault();
+        useTerminalLayoutStore.getState().addTab(selectedWorktreeId);
+      } else if (e.shiftKey && (e.key === "a" || e.key === "A")) {
+        // ⌘⇧A — new agent tab (AgentPane reacts to the launch nonce).
+        if (!selectedWorktreeId) return;
+        e.preventDefault();
+        useUiStore.getState().requestAgentLaunch();
+      } else if (e.shiftKey && (e.key === "n" || e.key === "N")) {
+        // ⌘⇧N — new worktree in the active (or first open) workspace.
+        e.preventDefault();
+        const wt = useWorktreesStore
+          .getState()
+          .worktrees.find((w) => w.id === selectedWorktreeId);
+        const ws =
+          workspaceForWorktree(wt?.workspaceId) ??
+          useWorkspaceStore.getState().workspaces[0] ??
+          null;
+        if (ws) useUiStore.getState().openNewWorktreeDialog(ws.id);
       }
     }
     window.addEventListener("keydown", onKey);

@@ -52,10 +52,14 @@ type State = {
     worktreeId: WorktreeId,
     fn: (prev: WorktreeTerminalLayout) => WorktreeTerminalLayout,
   ) => void;
+  /// Append a fresh `open`-mode terminal tab and make it active. Lives
+  /// in the store (not TerminalPane-local) so the Cmd+T global shortcut
+  /// and the pane's "+" button share one code path.
+  addTab: (worktreeId: WorktreeId) => void;
   reset: () => void;
 };
 
-export const useTerminalLayoutStore = create<State>((set) => ({
+export const useTerminalLayoutStore = create<State>((set, get) => ({
   layouts: {},
   setLayout(worktreeId, layout) {
     set((s) => ({ layouts: { ...s.layouts, [worktreeId]: layout } }));
@@ -67,6 +71,23 @@ export const useTerminalLayoutStore = create<State>((set) => ({
         [worktreeId]: fn(s.layouts[worktreeId] ?? emptyLayout()),
       },
     }));
+  },
+  addTab(worktreeId) {
+    get().updateLayout(worktreeId, (prev) => {
+      const counter = prev.counter + 1;
+      const leaf = makeLeaf({ kind: "open" });
+      const next: TerminalTab = {
+        localId: crypto.randomUUID(),
+        label: `zsh ${counter}`,
+        tree: leaf,
+        activeLeafId: leaf.localId,
+      };
+      return {
+        tabs: [...prev.tabs, next],
+        activeTabId: next.localId,
+        counter,
+      };
+    });
   },
   reset() {
     set({ layouts: {} });

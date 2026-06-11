@@ -19,7 +19,6 @@ import type {
   MergeBackStrategy,
   SyncStrategy,
   Workspace,
-  WorkspaceId,
   Worktree,
   WorktreeActivity,
   WorktreeId,
@@ -42,8 +41,11 @@ export function WorktreeSidebar() {
   const collapsed = useUiStore((s) => s.worktreeSidebarCollapsed);
   const toggleCollapsed = useUiStore((s) => s.toggleWorktreeSidebar);
 
-  // Which repo's New Worktree dialog is open (null = closed).
-  const [createDialogWs, setCreateDialogWs] = useState<WorkspaceId | null>(null);
+  // Which repo's New Worktree dialog is open (null = closed). Lives in
+  // the ui store so the Cmd+Shift+N global shortcut can open it too.
+  const createDialogWs = useUiStore((s) => s.newWorktreeWorkspace);
+  const openCreateDialog = useUiStore((s) => s.openNewWorktreeDialog);
+  const closeCreateDialog = useUiStore((s) => s.closeNewWorktreeDialog);
   // Per-repo in-flight create indicator + live step, for the spinner shown
   // under the repo while a create runs.
   const [creatingNames, setCreatingNames] = useState<
@@ -571,7 +573,7 @@ export function WorktreeSidebar() {
               {!expanded ? null : <>
               <div className="px-3 py-2">
                 <button
-                  onClick={() => setCreateDialogWs(ws.id)}
+                  onClick={() => openCreateDialog(ws.id)}
                   disabled={creating || !!liveName}
                   className="flex w-full items-center justify-center gap-1.5 rounded border border-neutral-800 bg-neutral-950 px-2 py-1 text-xs text-neutral-300 hover:border-neutral-700 hover:bg-neutral-900 disabled:opacity-50"
                 >
@@ -669,7 +671,7 @@ export function WorktreeSidebar() {
         onCreate={(name, base, opts) => {
           if (createDialogWs) void handleCreate(createDialogWs, name, base, opts);
         }}
-        onClose={() => setCreateDialogWs(null)}
+        onClose={() => closeCreateDialog()}
       />
 
       {mergeTarget && (

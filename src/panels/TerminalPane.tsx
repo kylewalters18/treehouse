@@ -139,21 +139,8 @@ function TerminalTabs({ worktreeId }: { worktreeId: WorktreeId }) {
   }
 
   function addTab() {
-    updateLayout(worktreeId, (prev) => {
-      const counter = prev.counter + 1;
-      const leaf = makeLeaf({ kind: "open" });
-      const next = {
-        localId: crypto.randomUUID(),
-        label: `zsh ${counter}`,
-        tree: leaf,
-        activeLeafId: leaf.localId,
-      };
-      return {
-        tabs: [...prev.tabs, next],
-        activeTabId: next.localId,
-        counter,
-      };
-    });
+    // Shared with the Cmd+T global shortcut — see terminal-layout store.
+    useTerminalLayoutStore.getState().addTab(worktreeId);
   }
 
   async function closeTab(localId: string) {
