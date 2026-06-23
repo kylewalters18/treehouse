@@ -127,11 +127,11 @@ fn defaults_for(backend: AgentBackendKind) -> BackendPatterns {
                 "Press ENTER".into(),
                 "press any key".into(),
             ],
-            idle: vec![
-                // Kiro REPL prompt shown when the agent finishes a
-                // turn and is waiting for the next input.
-                "ask a question or describe a task".into(),
-            ],
+            // No reliable idle substring exists for Kiro's TUI, and a stale
+            // match would pin Idle for PATTERN_TTL even after work resumed.
+            // Idle is detected by output going quiet instead — see the Kiro
+            // arm of `supervisor::activity_for_worktree`.
+            idle: vec![],
         },
         AgentBackendKind::Codex => BackendPatterns {
             attention: vec![

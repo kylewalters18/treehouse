@@ -185,6 +185,7 @@ impl AgentRegistry {
             return act;
         }
 
+        let now = Instant::now();
         let mut best = AgentActivity::Inactive;
         for e in self.inner.iter() {
             if e.value().session.worktree_id != worktree_id {
@@ -194,13 +195,44 @@ impl AgentRegistry {
             if !matches!(sh.status, AgentStatus::Running | AgentStatus::Starting) {
                 continue;
             }
-            // Pattern signals (when fresh) are more reliable than byte timing
-            // for non-Claude backends: Kiro's idle beacon and approval menus
-            // are explicit states we can read directly. Whichever pattern
-            // fired most recently wins; only fall back to byte timing when
-            // neither is fresh.
-            let att = sh.last_attention_match.filter(|t| t.elapsed() < PATTERN_TTL);
-            let idl = sh.last_idle_match.filter(|t| t.elapsed() < PATTERN_TTL);
+            best = max_severity(best, Self::classify(e.value().session.backend, &sh, now));
+        }
+        best
+    }
+
+    /// Classify one non-Claude agent's activity from its output-timing and
+    /// pattern timestamps. Pure (takes `now` rather than calling `Instant::now`)
+    /// so the state machine is unit-testable — see `mod tests`.
+    fn classify(backend: AgentBackendKind, sh: &AgentShared, now: Instant) -> AgentActivity {
+        let since_any = now.saturating_duration_since(sh.last_any_output);
+        if matches!(backend, AgentBackendKind::Kiro) {
+            // Kiro renders a full-screen TUI with no reliable idle substring, so
+            // output *rhythm* is the primary signal: a working turn streams bytes
+            // continuously (spinner rewrites via `\r`, plus content); an idle turn
+            // goes quiet (static screen; cursor blink is terminal-side).
+            //
+            // Byte activity is checked FIRST — streaming = Working even if
+            // `requires approval` matched moments ago — so we leave NeedsAttention
+            // the instant the user approves and work resumes. When quiet, the
+            // prompt counts as *current* only if it's the last thing emitted:
+            // `last_attention_match` and `last_any_output` share an instant on a
+            // matching chunk, so `attn >= any` means "nothing since the prompt"
+            // (still blocked). Once a turn flows work output past the prompt and
+            // finishes, `any > attn` → Idle, not stuck amber.
+            let blocked_on_prompt = sh.last_attention_match.is_some_and(|t| t >= sh.last_any_output);
+            if since_any < WORKING_WINDOW {
+                AgentActivity::Working
+            } else if blocked_on_prompt {
+                AgentActivity::NeedsAttention
+            } else {
+                AgentActivity::Idle
+            }
+        } else {
+            // Codex etc.: a fresh pattern wins (most recent of attention/idle),
+            // else newline byte-timing.
+            let fresh = |t: &Instant| now.saturating_duration_since(*t) < PATTERN_TTL;
+            let att = sh.last_attention_match.filter(|t| fresh(t));
+            let idl = sh.last_idle_match.filter(|t| fresh(t));
             let pattern_state = match (att, idl) {
                 (Some(a_t), Some(i_t)) if a_t >= i_t => Some(AgentActivity::NeedsAttention),
                 (Some(_), Some(_)) => Some(AgentActivity::Idle),
@@ -208,38 +240,20 @@ impl AgentRegistry {
                 (None, Some(_)) => Some(AgentActivity::Idle),
                 (None, None) => None,
             };
-            let a = match pattern_state {
+            match pattern_state {
                 Some(s) => s,
-                None => match e.value().session.backend {
-                    // Kiro: no byte-timing fallback. Pattern matches
-                    // are the only authoritative signal we have, and
-                    // the byte-timing heuristic was producing routine
-                    // false-NeedsAttention dots when the user paused
-                    // typing during a Kiro session. With no fresh
-                    // pattern we report `Working` — the agent is
-                    // running per the `any_running` check above, and
-                    // assuming "still doing something" is friendlier
-                    // than blinking the attention triangle every
-                    // time the cursor sits idle.
-                    AgentBackendKind::Kiro => AgentActivity::Working,
-                    _ => {
-                        let since_newline = sh.last_newline.elapsed();
-                        let since_any = sh.last_any_output.elapsed();
-                        if since_newline < WORKING_WINDOW {
-                            AgentActivity::Working
-                        } else if since_newline < IDLE_WINDOW
-                            && since_any < SPINNER_ACTIVITY_WINDOW
-                        {
-                            AgentActivity::Idle
-                        } else {
-                            AgentActivity::NeedsAttention
-                        }
+                None => {
+                    let since_newline = now.saturating_duration_since(sh.last_newline);
+                    if since_newline < WORKING_WINDOW {
+                        AgentActivity::Working
+                    } else if since_newline < IDLE_WINDOW && since_any < SPINNER_ACTIVITY_WINDOW {
+                        AgentActivity::Idle
+                    } else {
+                        AgentActivity::NeedsAttention
                     }
-                },
-            };
-            best = max_severity(best, a);
+                }
+            }
         }
-        best
     }
 
     /// Kill every agent. Called from graceful shutdown.
@@ -369,6 +383,8 @@ pub fn launch(
         .name(format!("agent-reader-{session_id}"))
         .spawn(move || {
             let mut buf = [0u8; 8192];
+            // Rolling de-escaped tail for cross-chunk pattern matching.
+            let mut scan_tail = String::new();
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) => break,
@@ -376,15 +392,12 @@ pub fn launch(
                         let chunk = &buf[..n];
                         let saw_newline = chunk.contains(&b'\n');
                         // Read patterns under the lock for as
-                        // little time as possible — match against
-                        // the chunk and drop the read guard before
-                        // taking the shared-state mutex below.
+                        // little time as possible — scan the
+                        // de-escaped chunk and drop the read guard
+                        // before taking the shared-state mutex below.
                         let (saw_attention, saw_idle) = {
                             let p = patterns_for_reader.read();
-                            (
-                                p.matches(backend, chunk, super::patterns::Which::Attention),
-                                p.matches(backend, chunk, super::patterns::Which::Idle),
-                            )
+                            scan_chunk(&p, backend, &mut scan_tail, chunk)
                         };
                         let mut sh = shared_for_reader.lock();
                         sh.ring.extend(chunk.iter().copied());
@@ -593,20 +606,64 @@ pub fn list_backend_agents(
 /// for the SGR codes the CLIs actually emit.
 fn strip_ansi(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
-    let mut chars = s.chars();
+    let mut chars = s.chars().peekable();
     while let Some(c) = chars.next() {
-        if c == '\x1b' {
-            // Skip CSI: optional `[`, then anything until a final byte 0x40-0x7E.
+        if c != '\x1b' {
+            out.push(c);
+            continue;
+        }
+        // CSI (`ESC [`): consume the `[`, then the parameter/intermediate
+        // bytes, and stop on the final byte 0x40-0x7E. Note `[` itself is
+        // 0x5B (inside that range), so it must be skipped explicitly —
+        // otherwise the scan ends immediately and leaks the params (e.g.
+        // `38;5;208m`) as text, which is what broke Kiro status matching.
+        if chars.peek() == Some(&'[') {
+            chars.next();
             for next in chars.by_ref() {
                 if ('@'..='~').contains(&next) {
                     break;
                 }
             }
         } else {
-            out.push(c);
+            // Other escapes (`ESC c`, charset selects, …) — drop ESC plus
+            // its single following byte. OSC strings aren't common in the
+            // status output we scan, so we don't special-case them.
+            chars.next();
         }
     }
     out
+}
+
+/// How many trailing characters of stripped output we carry between reads
+/// so an attention/idle phrase split across two PTY chunks still matches.
+/// Comfortably larger than the longest default pattern; small enough that a
+/// stale prompt scrolls out of the window within one screen of new output.
+const SCAN_WINDOW: usize = 256;
+
+/// Strip ANSI escapes from `chunk`, append to the rolling `tail`, scan the
+/// window for attention/idle patterns, then trim `tail` back to the last
+/// `SCAN_WINDOW` chars for the next read.
+///
+/// Pattern matching MUST run on de-escaped text: agent TUIs (Kiro, Codex)
+/// wrap prompt strings like "requires approval" in color/cursor sequences,
+/// so matching raw PTY bytes never hits. (Claude Code is unaffected — its
+/// status comes from hooks, not patterns.) The rolling window covers the
+/// case where a single screen draw lands across two `read()` calls.
+fn scan_chunk(
+    patterns: &super::patterns::AgentPatterns,
+    backend: AgentBackendKind,
+    tail: &mut String,
+    chunk: &[u8],
+) -> (bool, bool) {
+    use super::patterns::Which;
+    tail.push_str(&strip_ansi(&String::from_utf8_lossy(chunk)));
+    let saw_attention = patterns.matches(backend, tail.as_bytes(), Which::Attention);
+    let saw_idle = patterns.matches(backend, tail.as_bytes(), Which::Idle);
+    let count = tail.chars().count();
+    if count > SCAN_WINDOW {
+        *tail = tail.chars().skip(count - SCAN_WINDOW).collect();
+    }
+    (saw_attention, saw_idle)
 }
 
 /// Claude `agents list` output is like:
@@ -699,6 +756,72 @@ mod tests {
         AgentPatterns::defaults().matches(AgentBackendKind::ClaudeCode, chunk, Which::Attention)
     }
 
+    /// `(now, ago)` where `ago(secs)` is an Instant `secs` before `now`. Built by
+    /// addition off a base so there's never an Instant underflow on a freshly
+    /// booted (low-uptime) machine.
+    fn clock() -> (Instant, impl Fn(u64) -> Instant) {
+        let base = Instant::now();
+        let now = base + Duration::from_secs(10_000);
+        (now, move |secs: u64| base + Duration::from_secs(10_000 - secs))
+    }
+
+    fn shared(
+        any: Instant,
+        newline: Instant,
+        attention: Option<Instant>,
+        idle: Option<Instant>,
+    ) -> AgentShared {
+        AgentShared {
+            ring: VecDeque::new(),
+            channel: None,
+            status: AgentStatus::Running,
+            last_newline: newline,
+            last_any_output: any,
+            last_attention_match: attention,
+            last_idle_match: idle,
+        }
+    }
+
+    #[test]
+    fn kiro_streaming_is_working() {
+        let (now, ago) = clock();
+        let s = shared(ago(0), ago(0), None, None); // bytes just now
+        assert_eq!(AgentRegistry::classify(AgentBackendKind::Kiro, &s, now), AgentActivity::Working);
+    }
+
+    #[test]
+    fn kiro_quiet_with_no_prompt_is_idle() {
+        let (now, ago) = clock();
+        let s = shared(ago(5), ago(5), None, None); // quiet 5s, never prompted
+        assert_eq!(AgentRegistry::classify(AgentBackendKind::Kiro, &s, now), AgentActivity::Idle);
+    }
+
+    #[test]
+    fn kiro_quiet_on_current_prompt_needs_attention() {
+        // The approval prompt was the last thing emitted (attn == any), quiet since.
+        let (now, ago) = clock();
+        let s = shared(ago(5), ago(5), Some(ago(5)), None);
+        assert_eq!(AgentRegistry::classify(AgentBackendKind::Kiro, &s, now), AgentActivity::NeedsAttention);
+    }
+
+    #[test]
+    fn kiro_resumed_work_overrides_recent_prompt() {
+        // User approved → spinner streaming now; prompt matched 3s ago. Must NOT
+        // be stuck amber — byte activity wins.
+        let (now, ago) = clock();
+        let s = shared(ago(0), ago(0), Some(ago(3)), None);
+        assert_eq!(AgentRegistry::classify(AgentBackendKind::Kiro, &s, now), AgentActivity::Working);
+    }
+
+    #[test]
+    fn kiro_idle_after_a_turn_that_began_with_a_prompt() {
+        // Regression: approval shown 30s ago, work output flowed past it (5s ago),
+        // now quiet → Idle, NOT stuck NeedsAttention.
+        let (now, ago) = clock();
+        let s = shared(ago(5), ago(5), Some(ago(30)), None);
+        assert_eq!(AgentRegistry::classify(AgentBackendKind::Kiro, &s, now), AgentActivity::Idle);
+    }
+
     #[test]
     fn attention_patterns_match_known_confirmations_for_kiro() {
         // Generic TUI prompts ride along on Kiro's pattern list.
@@ -728,11 +851,62 @@ mod tests {
     }
 
     #[test]
-    fn idle_patterns_match_kiro_repl_prompt() {
-        assert!(has_idle_kiro(b"ask a question or describe a task"));
-        // Leading ANSI escape (clear-line) shouldn't break the scan — the
-        // plain-text portion of the chunk still contains the phrase.
-        assert!(has_idle_kiro(b"\x1b[2K\rask a question or describe a task"));
+    fn kiro_idle_is_not_pattern_matched() {
+        // Kiro has no reliable idle substring; idle is detected by output going
+        // quiet (see `classify`), not by text. The old REPL phrase must NOT be
+        // in the idle list — a stale match there would pin Idle for the match's
+        // lifetime even after work resumed.
+        assert!(!has_idle_kiro(b"ask a question or describe a task"));
+    }
+
+    #[test]
+    fn scan_chunk_matches_phrase_with_interleaved_escapes() {
+        // The reason raw-byte matching failed for Kiro: TUIs color words
+        // individually, so escape sequences land *between* the words of a
+        // phrase. scan_chunk de-escapes first, so the phrase reassembles.
+        let p = AgentPatterns::defaults();
+        let mut tail = String::new();
+        let chunk =
+            b"\x1b[1m\x1b[38;5;208mrequires\x1b[0m \x1b[2mapproval\x1b[0m to run";
+        let (att, _idle) = scan_chunk(&p, AgentBackendKind::Kiro, &mut tail, chunk);
+        assert!(att, "attention phrase split by color codes should match");
+        // Sanity: the same bytes do NOT match without de-escaping, which is
+        // exactly the bug this fixes.
+        assert!(!has_attention_kiro(chunk));
+    }
+
+    #[test]
+    fn scan_chunk_matches_phrase_split_across_reads() {
+        // A single screen draw can straddle two read() calls; the rolling
+        // window stitches the halves back together. (Uses an attention phrase
+        // since Kiro no longer has an idle pattern.)
+        let p = AgentPatterns::defaults();
+        let mut tail = String::new();
+        let (a1, _i1) = scan_chunk(
+            &p,
+            AgentBackendKind::Kiro,
+            &mut tail,
+            b"\x1b[2K\rfile write requires ap",
+        );
+        assert!(!a1, "first half alone shouldn't match");
+        let (a2, _i2) =
+            scan_chunk(&p, AgentBackendKind::Kiro, &mut tail, b"proval to run\r\n");
+        assert!(a2, "phrase completed on the second read should match");
+    }
+
+    #[test]
+    fn scan_chunk_window_evicts_stale_text() {
+        // Once a screen of new output has gone by, a long-gone prompt scrolls
+        // out of the window and stops re-matching.
+        let p = AgentPatterns::defaults();
+        let mut tail = String::new();
+        scan_chunk(&p, AgentBackendKind::Kiro, &mut tail, b"requires approval");
+        // One full window of unrelated output trims the phrase out of `tail`.
+        let filler = vec![b'x'; SCAN_WINDOW + 64];
+        scan_chunk(&p, AgentBackendKind::Kiro, &mut tail, &filler);
+        let (att, _idle) =
+            scan_chunk(&p, AgentBackendKind::Kiro, &mut tail, b"more output\n");
+        assert!(!att, "stale phrase should have scrolled out of the window");
     }
 
     #[test]
