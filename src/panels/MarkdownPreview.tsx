@@ -6,7 +6,7 @@
 /// Tailwind's `prose` utilities (dark variant); code-block colors come
 /// straight from Shiki so the `prose` defaults don't fight the highlight.
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Highlighter } from "shiki";
@@ -159,6 +159,7 @@ function codeComponents(highlighter: Highlighter | null) {
 function MermaidDiagram({ chart }: { chart: string }) {
   const [svg, setSvg] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -189,10 +190,141 @@ function MermaidDiagram({ chart }: { chart: string }) {
   }
   if (!svg) return null;
   return (
-    <div
-      className="mermaid-diagram my-3 flex justify-center overflow-x-auto rounded border border-neutral-800 bg-neutral-900/40 p-3 [&_svg]:max-w-full"
-      dangerouslySetInnerHTML={{ __html: svg }}
-    />
+    <>
+      {/* Inline preview is fit-to-width; click to read a complex diagram
+          full-size in the pan/zoom lightbox. */}
+      <button
+        type="button"
+        title="Click to zoom"
+        onClick={() => setExpanded(true)}
+        className="mermaid-diagram my-3 flex w-full cursor-zoom-in justify-center overflow-x-auto rounded border border-neutral-800 bg-neutral-900/40 p-3 transition-colors hover:border-neutral-700 [&_svg]:max-w-full"
+        dangerouslySetInnerHTML={{ __html: svg }}
+      />
+      {expanded && <MermaidLightbox svg={svg} onClose={() => setExpanded(false)} />}
+    </>
+  );
+}
+
+const MIN_SCALE = 0.1;
+const MAX_SCALE = 16;
+
+type View = { scale: number; tx: number; ty: number };
+
+const clampScale = (s: number) => Math.min(MAX_SCALE, Math.max(MIN_SCALE, s));
+
+/// Full-window overlay that renders the diagram SVG with wheel-to-zoom
+/// (anchored at the cursor) and drag-to-pan. Esc or a backdrop click
+/// closes it. No external pan/zoom dependency: a single CSS `transform`
+/// on the content wrapper does the work. The whole transform lives in one
+/// `View` so wheel updates stay a single pure updater (nested setState
+/// updaters double-apply under StrictMode and broke cursor anchoring).
+function MermaidLightbox({ svg, onClose }: { svg: string; onClose: () => void }) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
+  const [view, setView] = useState<View | null>(null);
+  const drag = useRef<{ x: number; y: number; tx: number; ty: number } | null>(null);
+
+  // Fit-to-viewport on open: measure the SVG at its natural size (the
+  // content wrapper has no transform until `view` is set) and scale it to
+  // fill ~90% of the overlay, centered.
+  const fit = useCallback((): View => {
+    const c = containerRef.current?.getBoundingClientRect();
+    const el = contentRef.current?.getBoundingClientRect();
+    if (!c || !el || el.width === 0 || el.height === 0) {
+      return { scale: 1, tx: 0, ty: 0 };
+    }
+    const scale = clampScale(Math.min(c.width / el.width, c.height / el.height) * 0.9);
+    return {
+      scale,
+      tx: (c.width - el.width * scale) / 2,
+      ty: (c.height - el.height * scale) / 2,
+    };
+  }, []);
+
+  useLayoutEffect(() => {
+    setView(fit());
+  }, [fit, svg]);
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") onClose();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  // Zoom toward the cursor: keep the diagram point under the pointer fixed
+  // by solving the new translate from the old transform — all in one pure
+  // updater so a double-invoked updater yields the same result.
+  const onWheel = useCallback((e: React.WheelEvent) => {
+    e.preventDefault();
+    const rect = containerRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const cx = e.clientX - rect.left;
+    const cy = e.clientY - rect.top;
+    setView((v) => {
+      if (!v) return v;
+      const scale = clampScale(v.scale * Math.exp(-e.deltaY * 0.0015));
+      const ratio = scale / v.scale;
+      return {
+        scale,
+        tx: cx - (cx - v.tx) * ratio,
+        ty: cy - (cy - v.ty) * ratio,
+      };
+    });
+  }, []);
+
+  function onPointerDown(e: React.PointerEvent) {
+    if (!view) return;
+    drag.current = { x: e.clientX, y: e.clientY, tx: view.tx, ty: view.ty };
+    e.currentTarget.setPointerCapture(e.pointerId);
+  }
+  function onPointerMove(e: React.PointerEvent) {
+    const d = drag.current;
+    if (!d) return;
+    const dx = e.clientX - d.x;
+    const dy = e.clientY - d.y;
+    setView((v) => (v ? { ...v, tx: d.tx + dx, ty: d.ty + dy } : v));
+  }
+  function onPointerUp() {
+    drag.current = null;
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 bg-neutral-950" onMouseDown={onClose}>
+      <div
+        ref={containerRef}
+        className="absolute inset-0 cursor-grab touch-none overflow-hidden active:cursor-grabbing"
+        onMouseDown={(e) => e.stopPropagation()}
+        onWheel={onWheel}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerCancel={onPointerUp}
+        onDoubleClick={() => setView(fit())}
+      >
+        <div
+          ref={contentRef}
+          className="absolute left-0 top-0 origin-top-left [&_svg]:h-auto [&_svg]:max-w-none"
+          style={
+            view
+              ? { transform: `translate(${view.tx}px, ${view.ty}px) scale(${view.scale})` }
+              : { visibility: "hidden" }
+          }
+          dangerouslySetInnerHTML={{ __html: svg }}
+        />
+      </div>
+      <div className="pointer-events-none absolute bottom-3 left-1/2 -translate-x-1/2 rounded bg-neutral-900/80 px-2 py-1 text-[11px] text-neutral-400">
+        scroll to zoom · drag to pan · double-click to fit · Esc to close
+      </div>
+      <button
+        type="button"
+        onClick={onClose}
+        className="absolute right-3 top-3 rounded border border-neutral-700 bg-neutral-900/80 px-2 py-1 text-xs text-neutral-300 hover:bg-neutral-800"
+      >
+        Close
+      </button>
+    </div>
   );
 }
 
