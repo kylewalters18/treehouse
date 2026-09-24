@@ -1,5 +1,13 @@
 import { useEffect, useRef, useState } from "react";
-import { AlertTriangle, Check, ChevronDown, ChevronRight, Loader2, X } from "lucide-react";
+import {
+  AlertTriangle,
+  Check,
+  ChevronDown,
+  ChevronRight,
+  Loader2,
+  Plus,
+  X,
+} from "lucide-react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { useWorkspaceStore } from "@/stores/workspace";
 import { useWorktreesStore } from "@/stores/worktrees";
@@ -25,6 +33,14 @@ import type {
 } from "@/ipc/types";
 import { cn } from "@/lib/cn";
 import { runWorktreeSetup } from "@/lib/worktree-setup";
+import {
+  inboxWorktrees,
+  nextAcks,
+  splitActive,
+  statusCounts,
+  type Acks,
+  type StatusCounts,
+} from "./worktree-sidebar-model";
 
 export function WorktreeSidebar() {
   const workspaces = useWorkspaceStore((s) => s.workspaces);
@@ -66,13 +82,15 @@ export function WorktreeSidebar() {
   const [activity, setActivity] = useState<
     Record<WorktreeId, WorktreeActivity>
   >({});
-  // Per-repo collapse state. Collapsed by default so a stack of open
-  // repos doesn't drown out the flat Agents band — each repo's body
-  // (create form, main clone, Changes, Inactive) is one click away
-  // when you need it. The repo owning the *selected* worktree
-  // auto-expands so context is preserved when you click a row inside a
-  // collapsed section (e.g. via the Agents band).
-  const [expandedRepos, setExpandedRepos] = useState<Set<string>>(new Set());
+  // Per-repo collapse state. Expanded by default; the header's status
+  // tally keeps a collapsed repo legible. The repo owning the
+  // *selected* worktree auto-expands so a click from the "Needs you"
+  // inbox lands on a visible row.
+  const [collapsedRepos, setCollapsedRepos] = useState<Set<string>>(new Set());
+  // Repos whose "N inactive" pile is expanded. Collapsed by default.
+  const [openInactive, setOpenInactive] = useState<Set<string>>(new Set());
+  // Idle agents the user has already looked at — see `nextAcks`.
+  const [acks, setAcks] = useState<Acks>({});
 
   // Stable key so the per-workspace effect re-runs precisely when the
   // *set* of open workspaces changes (not on every store update).
@@ -137,27 +155,44 @@ export function WorktreeSidebar() {
 
   const showRepoChips = workspaces.length > 1;
 
-  // Auto-expand the repo owning the currently-selected worktree.
-  // Without this, clicking a row in the cross-repo Agents band would
-  // collapse the user's view of that repo's full state — surprising,
-  // because the user is now actively working in it.
+  useEffect(() => {
+    setAcks((prev) => nextAcks(prev, activity, selectedId));
+  }, [activity, selectedId]);
+
+  // Reveal the selected worktree: expand its repo, and its inactive
+  // pile if that's where it lives.
   useEffect(() => {
     if (!selectedId) return;
     const wt = worktrees.find((w) => w.id === selectedId);
     if (!wt) return;
-    setExpandedRepos((prev) => {
+    setCollapsedRepos((prev) => {
+      if (!prev.has(wt.workspaceId)) return prev;
+      const next = new Set(prev);
+      next.delete(wt.workspaceId);
+      return next;
+    });
+    if (wt.isMainClone) return;
+    const { inactive } = splitActive([wt], activity);
+    if (inactive.length === 0) return;
+    setOpenInactive((prev) => {
       if (prev.has(wt.workspaceId)) return prev;
       const next = new Set(prev);
       next.add(wt.workspaceId);
       return next;
     });
+    // `activity` deliberately omitted: re-running on every 1.5s poll
+    // would re-open a pile the user just collapsed.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedId, worktrees]);
 
-  function toggleRepoExpanded(workspaceId: string) {
-    setExpandedRepos((prev) => {
+  function toggleIn(
+    setter: React.Dispatch<React.SetStateAction<Set<string>>>,
+    key: string,
+  ) {
+    setter((prev) => {
       const next = new Set(prev);
-      if (next.has(workspaceId)) next.delete(workspaceId);
-      else next.add(workspaceId);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
       return next;
     });
   }
@@ -333,23 +368,18 @@ export function WorktreeSidebar() {
     }
   }
 
+  const allRegular = worktrees.filter((w) => !w.isMainClone);
+  const inbox = inboxWorktrees(allRegular, activity, acks);
+  const repoName = (w: Worktree) =>
+    basenameOf(workspaces.find((ws) => ws.id === w.workspaceId)?.root ?? "");
+
   if (collapsed) {
-    // Collapsed rail: agents flat at top, then each open repo's dots
-    // (◆ main + status dots) separated by dividers. Tooltip carries the
-    // repo name when more than one is open.
-    const allRegular = worktrees.filter((w) => !w.isMainClone);
-    const flatAgents = allRegular.filter(
-      (w) => activity[w.id] !== undefined && activity[w.id].activity !== "inactive",
-    );
+    // Collapsed rail mirrors the expanded layout: inbox dots on top,
+    // then each repo's ◆ main + worktree dots in stable order.
     const renderDot = (w: Worktree) => {
       const a = activity[w.id];
-      const repoName = showRepoChips
-        ? `${basenameOf(
-            workspaces.find((ws) => ws.id === w.workspaceId)?.root ?? "",
-          )} · `
-        : "";
       const tooltip =
-        repoName +
+        (showRepoChips ? `${repoName(w)} · ` : "") +
         w.branch +
         (a?.ahead ? `  ↑${a.ahead}` : "") +
         (a?.behind ? `  ↓${a.behind}` : "");
@@ -373,9 +403,9 @@ export function WorktreeSidebar() {
         >
           ▶
         </button>
-        {flatAgents.length > 0 && (
+        {inbox.length > 0 && (
           <>
-            {flatAgents.map(renderDot)}
+            {inbox.map(renderDot)}
             <RailDivider />
           </>
         )}
@@ -385,8 +415,10 @@ export function WorktreeSidebar() {
           );
           const mainClone =
             repoWorktrees.find((w) => w.isMainClone) ?? null;
-          const regular = repoWorktrees.filter((w) => !w.isMainClone);
-          const { changes, dormant } = groupWorktrees(regular, activity);
+          const { active, inactive } = splitActive(
+            repoWorktrees.filter((w) => !w.isMainClone),
+            activity,
+          );
           return (
             <div key={ws.id} className="flex flex-col items-center gap-1">
               {wsIdx > 0 && <RailDivider />}
@@ -400,8 +432,8 @@ export function WorktreeSidebar() {
                   ◆
                 </RailButton>
               )}
-              {changes.map(renderDot)}
-              {dormant.map(renderDot)}
+              {active.map(renderDot)}
+              {inactive.map(renderDot)}
             </div>
           );
         })}
@@ -409,72 +441,60 @@ export function WorktreeSidebar() {
     );
   }
 
-  // Multi-repo render: flat Agents band → per-workspace sections →
-  // "+ Open another repo" footer.
-  const allRegular = worktrees.filter((w) => !w.isMainClone);
-  const flatAgents = allRegular.filter(
-    (w) => activity[w.id] !== undefined && activity[w.id].activity !== "inactive",
-  );
-  const totalWorktrees = allRegular.length;
-
-  const renderRow = (
-    w: Worktree,
-    dim: boolean,
-    showChip: boolean,
-  ) => (
-    <li
-      key={w.id}
-      className={cn(
-        "group relative flex cursor-pointer items-start px-3 py-2 hover:bg-neutral-900/50",
-        selectedId === w.id && "bg-neutral-900",
-      )}
-      onClick={() => selectWorktree(w.id)}
-    >
-      {/* Dim the row CONTENT but not the row itself — `opacity` <1
-          creates a stacking context, and applying it to the <li>
-          traps RowMenu's dropdown inside that context: sibling
-          rows below paint over the popup and swallow its clicks. */}
-      <div
+  const renderRow = (w: Worktree, opts: { dim?: boolean; chip?: boolean }) => {
+    const a = activity[w.id];
+    return (
+      <li
+        key={w.id}
         className={cn(
-          "flex min-w-0 flex-1 items-start gap-2",
-          dim && "opacity-60",
+          "group relative flex cursor-pointer items-center py-1 pl-3 pr-1 hover:bg-neutral-900/50",
+          selectedId === w.id && "bg-neutral-900",
         )}
+        onClick={() => selectWorktree(w.id)}
+        title={w.path}
       >
-        <StatusDot
-          activity={activity[w.id]?.activity ?? "inactive"}
-          className="mt-1.5"
-        />
-        <div className="min-w-0 flex-1">
-          <div className="flex items-baseline gap-2">
-            {showChip && (
-              <RepoChip
-                workspace={workspaces.find((ws) => ws.id === w.workspaceId)}
-              />
-            )}
-            <span className="truncate font-mono text-xs text-neutral-200">
-              {w.branch}
+        {/* Dim the row CONTENT but not the row itself — `opacity` <1
+            creates a stacking context, and applying it to the <li>
+            traps RowMenu's dropdown inside that context: sibling
+            rows below paint over the popup and swallow its clicks. */}
+        <div
+          className={cn(
+            "flex min-w-0 flex-1 items-center gap-2",
+            opts.dim && "opacity-60",
+          )}
+        >
+          <StatusDot activity={a?.activity ?? "inactive"} />
+          {opts.chip && (
+            <span className="shrink-0 font-mono text-[11px] text-neutral-500">
+              {repoName(w)} /
             </span>
-            <AheadBehind
-              ahead={activity[w.id]?.ahead ?? 0}
-              behind={activity[w.id]?.behind ?? 0}
-            />
-          </div>
-          <div
-            className="truncate font-mono text-[11px] text-neutral-500"
-            title={w.path}
-          >
-            {shortenPath(w.path)}
-          </div>
+          )}
+          <span className="min-w-0 flex-1 truncate font-mono text-xs text-neutral-200">
+            {w.branch}
+          </span>
+          {/* Badges give way to the ⋯ menu on hover (and while it's
+              open) so the one-line row never has to fit both. */}
+          <span className="flex shrink-0 items-center gap-2 group-hover:hidden group-has-[[data-open]]:hidden">
+            {(a?.agentCount ?? 0) > 1 && (
+              <span
+                className="font-mono text-[10px] text-neutral-500"
+                title={`${a?.agentCount} agents`}
+              >
+                ×{a?.agentCount}
+              </span>
+            )}
+            <AheadBehind ahead={a?.ahead ?? 0} behind={a?.behind ?? 0} />
+          </span>
         </div>
-      </div>
-      <RowMenu
-        behind={activity[w.id]?.behind ?? 0}
-        onSync={() => setSyncTarget(w)}
-        onMerge={() => setMergeTarget(w)}
-        onRemove={() => onRemove(w)}
-      />
-    </li>
-  );
+        <RowMenu
+          behind={a?.behind ?? 0}
+          onSync={() => setSyncTarget(w)}
+          onMerge={() => setMergeTarget(w)}
+          onRemove={() => onRemove(w)}
+        />
+      </li>
+    );
+  };
 
   // Default branch for the merge/sync dialogs — derived from the
   // worktree's own workspace so a worktree in repo B doesn't end up
@@ -492,7 +512,7 @@ export function WorktreeSidebar() {
           {showRepoChips ? "Repos" : "Worktrees"}
         </span>
         <div className="flex items-center gap-2">
-          <span className="text-[11px] text-neutral-600">{totalWorktrees}</span>
+          <span className="text-[11px] text-neutral-600">{allRegular.length}</span>
           <button
             onClick={toggleCollapsed}
             title="Collapse sidebar (⌘B)"
@@ -504,13 +524,11 @@ export function WorktreeSidebar() {
       </div>
 
       <div className="flex-1 overflow-y-auto">
-        {flatAgents.length > 0 && (
-          <>
-            <SectionHeader label="Agents" count={flatAgents.length} />
-            <ul className="divide-y divide-neutral-900 border-b border-neutral-900">
-              {flatAgents.map((w) => renderRow(w, false, showRepoChips))}
-            </ul>
-          </>
+        {inbox.length > 0 && (
+          <div className="border-b border-neutral-800 bg-amber-400/[0.03]">
+            <SectionHeader label="Needs you" count={inbox.length} />
+            <ul>{inbox.map((w) => renderRow(w, { chip: showRepoChips }))}</ul>
+          </div>
         )}
 
         {workspaces.map((ws) => {
@@ -520,29 +538,17 @@ export function WorktreeSidebar() {
           const mainClone =
             repoWorktrees.find((w) => w.isMainClone) ?? null;
           const regular = repoWorktrees.filter((w) => !w.isMainClone);
-          const nonAgent = regular.filter(
-            (w) =>
-              activity[w.id] === undefined ||
-              activity[w.id].activity === "inactive",
-          );
-          const { changes, dormant } = groupWorktrees(nonAgent, activity);
+          const { active, inactive } = splitActive(regular, activity);
           const liveName = creatingNames[ws.id];
           const liveStep = creatingSteps[ws.id];
-          const expanded = expandedRepos.has(ws.id);
-          // Header count excludes the main clone (its own row when
-          // expanded). When the user has agents in this repo, those
-          // already surface in the cross-repo Agents band above, but
-          // they're still part of the repo's worktrees for context —
-          // include them in the count.
-          const repoCount = regular.length;
+          const expanded = !collapsedRepos.has(ws.id);
+          const inactiveOpen = openInactive.has(ws.id);
           return (
-            <div
-              key={ws.id}
-              className="border-b border-neutral-900"
-            >
-              <button
-                onClick={() => toggleRepoExpanded(ws.id)}
-                className="flex w-full items-center justify-between gap-2 bg-neutral-950 px-2 py-1.5 text-left hover:bg-neutral-900/60"
+            <div key={ws.id} className="border-b border-neutral-900">
+              <div
+                role="button"
+                onClick={() => toggleIn(setCollapsedRepos, ws.id)}
+                className="group/repo flex w-full cursor-pointer items-center justify-between gap-2 bg-neutral-950 px-2 py-1.5 hover:bg-neutral-900/60"
                 title={ws.root}
               >
                 <span className="flex min-w-0 flex-1 items-center gap-1">
@@ -554,102 +560,95 @@ export function WorktreeSidebar() {
                   <span className="truncate font-mono text-[11px] text-neutral-300">
                     {basenameOf(ws.root)}
                   </span>
-                  <span className="shrink-0 text-[10px] text-neutral-600">
-                    {repoCount}
-                  </span>
+                  <RepoStatus counts={statusCounts(regular, activity)} />
                 </span>
-                <span
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    void onCloseRepo(ws);
-                  }}
-                  title={`Close ${basenameOf(ws.root)} (other repos stay open)`}
-                  className="rounded p-0.5 text-neutral-600 hover:bg-neutral-800 hover:text-neutral-200"
-                >
-                  <X size={12} />
+                <span className="flex shrink-0 items-center">
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      openCreateDialog(ws.id);
+                    }}
+                    disabled={creating || !!liveName}
+                    title="New worktree (⌘⇧N)"
+                    className="rounded p-0.5 text-neutral-500 hover:bg-neutral-800 hover:text-neutral-200 disabled:opacity-40"
+                  >
+                    {liveName ? <Spinner /> : <Plus size={13} />}
+                  </button>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      void onCloseRepo(ws);
+                    }}
+                    title={`Close ${basenameOf(ws.root)} (other repos stay open)`}
+                    className="rounded p-0.5 text-neutral-600 opacity-0 hover:bg-neutral-800 hover:text-neutral-200 group-hover/repo:opacity-100"
+                  >
+                    <X size={12} />
+                  </button>
                 </span>
-              </button>
-
-              {!expanded ? null : <>
-              <div className="px-3 py-2">
-                <button
-                  onClick={() => openCreateDialog(ws.id)}
-                  disabled={creating || !!liveName}
-                  className="flex w-full items-center justify-center gap-1.5 rounded border border-neutral-800 bg-neutral-950 px-2 py-1 text-xs text-neutral-300 hover:border-neutral-700 hover:bg-neutral-900 disabled:opacity-50"
-                >
-                  {liveName ? <Spinner /> : "+"} New worktree
-                </button>
               </div>
 
-              {liveName && (
-                <div className="flex items-center gap-2 px-3 pb-2 text-[11px] text-neutral-500">
-                  <Spinner />
-                  <span className="min-w-0 flex-1 truncate">
-                    <span className="font-mono text-neutral-300">
-                      {liveName}
-                    </span>
-                    <span className="mx-1.5 text-neutral-700">·</span>
-                    {liveStep ?? "Starting"}…
-                  </span>
-                </div>
-              )}
-
-              {mainClone && (
-                <button
-                  onClick={() => selectWorktree(mainClone.id)}
-                  className={cn(
-                    "flex w-full items-center justify-between gap-2 px-3 py-2 text-left hover:bg-neutral-900/50",
-                    selectedId === mainClone.id && "bg-neutral-900",
-                  )}
-                  title={mainClone.path}
-                >
-                  <div className="flex min-w-0 flex-1 items-start gap-2">
-                    <span className="mt-0.5 shrink-0 text-[11px] text-blue-400">
-                      ◆
-                    </span>
-                    <div className="min-w-0 flex-1">
-                      <div className="truncate font-mono text-xs text-neutral-100">
-                        {mainClone.branch}
-                      </div>
-                      <div className="truncate font-mono text-[11px] text-neutral-500">
-                        {shortenPath(mainClone.path)}
-                      </div>
-                    </div>
-                  </div>
-                </button>
-              )}
-
-              {regular.length === 0 && !liveName ? (
-                <div className="m-3 rounded border border-dashed border-neutral-800 p-3 text-center text-[11px] text-neutral-600">
-                  No worktrees yet. Create one above.
-                </div>
-              ) : (
+              {expanded && (
                 <>
-                  {changes.length > 0 && (
-                    <>
-                      <SectionHeader
-                        label="Changes"
-                        count={changes.length}
-                      />
-                      <ul className="divide-y divide-neutral-900">
-                        {changes.map((w) => renderRow(w, false, false))}
-                      </ul>
-                    </>
+                  {liveName && (
+                    <div className="flex items-center gap-2 px-3 py-1 text-[11px] text-neutral-500">
+                      <Spinner />
+                      <span className="min-w-0 flex-1 truncate">
+                        <span className="font-mono text-neutral-300">
+                          {liveName}
+                        </span>
+                        <span className="mx-1.5 text-neutral-700">·</span>
+                        {liveStep ?? "Starting"}…
+                      </span>
+                    </div>
                   )}
-                  {dormant.length > 0 && (
+
+                  <ul>
+                    {mainClone && (
+                      <li
+                        onClick={() => selectWorktree(mainClone.id)}
+                        className={cn(
+                          "flex cursor-pointer items-center gap-2 py-1 pl-3 pr-2 hover:bg-neutral-900/50",
+                          selectedId === mainClone.id && "bg-neutral-900",
+                        )}
+                        title={mainClone.path}
+                      >
+                        <span className="inline-flex h-3 w-3 shrink-0 items-center justify-center text-[11px] text-blue-400">
+                          ◆
+                        </span>
+                        <span className="truncate font-mono text-xs text-neutral-100">
+                          {mainClone.branch}
+                        </span>
+                      </li>
+                    )}
+                    {active.map((w) => renderRow(w, {}))}
+                  </ul>
+
+                  {regular.length === 0 && !liveName && (
+                    <div className="px-3 py-1.5 text-[11px] text-neutral-600">
+                      No worktrees yet — <span className="text-neutral-400">+</span> to create one.
+                    </div>
+                  )}
+
+                  {inactive.length > 0 && (
                     <>
-                      <SectionHeader
-                        label="Inactive"
-                        count={dormant.length}
-                      />
-                      <ul className="divide-y divide-neutral-900">
-                        {dormant.map((w) => renderRow(w, true, false))}
-                      </ul>
+                      <button
+                        onClick={() => toggleIn(setOpenInactive, ws.id)}
+                        className="flex w-full items-center gap-1 py-1 pl-3 text-left text-[11px] text-neutral-600 hover:text-neutral-400"
+                      >
+                        {inactiveOpen ? (
+                          <ChevronDown size={11} />
+                        ) : (
+                          <ChevronRight size={11} />
+                        )}
+                        {inactive.length} inactive
+                      </button>
+                      {inactiveOpen && (
+                        <ul>{inactive.map((w) => renderRow(w, { dim: true }))}</ul>
+                      )}
                     </>
                   )}
                 </>
               )}
-              </>}
             </div>
           );
         })}
@@ -702,20 +701,6 @@ export function WorktreeSidebar() {
         />
       )}
     </div>
-  );
-}
-
-/// Small tag chip next to a branch row showing which repo it belongs
-/// to. Only rendered when more than one workspace is open.
-function RepoChip({ workspace }: { workspace: Workspace | undefined }) {
-  if (!workspace) return null;
-  return (
-    <span
-      className="rounded bg-neutral-800/80 px-1 font-mono text-[10px] text-neutral-400"
-      title={workspace.root}
-    >
-      {basenameOf(workspace.root)}
-    </span>
   );
 }
 
@@ -1092,17 +1077,21 @@ function RowMenu({
   }
 
   return (
-    <div ref={ref} className="absolute right-2 top-1.5">
+    <div
+      ref={ref}
+      data-open={open || undefined}
+      className="relative shrink-0"
+    >
       <button
         onClick={(e) => {
           e.stopPropagation();
           setOpen((v) => !v);
         }}
         className={cn(
-          "rounded px-1.5 py-0.5 text-xs leading-none text-neutral-400 transition hover:bg-neutral-800 hover:text-neutral-200",
+          "rounded px-1.5 py-0.5 text-xs leading-none text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200",
           open
-            ? "bg-neutral-800 text-neutral-100 opacity-100"
-            : "opacity-0 group-hover:opacity-100",
+            ? "block bg-neutral-800 text-neutral-100"
+            : "hidden group-hover:block",
         )}
         title="Actions"
       >
@@ -1150,51 +1139,33 @@ function MenuItem({
   );
 }
 
-
-function shortenPath(p: string): string {
-  const parts = p.split("/");
-  return parts.slice(-2).join("/");
-}
-
-/// Split worktrees into three buckets for sidebar grouping:
-///  - withAgent: an agent session is attached (activity is working/idle/
-///    needsAttention).
-///  - changes: no agent session, but the branch is ahead of default or the
-///    workdir is dirty. "Work without an agent watching it."
-///  - dormant: no agent, no pending work. The truly stale pile.
-/// Order within each group follows the sorted input (WorktreeId / creation
-/// order — see `worktree::manager::list_for_workspace`).
-function groupWorktrees(
-  worktrees: Worktree[],
-  activity: Record<WorktreeId, WorktreeActivity>,
-): { withAgent: Worktree[]; changes: Worktree[]; dormant: Worktree[] } {
-  const withAgent: Worktree[] = [];
-  const changes: Worktree[] = [];
-  const dormant: Worktree[] = [];
-  for (const w of worktrees) {
-    const a = activity[w.id];
-    const act: AgentActivity = a?.activity ?? "inactive";
-    if (act !== "inactive") {
-      withAgent.push(w);
-    } else if (
-      !a?.merged &&
-      ((a?.ahead ?? 0) > 0 || (a?.dirty ?? false))
-    ) {
-      // `merged: true` means the branch's work is already on default (e.g.
-      // via squash-merge) — demote it to dormant regardless of `ahead`.
-      changes.push(w);
-    } else {
-      dormant.push(w);
-    }
-  }
-  return { withAgent, changes, dormant };
-}
-
 function SectionHeader({ label, count }: { label: string; count: number }) {
   return (
     <div className="border-t border-neutral-800 px-3 py-1.5 text-[11px] uppercase tracking-wider text-neutral-600">
       {label} ({count})
     </div>
+  );
+}
+
+/// Compact per-repo agent tally for the section header: ⚠ blocked,
+/// ✓ finished, ⟳ working. Zero counts are omitted.
+function RepoStatus({ counts }: { counts: StatusCounts }) {
+  const parts: [number, React.ReactNode, string][] = [
+    [counts.needsAttention, <AlertTriangle size={10} className="text-amber-400" />, "needs attention"],
+    [counts.idle, <Check size={10} className="text-emerald-400" />, "idle"],
+    [counts.working, <Loader2 size={10} className="text-sky-400" />, "working"],
+  ];
+  const shown = parts.filter(([n]) => n > 0);
+  if (shown.length === 0) return null;
+  return (
+    <span className="ml-1 flex shrink-0 items-center gap-1.5 font-mono text-[10px] text-neutral-500">
+      {shown.map(([n, icon, label]) => (
+        <span key={label} className="flex items-center gap-0.5" title={`${n} ${label}`}>
+          {icon}
+          {n}
+        </span>
+      ))}
+    </span>
   );
 }
 

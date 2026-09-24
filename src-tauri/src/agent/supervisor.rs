@@ -147,6 +147,20 @@ impl AgentRegistry {
             .collect()
     }
 
+    /// Number of live (running or starting) agent sessions in a worktree.
+    pub fn running_count_for_worktree(&self, worktree_id: WorktreeId) -> u32 {
+        self.inner
+            .iter()
+            .filter(|e| {
+                e.value().session.worktree_id == worktree_id
+                    && matches!(
+                        e.value().shared.lock().status,
+                        AgentStatus::Running | AgentStatus::Starting
+                    )
+            })
+            .count() as u32
+    }
+
     /// Activity classification for a worktree, aggregated across **all** of
     /// its agents. Returns the most-alerting state: NeedsAttention > Working
     /// > Idle > Inactive. No running agents → Inactive.

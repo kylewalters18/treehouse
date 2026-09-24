@@ -841,6 +841,7 @@ pub async fn list_agent_activity(
         out.push(WorktreeActivity {
             worktree_id: w.id,
             activity: state.agents.activity_for_worktree(w.id),
+            agent_count: state.agents.running_count_for_worktree(w.id),
             ahead,
             behind,
             dirty,

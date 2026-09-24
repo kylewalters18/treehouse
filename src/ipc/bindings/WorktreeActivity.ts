@@ -4,6 +4,11 @@ import type { WorktreeId } from "./WorktreeId";
 
 export type WorktreeActivity = { worktreeId: WorktreeId, activity: AgentActivity, 
 /**
+ * Live agent sessions in the worktree. `activity` is the most
+ * alerting state across all of them.
+ */
+agentCount: number, 
+/**
  * Commits on the worktree's branch not on the workspace's default branch.
  */
 ahead: number, 
