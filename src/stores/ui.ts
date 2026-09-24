@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import type { AppFileKind } from "@/ipc/client";
 import type { AgentSessionId, WorkspaceId, WorktreeId } from "@/ipc/types";
+import type { ChangeGroup } from "./diffs";
 
 type UiState = {
   selectedWorktreeId: WorktreeId | null;
@@ -38,6 +39,9 @@ type UiState = {
   /// Which list the DiffPane sidebar shows: the changed-files list or
   /// the full worktree file tree. One at a time, not stacked.
   diffSidebarTab: "changes" | "files";
+  /// Collapsed state of the Uncommitted / Branch groups in the
+  /// Changes tab. App-wide, not per worktree.
+  collapsedChangeGroups: Record<ChangeGroup, boolean>;
   /// Monotonic one-shot intent for "launch a new agent". Agent tabs
   /// live in AgentPane-local state, so the Cmd+Shift+A global shortcut
   /// can't create one directly — it bumps this counter and the mounted
@@ -69,6 +73,7 @@ type UiState = {
   closeSystemFileViewer: () => void;
   setBottomPaneTab: (tab: "terminal" | "problems" | "review" | "ci") => void;
   setDiffSidebarTab: (tab: "changes" | "files") => void;
+  toggleChangeGroup: (group: ChangeGroup) => void;
   toggleProblemsTab: () => void;
   requestAgentLaunch: () => void;
   openNewWorktreeDialog: (workspaceId: WorkspaceId) => void;
@@ -87,6 +92,7 @@ export const useUiStore = create<UiState>((set) => ({
   systemFileViewer: null,
   bottomPaneTab: "terminal",
   diffSidebarTab: "changes",
+  collapsedChangeGroups: { branch: false, uncommitted: false },
   agentLaunchNonce: 0,
   newWorktreeWorkspace: null,
   selectWorktree(id) {
@@ -150,6 +156,14 @@ export const useUiStore = create<UiState>((set) => ({
   setDiffSidebarTab(tab) {
     set({ diffSidebarTab: tab });
   },
+  toggleChangeGroup(group) {
+    set((s) => ({
+      collapsedChangeGroups: {
+        ...s.collapsedChangeGroups,
+        [group]: !s.collapsedChangeGroups[group],
+      },
+    }));
+  },
   toggleProblemsTab() {
     set((s) => ({
       bottomPaneTab: s.bottomPaneTab === "problems" ? "terminal" : "problems",
@@ -176,6 +190,7 @@ export const useUiStore = create<UiState>((set) => ({
       systemFileViewer: null,
       bottomPaneTab: "terminal",
       diffSidebarTab: "changes",
+      collapsedChangeGroups: { branch: false, uncommitted: false },
       agentLaunchNonce: 0,
       newWorktreeWorkspace: null,
     });

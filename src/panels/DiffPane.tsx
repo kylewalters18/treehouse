@@ -5,13 +5,19 @@ import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { useUiStore } from "@/stores/ui";
 import { useWorktreesStore } from "@/stores/worktrees";
 import { useWorkspaceStore } from "@/stores/workspace";
-import { useDiffsStore } from "@/stores/diffs";
+import { useDiffsStore, type ChangeGroup } from "@/stores/diffs";
 import { BaseRefPicker } from "@/components/BaseRefPicker";
 import { MrBar } from "@/components/MrBar";
 import { useLspStore } from "@/stores/lsp";
 import { useNavigationStore } from "@/stores/navigation";
 import { onDiffUpdated, readBlobAtRef, readFile } from "@/ipc/client";
-import type { FileDiff, FileStatus, WorktreeId } from "@/ipc/types";
+import type {
+  DiffSet,
+  FileDiff,
+  FileStatus,
+  Workspace,
+  WorktreeId,
+} from "@/ipc/types";
 import { cn } from "@/lib/cn";
 import { CommentOverlay, EditorPane } from "./EditorPane";
 import { useEditorViewStateStore } from "@/stores/editor-view-state";
@@ -52,15 +58,20 @@ function DiffView({ worktreeId }: { worktreeId: WorktreeId }) {
     (s) => s.worktrees.find((w) => w.id === worktreeId)?.branch ?? null,
   );
   const diff = useDiffsStore((s) => s.byWorktree[worktreeId]);
+  const uncommitted = useDiffsStore(
+    (s) => s.uncommittedByWorktree[worktreeId],
+  );
   const error = useDiffsStore((s) => s.error[worktreeId]);
   const selectedFile = useDiffsStore((s) => s.selectedFile[worktreeId] ?? null);
+  const selectedGroup = useDiffsStore(
+    (s) => s.selectedGroup[worktreeId] ?? "branch",
+  );
   const view = useDiffsStore((s) => s.view[worktreeId] ?? "file");
-  const mode = useDiffsStore((s) => s.mode[worktreeId] ?? "branch");
   const fetchDiff = useDiffsStore((s) => s.fetch);
+  const fetchUncommitted = useDiffsStore((s) => s.fetchUncommitted);
   const setDiff = useDiffsStore((s) => s.set);
   const selectFile = useDiffsStore((s) => s.selectFile);
   const setView = useDiffsStore((s) => s.setView);
-  const setMode = useDiffsStore((s) => s.setMode);
   const [treeRefresh, setTreeRefresh] = useState(0);
   const showIgnored = useUiStore((s) => s.showIgnored);
   const setShowIgnored = useUiStore((s) => s.setShowIgnored);
@@ -70,36 +81,45 @@ function DiffView({ worktreeId }: { worktreeId: WorktreeId }) {
   useEffect(() => {
     fetchDiff(worktreeId);
     const p = onDiffUpdated(worktreeId, (d) => {
-      // The fs_watch payload is always branch-view; using it directly
-      // when the user has flipped to uncommitted mode would
-      // overwrite their view. Read the current mode at fire time and
-      // either accept the payload or re-fetch.
-      const mode =
-        useDiffsStore.getState().mode[worktreeId] ?? "branch";
-      if (mode === "branch") {
-        setDiff(worktreeId, d);
-      } else {
-        void fetchDiff(worktreeId);
-      }
+      // The fs_watch payload is the branch diff; the uncommitted group
+      // isn't pushed, so refetch it alongside (cheap — HEAD..workdir).
+      setDiff(worktreeId, d);
+      void fetchUncommitted(worktreeId).catch(() => {});
       setTreeRefresh((n) => n + 1);
     });
     return () => {
       p.then((fn) => fn()).catch(() => {});
     };
-  }, [worktreeId, fetchDiff, setDiff]);
+  }, [worktreeId, fetchDiff, fetchUncommitted, setDiff]);
 
   const statusByPath = useMemo<Map<string, FileStatus>>(() => {
     const m = new Map<string, FileStatus>();
-    if (diff) {
-      for (const f of diff.files) m.set(f.path, f.status);
-    }
+    for (const f of uncommitted?.files ?? []) m.set(f.path, f.status);
+    // Branch status wins: it's relative to what merge-back ships.
+    for (const f of diff?.files ?? []) m.set(f.path, f.status);
     return m;
-  }, [diff]);
+  }, [diff, uncommitted]);
 
-  const selected: FileDiff | null = useMemo(() => {
-    if (!diff || !selectedFile) return null;
-    return diff.files.find((f) => f.path === selectedFile) ?? null;
-  }, [diff, selectedFile]);
+  // Resolve the selected file against the group it was picked from,
+  // falling back to the other group (e.g. picked from the tree, or the
+  // file just got committed and left the Uncommitted group).
+  const resolved = useMemo<{
+    file: FileDiff;
+    set: DiffSet;
+    group: ChangeGroup;
+  } | null>(() => {
+    if (!selectedFile) return null;
+    const order: [ChangeGroup, DiffSet | undefined][] =
+      selectedGroup === "uncommitted"
+        ? [["uncommitted", uncommitted], ["branch", diff]]
+        : [["branch", diff], ["uncommitted", uncommitted]];
+    for (const [group, set] of order) {
+      const file = set?.files.find((f) => f.path === selectedFile);
+      if (set && file) return { file, set, group };
+    }
+    return null;
+  }, [diff, uncommitted, selectedFile, selectedGroup]);
+  const selected = resolved?.file ?? null;
 
   // Reconcile the active tab with what makes sense for the selected
   // file. Two directions:
@@ -115,7 +135,7 @@ function DiffView({ worktreeId }: { worktreeId: WorktreeId }) {
   //   freshly-selected Preview doesn't get clobbered.
   useEffect(() => {
     if (!selectedFile) return;
-    const inDiff = diff?.files.some((f) => f.path === selectedFile) ?? false;
+    const inDiff = selected != null;
     const fileTabUnusable =
       (selected?.binary ?? false) || selected?.status.kind === "deleted";
     if (view === "file" && fileTabUnusable && inDiff) {
@@ -123,7 +143,7 @@ function DiffView({ worktreeId }: { worktreeId: WorktreeId }) {
     } else if (view === "diff" && !inDiff) {
       setView(worktreeId, "file");
     }
-  }, [selectedFile, diff, selected, view, worktreeId, setView]);
+  }, [selectedFile, selected, view, worktreeId, setView]);
 
   if (error) {
     return (
@@ -189,95 +209,30 @@ function DiffView({ worktreeId }: { worktreeId: WorktreeId }) {
               )}
         </div>
         {sidebarTab === "changes" && (
-          <>
-          {/* Diff anchor toggle. Branch = merge-base..workdir (default,
-              full PR-style view). Uncommitted = HEAD..workdir, useful
-              for reviewing the agent's most recent batch before
-              committing. */}
-          <div className="flex shrink-0 border-b border-neutral-900 p-1.5">
-            <div className="flex w-full overflow-hidden rounded border border-neutral-800 text-[11px]">
-              <button
-                onClick={() => void setMode(worktreeId, "branch")}
-                className={cn(
-                  "flex-1 px-2 py-1 transition",
-                  mode === "branch"
-                    ? "bg-neutral-800 text-neutral-100"
-                    : "text-neutral-500 hover:bg-neutral-900",
-                )}
-                title="All changes since the branch forked from default"
-              >
-                Branch
-              </button>
-              <button
-                onClick={() => void setMode(worktreeId, "uncommitted")}
-                className={cn(
-                  "flex-1 border-l border-neutral-800 px-2 py-1 transition",
-                  mode === "uncommitted"
-                    ? "bg-neutral-800 text-neutral-100"
-                    : "text-neutral-500 hover:bg-neutral-900",
-                )}
-                title="Just HEAD..workdir — the next commit's worth of changes"
-              >
-                Uncommitted
-              </button>
-            </div>
-          </div>
-          {workspace && mode === "branch" && (
-            <div className="flex shrink-0 items-center overflow-visible border-b border-neutral-900 px-2 py-1 text-[11px]">
-              <BaseRefPicker workspace={workspace} />
-            </div>
-          )}
           <div className="min-h-0 flex-1 overflow-y-auto">
-            {!diff || diff.files.length === 0 ? (
-              <div className="px-3 py-2 text-[11px] text-neutral-600">
-                {diff
-                  ? `No changes against ${diff.baseRef.slice(0, 8)}`
-                  : "Computing diff…"}
-              </div>
-            ) : (
-              <ul>
-                {diff.files.map((f) => {
-                  const basename = f.path.split("/").pop() ?? f.path;
-                  const { Icon, color } = iconForFile(basename);
-                  const isSelected = selectedFile === f.path;
-                  return (
-                    <li key={f.path}>
-                      <button
-                        onClick={() => {
-                          selectFile(worktreeId, f.path);
-                          setView(worktreeId, "diff");
-                        }}
-                        className={cn(
-                          "flex w-full items-center justify-between gap-2 px-3 py-1 text-left text-xs transition-colors",
-                          isSelected
-                            ? "bg-[#3994BC26] text-neutral-100"
-                            : "hover:bg-white/[0.04]",
-                        )}
-                        title={f.path}
-                      >
-                        <span className="flex min-w-0 items-center gap-1.5">
-                          <Icon size={13} color={color} className="shrink-0" />
-                          <span
-                            className={cn(
-                              "truncate font-mono text-[11px]",
-                              statusFilenameColor(f.status.kind),
-                            )}
-                          >
-                            {f.path}
-                          </span>
-                        </span>
-                        <span className="shrink-0 font-mono text-[11px]">
-                          <span className="text-emerald-400">+{f.insertions}</span>{" "}
-                          <span className="text-rose-400">-{f.deletions}</span>
-                        </span>
-                      </button>
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
+            <ChangeGroupSection
+              group="uncommitted"
+              label="Uncommitted"
+              diff={uncommitted}
+              anchor={<span className="text-neutral-600">vs HEAD</span>}
+              selectedFile={resolved?.group === "uncommitted" ? selectedFile : null}
+              onSelect={(path) => {
+                selectFile(worktreeId, path, "uncommitted");
+                setView(worktreeId, "diff");
+              }}
+            />
+            <ChangeGroupSection
+              group="branch"
+              label="Branch"
+              diff={diff}
+              anchor={workspace && <BaseRefPicker workspace={workspace} />}
+              selectedFile={resolved?.group === "branch" ? selectedFile : null}
+              onSelect={(path) => {
+                selectFile(worktreeId, path, "branch");
+                setView(worktreeId, "diff");
+              }}
+            />
           </div>
-          </>
         )}
         {/* Kept mounted while hidden so the tree's expansion state
             survives flipping to Changes and back. */}
@@ -325,7 +280,17 @@ function DiffView({ worktreeId }: { worktreeId: WorktreeId }) {
             </TabButton>
           )}
           {selectedFile && (
-            <FilePathLabel worktreeId={worktreeId} path={selectedFile} />
+            <FilePathLabel
+              worktreeId={worktreeId}
+              path={selectedFile}
+              anchor={
+                view === "diff" && resolved
+                  ? resolved.group === "uncommitted"
+                    ? "HEAD"
+                    : baseRefLabel(workspace)
+                  : null
+              }
+            />
           )}
           <LspProgressIndicator worktreeId={worktreeId} />
           <FocusToggle />
@@ -339,11 +304,11 @@ function DiffView({ worktreeId }: { worktreeId: WorktreeId }) {
             <EditorPane worktreeId={worktreeId} path={selectedFile} />
           ) : view === "preview" && isMarkdownPath(selectedFile) ? (
             <MarkdownPreview worktreeId={worktreeId} path={selectedFile} />
-          ) : selected && diff ? (
+          ) : resolved ? (
             <DiffEditorView
               worktreeId={worktreeId}
-              baseRef={diff.baseRef}
-              file={selected}
+              baseRef={resolved.set.baseRef}
+              file={resolved.file}
             />
           ) : (
             <div className="flex h-full items-center justify-center text-xs text-neutral-600">
@@ -364,9 +329,12 @@ function DiffView({ worktreeId }: { worktreeId: WorktreeId }) {
 function FilePathLabel({
   worktreeId,
   path,
+  anchor,
 }: {
   worktreeId: WorktreeId;
   path: string;
+  /// Ref the Diff tab compares against, shown as "· vs <anchor>".
+  anchor: string | null;
 }) {
   const dirty = useIsEditorDirty(worktreeId, path);
   return (
@@ -380,6 +348,9 @@ function FilePathLabel({
         </span>
       )}
       <span className="truncate">{path}</span>
+      {anchor && (
+        <span className="ml-1.5 shrink-0 text-neutral-600">· vs {anchor}</span>
+      )}
     </span>
   );
 }
@@ -566,6 +537,100 @@ function NavButtons({ worktreeId }: { worktreeId: WorktreeId }) {
         </div>
       )}
     </div>
+  );
+}
+
+function baseRefLabel(workspace: Workspace | undefined): string {
+  if (!workspace) return "base";
+  return workspace.baseRefOverride ?? `origin/${workspace.defaultBranch}`;
+}
+
+/// One collapsible group in the Changes tab: a header with the count
+/// and what it compares against, then the changed-file rows.
+function ChangeGroupSection({
+  group,
+  label,
+  diff,
+  anchor,
+  selectedFile,
+  onSelect,
+}: {
+  group: ChangeGroup;
+  label: string;
+  diff: DiffSet | undefined;
+  anchor: React.ReactNode;
+  selectedFile: string | null;
+  onSelect: (path: string) => void;
+}) {
+  const collapsed = useUiStore((s) => s.collapsedChangeGroups[group]);
+  const toggle = useUiStore((s) => s.toggleChangeGroup);
+  const files = diff?.files ?? [];
+  const empty = diff != null && files.length === 0;
+  const open = !collapsed && !empty;
+
+  return (
+    <section className="border-b border-neutral-900">
+      <div className="flex items-center justify-between gap-2 px-2 py-1 text-[11px]">
+        <button
+          onClick={() => toggle(group)}
+          disabled={empty}
+          className={cn(
+            "flex shrink-0 items-center gap-1 uppercase tracking-wider",
+            empty
+              ? "cursor-default text-neutral-600"
+              : "text-neutral-400 hover:text-neutral-200",
+          )}
+        >
+          <span className="w-2.5 text-[9px] text-neutral-600">
+            {open ? "▾" : "▸"}
+          </span>
+          <span>{label}</span>
+          <span className="normal-case tracking-normal text-neutral-600">
+            {diff == null ? "…" : empty ? "clean" : files.length}
+          </span>
+        </button>
+        <div className="flex min-w-0 items-center">{anchor}</div>
+      </div>
+      {open && (
+        <ul className="pb-1">
+          {files.map((f) => {
+            const basename = f.path.split("/").pop() ?? f.path;
+            const { Icon, color } = iconForFile(basename);
+            const isSelected = selectedFile === f.path;
+            return (
+              <li key={f.path}>
+                <button
+                  onClick={() => onSelect(f.path)}
+                  className={cn(
+                    "flex w-full items-center justify-between gap-2 py-1 pl-6 pr-3 text-left text-xs transition-colors",
+                    isSelected
+                      ? "bg-[#3994BC26] text-neutral-100"
+                      : "hover:bg-white/[0.04]",
+                  )}
+                  title={f.path}
+                >
+                  <span className="flex min-w-0 items-center gap-1.5">
+                    <Icon size={13} color={color} className="shrink-0" />
+                    <span
+                      className={cn(
+                        "truncate font-mono text-[11px]",
+                        statusFilenameColor(f.status.kind),
+                      )}
+                    >
+                      {f.path}
+                    </span>
+                  </span>
+                  <span className="shrink-0 font-mono text-[11px]">
+                    <span className="text-emerald-400">+{f.insertions}</span>{" "}
+                    <span className="text-rose-400">-{f.deletions}</span>
+                  </span>
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </section>
   );
 }
 

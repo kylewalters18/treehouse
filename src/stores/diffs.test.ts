@@ -38,14 +38,66 @@ describe("diffs store", () => {
       ],
       stats: { filesChanged: 1, insertions: 1, deletions: 0 },
     });
-    ipcMocked.getDiff.mockResolvedValueOnce(d);
+    const u = diff({ baseRef: "headsha" });
+    ipcMocked.getDiff.mockImplementation(async (_id, mode) =>
+      mode === "uncommitted" ? u : d,
+    );
     await useDiffsStore.getState().fetch("wt-1");
     expect(useDiffsStore.getState().byWorktree["wt-1"]).toEqual(d);
+    expect(useDiffsStore.getState().uncommittedByWorktree["wt-1"]).toEqual(u);
     expect(useDiffsStore.getState().loading["wt-1"]).toBe(false);
   });
 
+  it("fetchUncommitted drops a response superseded by a newer request", async () => {
+    let resolveFirst: (d: DiffSet) => void = () => {};
+    const first = new Promise<DiffSet>((r) => (resolveFirst = r));
+    const stale = diff({ baseRef: "stale" });
+    const fresh = diff({ baseRef: "fresh" });
+    ipcMocked.getDiff
+      .mockReturnValueOnce(first)
+      .mockResolvedValueOnce(fresh);
+    const p1 = useDiffsStore.getState().fetchUncommitted("wt-1");
+    await useDiffsStore.getState().fetchUncommitted("wt-1");
+    resolveFirst(stale);
+    await p1;
+    expect(
+      useDiffsStore.getState().uncommittedByWorktree["wt-1"]?.baseRef,
+    ).toBe("fresh");
+  });
+
+  it("selectFile records the group, and omitting it keeps the current one", () => {
+    const { selectFile } = useDiffsStore.getState();
+    selectFile("wt-1", "a.txt", "uncommitted");
+    expect(useDiffsStore.getState().selectedGroup["wt-1"]).toBe("uncommitted");
+    selectFile("wt-1", "b.txt");
+    expect(useDiffsStore.getState().selectedFile["wt-1"]).toBe("b.txt");
+    expect(useDiffsStore.getState().selectedGroup["wt-1"]).toBe("uncommitted");
+  });
+
+  it("set keeps a selection that only exists in the uncommitted group", () => {
+    useDiffsStore.setState({
+      selectedFile: { "wt-1": "u.txt" },
+      uncommittedByWorktree: {
+        "wt-1": diff({
+          files: [
+            {
+              path: "u.txt",
+              status: { kind: "modified" },
+              hunks: [],
+              binary: false,
+              insertions: 1,
+              deletions: 0,
+            },
+          ],
+        }),
+      },
+    });
+    useDiffsStore.getState().set("wt-1", diff({}));
+    expect(useDiffsStore.getState().selectedFile["wt-1"]).toBe("u.txt");
+  });
+
   it("fetch error populates the per-worktree error slot", async () => {
-    ipcMocked.getDiff.mockRejectedValueOnce({ message: "no such worktree" });
+    ipcMocked.getDiff.mockRejectedValue({ message: "no such worktree" });
     await useDiffsStore.getState().fetch("wt-1");
     expect(useDiffsStore.getState().error["wt-1"]).toBe("no such worktree");
   });
