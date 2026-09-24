@@ -35,6 +35,9 @@ type UiState = {
   /// terminal stays mounted (with its sessions alive) when the
   /// user flips to Problems and back.
   bottomPaneTab: "terminal" | "problems" | "review" | "ci";
+  /// Which list the DiffPane sidebar shows: the changed-files list or
+  /// the full worktree file tree. One at a time, not stacked.
+  diffSidebarTab: "changes" | "files";
   /// Monotonic one-shot intent for "launch a new agent". Agent tabs
   /// live in AgentPane-local state, so the Cmd+Shift+A global shortcut
   /// can't create one directly — it bumps this counter and the mounted
@@ -65,6 +68,7 @@ type UiState = {
   openSystemFileViewer: (kind: AppFileKind) => void;
   closeSystemFileViewer: () => void;
   setBottomPaneTab: (tab: "terminal" | "problems" | "review" | "ci") => void;
+  setDiffSidebarTab: (tab: "changes" | "files") => void;
   toggleProblemsTab: () => void;
   requestAgentLaunch: () => void;
   openNewWorktreeDialog: (workspaceId: WorkspaceId) => void;
@@ -82,6 +86,7 @@ export const useUiStore = create<UiState>((set) => ({
   agentTabOrderByWorktree: {},
   systemFileViewer: null,
   bottomPaneTab: "terminal",
+  diffSidebarTab: "changes",
   agentLaunchNonce: 0,
   newWorktreeWorkspace: null,
   selectWorktree(id) {
@@ -142,6 +147,9 @@ export const useUiStore = create<UiState>((set) => ({
   setBottomPaneTab(tab) {
     set({ bottomPaneTab: tab });
   },
+  setDiffSidebarTab(tab) {
+    set({ diffSidebarTab: tab });
+  },
   toggleProblemsTab() {
     set((s) => ({
       bottomPaneTab: s.bottomPaneTab === "problems" ? "terminal" : "problems",
@@ -167,6 +175,7 @@ export const useUiStore = create<UiState>((set) => ({
       agentTabOrderByWorktree: {},
       systemFileViewer: null,
       bottomPaneTab: "terminal",
+      diffSidebarTab: "changes",
       agentLaunchNonce: 0,
       newWorktreeWorkspace: null,
     });

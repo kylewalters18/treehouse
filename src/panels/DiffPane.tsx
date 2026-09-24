@@ -64,6 +64,8 @@ function DiffView({ worktreeId }: { worktreeId: WorktreeId }) {
   const [treeRefresh, setTreeRefresh] = useState(0);
   const showIgnored = useUiStore((s) => s.showIgnored);
   const setShowIgnored = useUiStore((s) => s.setShowIgnored);
+  const sidebarTab = useUiStore((s) => s.diffSidebarTab);
+  const setSidebarTab = useUiStore((s) => s.setDiffSidebarTab);
 
   useEffect(() => {
     fetchDiff(worktreeId);
@@ -143,122 +145,143 @@ function DiffView({ worktreeId }: { worktreeId: WorktreeId }) {
     >
       <Panel defaultSize={22} minSize={12} maxSize={50}>
         <aside className="flex h-full flex-col border-r border-neutral-800">
-        <div className="flex shrink-0 items-center justify-between border-b border-neutral-900 px-3 py-2 text-[11px] uppercase tracking-wider text-neutral-500">
-          <span>Changes ({diff?.stats.filesChanged ?? 0})</span>
-          {diff && (
-            <span className="font-mono text-[11px]">
-              <span className="text-emerald-400">+{diff.stats.insertions}</span>{" "}
-              <span className="text-rose-400">-{diff.stats.deletions}</span>
-            </span>
-          )}
-        </div>
-        {/* Diff anchor toggle. Branch = merge-base..workdir (default,
-            full PR-style view). Uncommitted = HEAD..workdir, useful
-            for reviewing the agent's most recent batch before
-            committing. */}
-        <div className="flex shrink-0 border-b border-neutral-900 p-1.5">
-          <div className="flex w-full overflow-hidden rounded border border-neutral-800 text-[11px]">
-            <button
-              onClick={() => void setMode(worktreeId, "branch")}
-              className={cn(
-                "flex-1 px-2 py-1 transition",
-                mode === "branch"
-                  ? "bg-neutral-800 text-neutral-100"
-                  : "text-neutral-500 hover:bg-neutral-900",
-              )}
-              title="All changes since the branch forked from default"
+        {/* Changes / Files toggle — one list at a time so each gets
+            the full sidebar height. */}
+        <div className="flex shrink-0 items-center justify-between gap-2 border-b border-neutral-900 px-2 text-[11px] uppercase tracking-wider">
+          <div className="flex">
+            <SidebarTab
+              active={sidebarTab === "files"}
+              onClick={() => setSidebarTab("files")}
             >
-              Branch
-            </button>
-            <button
-              onClick={() => void setMode(worktreeId, "uncommitted")}
-              className={cn(
-                "flex-1 border-l border-neutral-800 px-2 py-1 transition",
-                mode === "uncommitted"
-                  ? "bg-neutral-800 text-neutral-100"
-                  : "text-neutral-500 hover:bg-neutral-900",
-              )}
-              title="Just HEAD..workdir — the next commit's worth of changes"
+              Files
+            </SidebarTab>
+            <SidebarTab
+              active={sidebarTab === "changes"}
+              onClick={() => setSidebarTab("changes")}
             >
-              Uncommitted
-            </button>
+              Changes ({diff?.stats.filesChanged ?? 0})
+            </SidebarTab>
           </div>
+          {sidebarTab === "changes"
+            ? diff && (
+                <span className="font-mono text-[11px] normal-case tracking-normal">
+                  <span className="text-emerald-400">+{diff.stats.insertions}</span>{" "}
+                  <span className="text-rose-400">-{diff.stats.deletions}</span>
+                </span>
+              )
+            : (
+                <button
+                  onClick={() => setShowIgnored(!showIgnored)}
+                  title={
+                    showIgnored
+                      ? "Hide gitignored files"
+                      : "Show gitignored files (dimmed)"
+                  }
+                  className={cn(
+                    "rounded px-1 font-mono text-[10px] normal-case tracking-normal transition",
+                    showIgnored
+                      ? "bg-neutral-800 text-neutral-200"
+                      : "text-neutral-600 hover:bg-neutral-900 hover:text-neutral-300",
+                  )}
+                >
+                  {showIgnored ? "◉ ignored" : "○ ignored"}
+                </button>
+              )}
         </div>
-        {workspace && mode === "branch" && (
-          <div className="flex shrink-0 items-center overflow-visible border-b border-neutral-900 px-2 py-1 text-[11px]">
-            <BaseRefPicker workspace={workspace} />
-          </div>
-        )}
-        <div className="max-h-[40%] shrink-0 overflow-y-auto border-b border-neutral-900">
-          {!diff || diff.files.length === 0 ? (
-            <div className="px-3 py-2 text-[11px] text-neutral-600">
-              {diff
-                ? `No changes against ${diff.baseRef.slice(0, 8)}`
-                : "Computing diff…"}
+        {sidebarTab === "changes" && (
+          <>
+          {/* Diff anchor toggle. Branch = merge-base..workdir (default,
+              full PR-style view). Uncommitted = HEAD..workdir, useful
+              for reviewing the agent's most recent batch before
+              committing. */}
+          <div className="flex shrink-0 border-b border-neutral-900 p-1.5">
+            <div className="flex w-full overflow-hidden rounded border border-neutral-800 text-[11px]">
+              <button
+                onClick={() => void setMode(worktreeId, "branch")}
+                className={cn(
+                  "flex-1 px-2 py-1 transition",
+                  mode === "branch"
+                    ? "bg-neutral-800 text-neutral-100"
+                    : "text-neutral-500 hover:bg-neutral-900",
+                )}
+                title="All changes since the branch forked from default"
+              >
+                Branch
+              </button>
+              <button
+                onClick={() => void setMode(worktreeId, "uncommitted")}
+                className={cn(
+                  "flex-1 border-l border-neutral-800 px-2 py-1 transition",
+                  mode === "uncommitted"
+                    ? "bg-neutral-800 text-neutral-100"
+                    : "text-neutral-500 hover:bg-neutral-900",
+                )}
+                title="Just HEAD..workdir — the next commit's worth of changes"
+              >
+                Uncommitted
+              </button>
             </div>
-          ) : (
-            <ul>
-              {diff.files.map((f) => {
-                const basename = f.path.split("/").pop() ?? f.path;
-                const { Icon, color } = iconForFile(basename);
-                const isSelected = selectedFile === f.path;
-                return (
-                  <li key={f.path}>
-                    <button
-                      onClick={() => {
-                        selectFile(worktreeId, f.path);
-                        setView(worktreeId, "diff");
-                      }}
-                      className={cn(
-                        "flex w-full items-center justify-between gap-2 px-3 py-1 text-left text-xs transition-colors",
-                        isSelected
-                          ? "bg-[#3994BC26] text-neutral-100"
-                          : "hover:bg-white/[0.04]",
-                      )}
-                      title={f.path}
-                    >
-                      <span className="flex min-w-0 items-center gap-1.5">
-                        <Icon size={13} color={color} className="shrink-0" />
-                        <span
-                          className={cn(
-                            "truncate font-mono text-[11px]",
-                            statusFilenameColor(f.status.kind),
-                          )}
-                        >
-                          {f.path}
-                        </span>
-                      </span>
-                      <span className="shrink-0 font-mono text-[11px]">
-                        <span className="text-emerald-400">+{f.insertions}</span>{" "}
-                        <span className="text-rose-400">-{f.deletions}</span>
-                      </span>
-                    </button>
-                  </li>
-                );
-              })}
-            </ul>
+          </div>
+          {workspace && mode === "branch" && (
+            <div className="flex shrink-0 items-center overflow-visible border-b border-neutral-900 px-2 py-1 text-[11px]">
+              <BaseRefPicker workspace={workspace} />
+            </div>
           )}
-        </div>
-        <div className="flex shrink-0 items-center justify-between gap-2 border-b border-neutral-900 px-3 py-2 text-[11px] uppercase tracking-wider text-neutral-500">
-          <span>Files</span>
-          <button
-            onClick={() => setShowIgnored(!showIgnored)}
-            title={
-              showIgnored
-                ? "Hide gitignored files"
-                : "Show gitignored files (dimmed)"
-            }
-            className={cn(
-              "rounded px-1 font-mono text-[10px] normal-case tracking-normal transition",
-              showIgnored
-                ? "bg-neutral-800 text-neutral-200"
-                : "text-neutral-600 hover:bg-neutral-900 hover:text-neutral-300",
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            {!diff || diff.files.length === 0 ? (
+              <div className="px-3 py-2 text-[11px] text-neutral-600">
+                {diff
+                  ? `No changes against ${diff.baseRef.slice(0, 8)}`
+                  : "Computing diff…"}
+              </div>
+            ) : (
+              <ul>
+                {diff.files.map((f) => {
+                  const basename = f.path.split("/").pop() ?? f.path;
+                  const { Icon, color } = iconForFile(basename);
+                  const isSelected = selectedFile === f.path;
+                  return (
+                    <li key={f.path}>
+                      <button
+                        onClick={() => {
+                          selectFile(worktreeId, f.path);
+                          setView(worktreeId, "diff");
+                        }}
+                        className={cn(
+                          "flex w-full items-center justify-between gap-2 px-3 py-1 text-left text-xs transition-colors",
+                          isSelected
+                            ? "bg-[#3994BC26] text-neutral-100"
+                            : "hover:bg-white/[0.04]",
+                        )}
+                        title={f.path}
+                      >
+                        <span className="flex min-w-0 items-center gap-1.5">
+                          <Icon size={13} color={color} className="shrink-0" />
+                          <span
+                            className={cn(
+                              "truncate font-mono text-[11px]",
+                              statusFilenameColor(f.status.kind),
+                            )}
+                          >
+                            {f.path}
+                          </span>
+                        </span>
+                        <span className="shrink-0 font-mono text-[11px]">
+                          <span className="text-emerald-400">+{f.insertions}</span>{" "}
+                          <span className="text-rose-400">-{f.deletions}</span>
+                        </span>
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
             )}
-          >
-            {showIgnored ? "◉ ignored" : "○ ignored"}
-          </button>
-        </div>
-        <div className="flex-1 overflow-y-auto">
+          </div>
+          </>
+        )}
+        {/* Kept mounted while hidden so the tree's expansion state
+            survives flipping to Changes and back. */}
+        <div className={cn("min-h-0 flex-1 overflow-y-auto", sidebarTab !== "files" && "hidden")}>
           <FileTree
             worktreeId={worktreeId}
             statusByPath={statusByPath}
@@ -543,6 +566,30 @@ function NavButtons({ worktreeId }: { worktreeId: WorktreeId }) {
         </div>
       )}
     </div>
+  );
+}
+
+function SidebarTab({
+  active,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={cn(
+        "-mb-px border-b-2 px-1.5 py-2 uppercase tracking-wider transition-colors",
+        active
+          ? "border-blue-500 text-neutral-200"
+          : "border-transparent text-neutral-500 hover:text-neutral-300",
+      )}
+    >
+      {children}
+    </button>
   );
 }
 
