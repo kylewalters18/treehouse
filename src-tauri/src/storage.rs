@@ -227,6 +227,14 @@ pub struct Settings {
     /// Persisted so users who always reach for the same agent don't have
     /// to reselect it on every new session.
     pub default_agent_backend: AgentBackendKind,
+    /// When true, the New Worktree dialog's "Start default agent" option is
+    /// pre-checked, so a fresh worktree opens with `default_agent_backend`
+    /// already running. On by default — launching is the frontend's job
+    /// (it owns the PTY size + tab state); this only seeds the choice.
+    /// No field-level `#[serde(default)]`: that would yield `false` for
+    /// settings files written before this field existed; the struct-level
+    /// default pulls `true` from `Settings::default()`.
+    pub auto_start_agent: bool,
     /// Per-backend default launch command, pre-filled (and editable) in the
     /// AgentPane launcher. See `AgentCommands`.
     #[serde(default)]
@@ -249,6 +257,7 @@ impl Default for Settings {
             merge_back_strategy: MergeBackStrategy::default(),
             init_submodules: false,
             default_agent_backend: AgentBackendKind::ClaudeCode,
+            auto_start_agent: true,
             agent_commands: AgentCommands::default(),
             enabled_lsp_languages: Vec::new(),
             base_refs: std::collections::BTreeMap::new(),

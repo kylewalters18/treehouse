@@ -28,6 +28,16 @@ initSubmodules: boolean,
  */
 defaultAgentBackend: AgentBackendKind, 
 /**
+ * When true, the New Worktree dialog's "Start default agent" option is
+ * pre-checked, so a fresh worktree opens with `default_agent_backend`
+ * already running. On by default — launching is the frontend's job
+ * (it owns the PTY size + tab state); this only seeds the choice.
+ * No field-level `#[serde(default)]`: that would yield `false` for
+ * settings files written before this field existed; the struct-level
+ * default pulls `true` from `Settings::default()`.
+ */
+autoStartAgent: boolean, 
+/**
  * Per-backend default launch command, pre-filled (and editable) in the
  * AgentPane launcher. See `AgentCommands`.
  */

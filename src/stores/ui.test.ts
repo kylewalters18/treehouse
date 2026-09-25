@@ -37,6 +37,14 @@ describe("ui store", () => {
     expect(useUiStore.getState().worktreeSidebarCollapsed).toBe(true);
   });
 
+  it("pending agent launch is one-shot and per worktree", () => {
+    const s = useUiStore.getState();
+    s.requestAgentLaunchFor("wt-1");
+    expect(s.consumePendingAgentLaunch("wt-2")).toBe(false);
+    expect(s.consumePendingAgentLaunch("wt-1")).toBe(true);
+    expect(s.consumePendingAgentLaunch("wt-1")).toBe(false);
+  });
+
   it("reset wipes everything back to defaults", () => {
     const s = useUiStore.getState();
     s.selectWorktree("x");

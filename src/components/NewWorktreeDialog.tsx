@@ -17,16 +17,18 @@ export function NewWorktreeDialog({
   workspaceId,
   open,
   defaultInitSubmodules,
+  defaultStartAgent,
   onCreate,
   onClose,
 }: {
   workspaceId: WorkspaceId | null;
   open: boolean;
   defaultInitSubmodules: boolean;
+  defaultStartAgent: boolean;
   onCreate: (
     name: string,
     base: string | null,
-    opts: { initSubmodules: boolean; runSetup: boolean },
+    opts: { initSubmodules: boolean; runSetup: boolean; startAgent: boolean },
   ) => void;
   onClose: () => void;
 }) {
@@ -48,6 +50,7 @@ export function NewWorktreeDialog({
   const [branches, setBranches] = useState<string[]>([]);
   const [initSubmodules, setInitSubmodules] = useState(defaultInitSubmodules);
   const [runSetup, setRunSetup] = useState(true);
+  const [startAgent, setStartAgent] = useState(defaultStartAgent);
   const [showOptions, setShowOptions] = useState(false);
 
   // Reset the form each time the dialog opens.
@@ -58,6 +61,7 @@ export function NewWorktreeDialog({
     setBranchName("");
     setBase(null);
     setInitSubmodules(defaultInitSubmodules);
+    setStartAgent(defaultStartAgent);
     setRunSetup(true);
     setShowOptions(false);
   }, [open, defaultInitSubmodules]);
@@ -125,7 +129,7 @@ export function NewWorktreeDialog({
   function submit() {
     const name = branchName.trim();
     if (!name) return;
-    onCreate(name, base, { initSubmodules, runSetup });
+    onCreate(name, base, { initSubmodules, runSetup, startAgent });
     onClose();
   }
 
@@ -289,6 +293,15 @@ export function NewWorktreeDialog({
                     className="accent-blue-600"
                   />
                   Run setup hook after create
+                </label>
+                <label className="flex items-center gap-2 text-xs text-neutral-300">
+                  <input
+                    type="checkbox"
+                    checked={startAgent}
+                    onChange={(e) => setStartAgent(e.target.checked)}
+                    className="accent-blue-600"
+                  />
+                  Start default agent
                 </label>
               </div>
             )}

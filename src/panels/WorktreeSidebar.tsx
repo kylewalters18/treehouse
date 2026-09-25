@@ -76,6 +76,9 @@ export function WorktreeSidebar() {
   const mergeStrategyDefault = useSettingsStore(
     (s) => s.settings.mergeBackStrategy,
   );
+  const startAgentDefault = useSettingsStore(
+    (s) => s.settings.autoStartAgent,
+  );
   const initSubmodulesDefault = useSettingsStore(
     (s) => s.settings.initSubmodules,
   );
@@ -203,7 +206,7 @@ export function WorktreeSidebar() {
     workspaceId: string,
     name: string,
     base: string | null,
-    opts: { initSubmodules: boolean; runSetup: boolean },
+    opts: { initSubmodules: boolean; runSetup: boolean; startAgent: boolean },
   ) {
     const trimmed = name.trim();
     if (!trimmed || creating) return;
@@ -215,6 +218,11 @@ export function WorktreeSidebar() {
         base,
       });
       if (wt) {
+        // Flag before selecting so the AgentPane that mounts for the new
+        // worktree sees it on its first adoption pass.
+        if (opts.startAgent) {
+          useUiStore.getState().requestAgentLaunchFor(wt.id);
+        }
         selectWorktree(wt.id);
         if (opts.runSetup) {
           void runWorktreeSetup(wt.id);
@@ -667,6 +675,7 @@ export function WorktreeSidebar() {
         workspaceId={createDialogWs}
         open={createDialogWs !== null}
         defaultInitSubmodules={initSubmodulesDefault}
+        defaultStartAgent={startAgentDefault}
         onCreate={(name, base, opts) => {
           if (createDialogWs) void handleCreate(createDialogWs, name, base, opts);
         }}

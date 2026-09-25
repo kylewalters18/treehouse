@@ -61,6 +61,7 @@ export function SettingsMenu() {
   const setMerge = useSettingsStore((s) => s.setMergeBackStrategy);
   const setInitSubmodules = useSettingsStore((s) => s.setInitSubmodules);
   const setDefaultAgent = useSettingsStore((s) => s.setDefaultAgentBackend);
+  const setAutoStartAgent = useSettingsStore((s) => s.setAutoStartAgent);
 
   useEffect(() => {
     if (!open) return;
@@ -163,6 +164,22 @@ export function SettingsMenu() {
                     value={settings.defaultAgentBackend}
                     onChange={(v) => void setDefaultAgent(v)}
                   />
+                  <label className="flex cursor-pointer items-start gap-2 rounded border border-neutral-800 px-2 py-1.5 text-xs hover:bg-neutral-950">
+                    <input
+                      type="checkbox"
+                      checked={settings.autoStartAgent}
+                      onChange={(e) => void setAutoStartAgent(e.target.checked)}
+                      className="mt-0.5 accent-blue-600"
+                    />
+                    <span className="flex-1">
+                      <div className="font-medium text-neutral-100">
+                        Start default agent on new worktree
+                      </div>
+                      <div className="text-[11px] text-neutral-500">
+                        Pre-checks the option in the New Worktree dialog
+                      </div>
+                    </span>
+                  </label>
                   <AgentCommandsSection />
                   <AgentPatternsSection />
                 </div>

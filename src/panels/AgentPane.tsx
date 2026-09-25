@@ -226,6 +226,14 @@ function AgentTabs({ worktreeId }: { worktreeId: WorktreeId }) {
           matchActive?.localId ?? adopted[adopted.length - 1]?.localId ?? null,
         );
         adoptionDone.current = true;
+        // New worktree created with "Start default agent": launch once,
+        // and only into an empty pane so a remount never double-launches.
+        if (
+          useUiStore.getState().consumePendingAgentLaunch(worktreeId) &&
+          adopted.length === 0
+        ) {
+          onLaunchRef.current();
+        }
       } catch {
         adoptionDone.current = true;
       } finally {

@@ -49,6 +49,11 @@ type UiState = {
   /// handler. Carries no payload: the pane launches with whatever
   /// backend its dropdown currently shows, same as clicking "+".
   agentLaunchNonce: number;
+  /// Worktrees that should launch the default agent the first time their
+  /// AgentPane mounts (set by the New Worktree "Start default agent"
+  /// option). One-shot: AgentPane consumes the entry after adoption, and
+  /// only launches if the worktree has no agents yet.
+  pendingAgentLaunch: Record<WorktreeId, true>;
   /// Which workspace the New Worktree dialog is open for, if any. Lifted
   /// out of WorktreeSidebar-local state so the Cmd+Shift+N global
   /// shortcut can open it for the active workspace.
@@ -76,12 +81,15 @@ type UiState = {
   toggleChangeGroup: (group: ChangeGroup) => void;
   toggleProblemsTab: () => void;
   requestAgentLaunch: () => void;
+  requestAgentLaunchFor: (worktreeId: WorktreeId) => void;
+  /// Clears the pending flag; returns whether one was set.
+  consumePendingAgentLaunch: (worktreeId: WorktreeId) => boolean;
   openNewWorktreeDialog: (workspaceId: WorkspaceId) => void;
   closeNewWorktreeDialog: () => void;
   reset: () => void;
 };
 
-export const useUiStore = create<UiState>((set) => ({
+export const useUiStore = create<UiState>((set, get) => ({
   selectedWorktreeId: null,
   focusMode: false,
   worktreeSidebarCollapsed: false,
@@ -91,9 +99,10 @@ export const useUiStore = create<UiState>((set) => ({
   agentTabOrderByWorktree: {},
   systemFileViewer: null,
   bottomPaneTab: "terminal",
-  diffSidebarTab: "changes",
+  diffSidebarTab: "files",
   collapsedChangeGroups: { branch: false, uncommitted: false },
   agentLaunchNonce: 0,
+  pendingAgentLaunch: {},
   newWorktreeWorkspace: null,
   selectWorktree(id) {
     set({ selectedWorktreeId: id });
@@ -172,6 +181,19 @@ export const useUiStore = create<UiState>((set) => ({
   requestAgentLaunch() {
     set((s) => ({ agentLaunchNonce: s.agentLaunchNonce + 1 }));
   },
+  requestAgentLaunchFor(worktreeId) {
+    set((s) => ({
+      pendingAgentLaunch: { ...s.pendingAgentLaunch, [worktreeId]: true },
+    }));
+  },
+  consumePendingAgentLaunch(worktreeId) {
+    if (!get().pendingAgentLaunch[worktreeId]) return false;
+    set((s) => {
+      const { [worktreeId]: _, ...rest } = s.pendingAgentLaunch;
+      return { pendingAgentLaunch: rest };
+    });
+    return true;
+  },
   openNewWorktreeDialog(workspaceId) {
     set({ newWorktreeWorkspace: workspaceId });
   },
@@ -189,9 +211,10 @@ export const useUiStore = create<UiState>((set) => ({
       agentTabOrderByWorktree: {},
       systemFileViewer: null,
       bottomPaneTab: "terminal",
-      diffSidebarTab: "changes",
+      diffSidebarTab: "files",
       collapsedChangeGroups: { branch: false, uncommitted: false },
       agentLaunchNonce: 0,
+      pendingAgentLaunch: {},
       newWorktreeWorkspace: null,
     });
   },
