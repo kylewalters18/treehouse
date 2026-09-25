@@ -4,6 +4,7 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
+  Home,
   Loader2,
   Plus,
   X,
@@ -377,18 +378,20 @@ export function WorktreeSidebar() {
   }
 
   const allRegular = worktrees.filter((w) => !w.isMainClone);
-  const inbox = inboxWorktrees(allRegular, activity, acks);
+  // The main clone can host agents too, so it's eligible for the inbox.
+  const inbox = inboxWorktrees(worktrees, activity, acks);
   const repoName = (w: Worktree) =>
     basenameOf(workspaces.find((ws) => ws.id === w.workspaceId)?.root ?? "");
 
   if (collapsed) {
     // Collapsed rail mirrors the expanded layout: inbox dots on top,
-    // then each repo's ◆ main + worktree dots in stable order.
+    // then each repo's main clone (blue ring) + worktree dots in stable order.
     const renderDot = (w: Worktree) => {
       const a = activity[w.id];
       const tooltip =
         (showRepoChips ? `${repoName(w)} · ` : "") +
         w.branch +
+        (w.isMainClone ? "  (main clone)" : "") +
         (a?.ahead ? `  ↑${a.ahead}` : "") +
         (a?.behind ? `  ↓${a.behind}` : "");
       return (
@@ -397,6 +400,7 @@ export function WorktreeSidebar() {
           tooltip={tooltip}
           onClick={() => selectWorktree(w.id)}
           selected={selectedId === w.id}
+          variant={w.isMainClone ? "main" : undefined}
         >
           <StatusDot activity={a?.activity ?? "inactive"} />
         </RailButton>
@@ -430,16 +434,7 @@ export function WorktreeSidebar() {
           return (
             <div key={ws.id} className="flex flex-col items-center gap-1">
               {wsIdx > 0 && <RailDivider />}
-              {mainClone && (
-                <RailButton
-                  tooltip={`${basenameOf(ws.root)} · ${mainClone.branch}`}
-                  onClick={() => selectWorktree(mainClone.id)}
-                  selected={selectedId === mainClone.id}
-                  variant="main"
-                >
-                  ◆
-                </RailButton>
-              )}
+              {mainClone && renderDot(mainClone)}
               {active.map(renderDot)}
               {inactive.map(renderDot)}
             </div>
@@ -455,7 +450,9 @@ export function WorktreeSidebar() {
       <li
         key={w.id}
         className={cn(
-          "group relative flex cursor-pointer items-center py-1 pl-3 pr-1 hover:bg-neutral-900/50",
+          // Fixed height, not padding: the hover swap (badges → ⋯) trades
+          // content of slightly different heights, which made the row jump.
+          "group relative flex h-6 cursor-pointer items-center pl-3 pr-1 hover:bg-neutral-900/50",
           selectedId === w.id && "bg-neutral-900",
         )}
         onClick={() => selectWorktree(w.id)}
@@ -486,7 +483,13 @@ export function WorktreeSidebar() {
           </span>
           {/* Badges give way to the ⋯ menu on hover (and while it's
               open) so the one-line row never has to fit both. */}
-          <span className="flex min-w-0 shrink items-center gap-2 group-hover:hidden group-has-[[data-open]]:hidden">
+          <span
+            className={cn(
+              "flex min-w-0 shrink items-center gap-2",
+              !w.isMainClone &&
+                "group-hover:hidden group-has-[[data-open]]:hidden",
+            )}
+          >
             {/* Spawned by another worktree's agent over MCP. Shrinks
                 (and truncates) before the branch name does. */}
             {w.createdBy && (
@@ -505,14 +508,27 @@ export function WorktreeSidebar() {
             <span className="shrink-0">
               <AheadBehind ahead={a?.ahead ?? 0} behind={a?.behind ?? 0} />
             </span>
+            {/* The main clone has no ⋯ menu (merge / sync / remove don't
+                apply), so its badges stay put and the right slot carries
+                the "repo root" marker instead. */}
+            {w.isMainClone && (
+              <span
+                className="shrink-0 pr-1 text-neutral-500"
+                title="Main clone (repo root)"
+              >
+                <Home size={12} />
+              </span>
+            )}
           </span>
         </div>
-        <RowMenu
-          behind={a?.behind ?? 0}
-          onSync={() => setSyncTarget(w)}
-          onMerge={() => setMergeTarget(w)}
-          onRemove={() => onRemove(w)}
-        />
+        {!w.isMainClone && (
+          <RowMenu
+            behind={a?.behind ?? 0}
+            onSync={() => setSyncTarget(w)}
+            onMerge={() => setMergeTarget(w)}
+            onRemove={() => onRemove(w)}
+          />
+        )}
       </li>
     );
   };
@@ -581,7 +597,7 @@ export function WorktreeSidebar() {
                   <span className="truncate font-mono text-[11px] text-neutral-300">
                     {basenameOf(ws.root)}
                   </span>
-                  <RepoStatus counts={statusCounts(regular, activity)} />
+                  <RepoStatus counts={statusCounts(repoWorktrees, activity)} />
                 </span>
                 <span className="flex shrink-0 items-center">
                   <button
@@ -624,23 +640,7 @@ export function WorktreeSidebar() {
                   )}
 
                   <ul>
-                    {mainClone && (
-                      <li
-                        onClick={() => selectWorktree(mainClone.id)}
-                        className={cn(
-                          "flex cursor-pointer items-center gap-2 py-1 pl-3 pr-2 hover:bg-neutral-900/50",
-                          selectedId === mainClone.id && "bg-neutral-900",
-                        )}
-                        title={mainClone.path}
-                      >
-                        <span className="inline-flex h-3 w-3 shrink-0 items-center justify-center text-[11px] text-blue-400">
-                          ◆
-                        </span>
-                        <span className="truncate font-mono text-xs text-neutral-100">
-                          {mainClone.branch}
-                        </span>
-                      </li>
-                    )}
+                    {mainClone && renderRow(mainClone, {})}
                     {active.map((w) => renderRow(w, {}))}
                   </ul>
 
@@ -911,10 +911,12 @@ function RailButton({
         onMouseLeave={onLeave}
         className={cn(
           "flex h-7 w-7 items-center justify-center rounded hover:bg-neutral-900",
-          variant === "main" && "text-xs text-blue-400",
+          // The main clone shows the same status icon as any worktree;
+          // a standing blue ring is what marks it as the repo root.
+          variant === "main" && "ring-1 ring-blue-400/40",
           selected &&
             (variant === "main"
-              ? "bg-neutral-900"
+              ? "bg-neutral-900 ring-blue-400/80"
               : "bg-neutral-900 ring-1 ring-neutral-700"),
         )}
       >
