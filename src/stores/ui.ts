@@ -58,6 +58,17 @@ type UiState = {
   /// out of WorktreeSidebar-local state so the Cmd+Shift+N global
   /// shortcut can open it for the active workspace.
   newWorktreeWorkspace: WorkspaceId | null;
+  /// Agent board overlay (⌘⇧D).
+  agentBoardOpen: boolean;
+  agentBoardLayout: "board" | "list";
+  /// Epoch ms each agent session was last on screen — its tab active in
+  /// the selected worktree. Maintained by the subscription below; the
+  /// board uses it to tell finished-and-unseen turns from seen ones.
+  agentSeenAt: Record<AgentSessionId, number>;
+  /// One-shot request for the mounted AgentPane to switch to a tab.
+  /// Needed when the target worktree is already selected: AgentTabs
+  /// only reads `activeAgentByWorktree` when it mounts.
+  agentFocusRequest: { agentId: AgentSessionId; nonce: number } | null;
   selectWorktree: (id: WorktreeId | null) => void;
   toggleFocusMode: () => void;
   setFocusMode: (on: boolean) => void;
@@ -86,6 +97,12 @@ type UiState = {
   consumePendingAgentLaunch: (worktreeId: WorktreeId) => boolean;
   openNewWorktreeDialog: (workspaceId: WorkspaceId) => void;
   closeNewWorktreeDialog: () => void;
+  setAgentBoardOpen: (open: boolean) => void;
+  toggleAgentBoard: () => void;
+  setAgentBoardLayout: (layout: "board" | "list") => void;
+  markAgentSeen: (agentId: AgentSessionId) => void;
+  /// Select `worktreeId` and make `agentId` its active agent tab.
+  focusAgent: (worktreeId: WorktreeId, agentId: AgentSessionId) => void;
   reset: () => void;
 };
 
@@ -104,6 +121,10 @@ export const useUiStore = create<UiState>((set, get) => ({
   agentLaunchNonce: 0,
   pendingAgentLaunch: {},
   newWorktreeWorkspace: null,
+  agentBoardOpen: false,
+  agentBoardLayout: "board",
+  agentSeenAt: {},
+  agentFocusRequest: null,
   selectWorktree(id) {
     set({ selectedWorktreeId: id });
   },
@@ -200,6 +221,37 @@ export const useUiStore = create<UiState>((set, get) => ({
   closeNewWorktreeDialog() {
     set({ newWorktreeWorkspace: null });
   },
+  setAgentBoardOpen(open) {
+    if (open) {
+      // The agent on screen right now has been seen, even if its turn
+      // ended while the user watched it.
+      const visible = visibleAgent(get());
+      if (visible) get().markAgentSeen(visible);
+    }
+    set({ agentBoardOpen: open });
+  },
+  toggleAgentBoard() {
+    get().setAgentBoardOpen(!get().agentBoardOpen);
+  },
+  setAgentBoardLayout(layout) {
+    set({ agentBoardLayout: layout });
+  },
+  markAgentSeen(agentId) {
+    set((s) => ({ agentSeenAt: { ...s.agentSeenAt, [agentId]: Date.now() } }));
+  },
+  focusAgent(worktreeId, agentId) {
+    set((s) => ({
+      activeAgentByWorktree: {
+        ...s.activeAgentByWorktree,
+        [worktreeId]: agentId,
+      },
+      agentFocusRequest: {
+        agentId,
+        nonce: (s.agentFocusRequest?.nonce ?? 0) + 1,
+      },
+      selectedWorktreeId: worktreeId,
+    }));
+  },
   reset() {
     set({
       selectedWorktreeId: null,
@@ -216,6 +268,29 @@ export const useUiStore = create<UiState>((set, get) => ({
       agentLaunchNonce: 0,
       pendingAgentLaunch: {},
       newWorktreeWorkspace: null,
+      agentBoardOpen: false,
+      agentBoardLayout: "board",
+      agentSeenAt: {},
+      agentFocusRequest: null,
     });
   },
 }));
+
+/// The agent session on screen: the active tab of the selected worktree.
+function visibleAgent(
+  s: Pick<UiState, "selectedWorktreeId" | "activeAgentByWorktree">,
+): AgentSessionId | null {
+  return s.selectedWorktreeId
+    ? (s.activeAgentByWorktree[s.selectedWorktreeId] ?? null)
+    : null;
+}
+
+// Stamp `agentSeenAt` whenever the visible agent changes: the one being
+// left (the user watched it up to now) and the one arriving.
+useUiStore.subscribe((s, prev) => {
+  const next = visibleAgent(s);
+  const before = visibleAgent(prev);
+  if (next === before) return;
+  if (before) s.markAgentSeen(before);
+  if (next) s.markAgentSeen(next);
+});

@@ -76,8 +76,9 @@ pub enum AgentEvent {
     Status { status: AgentStatus },
 }
 
-/// Coarse activity classification driven by time-since-last-output. The
-/// sidebar polls `list_agent_activity` every ~1.5s and paints a dot.
+/// Coarse activity classification: Claude Code hook events when present,
+/// else time-since-last-output. The sidebar polls `list_agent_activity`
+/// every ~1.5s and paints a dot.
 #[derive(Debug, Clone, Copy, Serialize, TS, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
@@ -90,6 +91,48 @@ pub enum AgentActivity {
     Idle,
     /// Quiet long enough that the agent is almost certainly awaiting input.
     NeedsAttention,
+}
+
+/// What a blocked agent is waiting on, as reported by Claude Code hooks.
+#[derive(Debug, Clone, Serialize, TS, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+#[ts(export)]
+pub enum PendingPrompt {
+    /// A tool-permission dialog is on screen. `detail` is the command,
+    /// path, or URL the tool would act on, when there is one.
+    Permission {
+        #[serde(rename = "toolName")]
+        tool_name: String,
+        detail: Option<String>,
+    },
+    /// Anything else the agent is blocked on (a question, a dialog).
+    Input { message: Option<String> },
+}
+
+/// One agent session as the agent board shows it. Polled while the board
+/// is open; everything here is read from in-memory state.
+#[derive(Debug, Clone, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct AgentOverview {
+    pub session: AgentSession,
+    pub activity: AgentActivity,
+    /// Unix epoch ms of the last activity change — the start of the
+    /// current state, not the last byte of output.
+    #[ts(type = "number")]
+    pub changed_at: u64,
+    /// First line of the most recent prompt sent to the agent.
+    pub task: Option<String>,
+    /// Most recent tool call, e.g. `Bash: cargo test`.
+    pub current_tool: Option<String>,
+    /// The agent's final message from its last finished turn.
+    pub last_message: Option<String>,
+    pub pending: Option<PendingPrompt>,
+    /// `pending` is a permission dialog nobody has typed into since it
+    /// appeared, so allow/deny can be answered from the board.
+    pub can_answer_inline: bool,
+    /// Branch diff stats for the session's worktree, from the diff cache.
+    pub diff_stats: Option<crate::diff::DiffStats>,
 }
 
 #[derive(Debug, Clone, Serialize, TS)]

@@ -249,6 +249,25 @@ function AgentTabs({ worktreeId }: { worktreeId: WorktreeId }) {
   // setState — safe to do during render.
   tabsRef.current = tabs;
 
+  // "Open agent" from the agent board while this worktree is already
+  // selected: switch to the requested tab. Requests issued before this
+  // mount were already honored through `initialPersisted`, so only
+  // nonces newer than the one seen at mount count. Waits for adoption
+  // when the tab isn't there yet.
+  const focusRequest = useUiStore((s) => s.agentFocusRequest);
+  const handledFocusNonce = useRef(
+    useUiStore.getState().agentFocusRequest?.nonce ?? 0,
+  );
+  useEffect(() => {
+    if (!focusRequest || focusRequest.nonce <= handledFocusNonce.current) return;
+    const tab = tabs.find(
+      (t) => sessionIds.current.get(t.localId) === focusRequest.agentId,
+    );
+    if (!tab) return;
+    handledFocusNonce.current = focusRequest.nonce;
+    setActiveId(tab.localId);
+  }, [focusRequest, tabs]);
+
   // Push the current tabs' session IDs (in display order) to the UI
   // store so a worktree switch + return restores the same order. Tabs
   // whose session ID hasn't been published yet (just-launched, awaiting

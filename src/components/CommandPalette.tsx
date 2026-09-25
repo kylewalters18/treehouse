@@ -55,6 +55,16 @@ function buildCommands(deps: {
       },
     });
   }
+  cmds.push({
+    id: "agents.board",
+    category: "Agents",
+    title: "Open agent board",
+    description:
+      "Every agent across open repos, sorted by what needs you (⌘⇧D)",
+    run: () => {
+      useUiStore.getState().setAgentBoardOpen(true);
+    },
+  });
   // Workspace-agnostic — always available so the user can read /
   // edit these from anywhere, including the main-clone view.
   cmds.push({

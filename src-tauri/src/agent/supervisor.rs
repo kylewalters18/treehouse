@@ -13,8 +13,11 @@ use tauri::AppHandle;
 use crate::util::errors::{AppError, AppResult};
 use crate::util::ids::{AgentSessionId, WorktreeId};
 
-use super::hooks::{self, HookActivityMap};
-use super::{AgentActivity, AgentBackendKind, AgentEvent, AgentSession, AgentStatus};
+use super::hooks::{self, HookSession, HookSessionMap};
+use super::{
+    AgentActivity, AgentBackendKind, AgentEvent, AgentOverview, AgentSession, AgentStatus,
+    PendingPrompt,
+};
 
 /// Newlines are the universal "real output" signal across TUI agents — all of
 /// Claude Code, Codex, Kiro stream new content on new lines, and spinners
@@ -50,6 +53,10 @@ struct AgentShared {
     /// most recent strong signal — without it, Kiro's blinking-cursor idle
     /// state confuses byte timing into NeedsAttention.
     last_idle_match: Option<Instant>,
+    /// Last time the user (or the board) wrote to the agent's stdin. A
+    /// hook-reported prompt that has been typed into since it appeared may
+    /// already be answered — see `hook_state`.
+    last_input: Option<Instant>,
 }
 
 /// How long a pattern match remains authoritative. Kiro redraws its menus
@@ -68,9 +75,9 @@ pub struct AgentHandle {
 
 pub struct AgentRegistry {
     inner: DashMap<AgentSessionId, AgentHandle>,
-    /// Hook-driven activity per worktree — populated by the file watcher
-    /// on writes to `<app_config>/hook-state/<worktree_id>.state`.
-    hook_activity: HookActivityMap,
+    /// Hook-driven state per Claude session — populated by the file watcher
+    /// on writes to `<app_config>/hook-state/session-<id>.<Event>.json`.
+    hook_sessions: HookSessionMap,
     /// Keeps the hook file watcher alive for the lifetime of the registry.
     #[allow(dead_code)]
     hook_watcher: Mutex<Option<Box<dyn std::any::Any + Send + Sync>>>,
@@ -85,7 +92,7 @@ impl AgentRegistry {
     pub fn new() -> Self {
         Self {
             inner: DashMap::new(),
-            hook_activity: std::sync::Arc::new(DashMap::new()),
+            hook_sessions: std::sync::Arc::new(DashMap::new()),
             hook_watcher: Mutex::new(None),
             patterns: std::sync::Arc::new(parking_lot::RwLock::new(
                 super::patterns::AgentPatterns::defaults(),
@@ -112,13 +119,9 @@ impl AgentRegistry {
         if guard.is_some() {
             return Ok(());
         }
-        let w = hooks::start_watcher(app, self.hook_activity.clone())?;
+        let w = hooks::start_watcher(app, self.hook_sessions.clone())?;
         *guard = Some(w);
         Ok(())
-    }
-
-    pub fn hook_activity(&self) -> &HookActivityMap {
-        &self.hook_activity
     }
 
     pub fn list_for_worktree(&self, worktree_id: WorktreeId) -> Vec<AgentSession> {
@@ -164,41 +167,7 @@ impl AgentRegistry {
     /// Activity classification for a worktree, aggregated across **all** of
     /// its agents. Returns the most-alerting state: NeedsAttention > Working
     /// > Idle > Inactive. No running agents → Inactive.
-    ///
-    /// Preferred signal is Claude's hook events (see `agent::hooks`), which
-    /// are authoritative. Fallback for other backends (Kiro, Codex) is a
-    /// hybrid heuristic: byte timing for Working/Idle, plus a pattern scan
-    /// for common confirmation prompts (`[y/N]`, "Press enter") that
-    /// promotes Idle to NeedsAttention when a response is clearly pending.
     pub fn activity_for_worktree(&self, worktree_id: WorktreeId) -> AgentActivity {
-        let any_running = self.inner.iter().any(|e| {
-            e.value().session.worktree_id == worktree_id
-                && matches!(
-                    e.value().shared.lock().status,
-                    AgentStatus::Running | AgentStatus::Starting
-                )
-        });
-        if !any_running {
-            return AgentActivity::Inactive;
-        }
-
-        if let Some(entry) = self.hook_activity.get(&worktree_id) {
-            let (act, set_at) = *entry.value();
-            // Claude occasionally doesn't fire `Stop` after the user
-            // rejects a permission prompt — the `needs-attention` signal
-            // then never gets overwritten. Expire it to `idle` after a
-            // grace period so the dot recovers. Other states don't need
-            // this: `working` gets replaced by the next tool boundary,
-            // and `idle` is already the recovered state.
-            const NEEDS_ATTENTION_TTL: Duration = Duration::from_secs(45);
-            if matches!(act, AgentActivity::NeedsAttention)
-                && set_at.elapsed() > NEEDS_ATTENTION_TTL
-            {
-                return AgentActivity::Idle;
-            }
-            return act;
-        }
-
         let now = Instant::now();
         let mut best = AgentActivity::Inactive;
         for e in self.inner.iter() {
@@ -209,9 +178,123 @@ impl AgentRegistry {
             if !matches!(sh.status, AgentStatus::Running | AgentStatus::Starting) {
                 continue;
             }
-            best = max_severity(best, Self::classify(e.value().session.backend, &sh, now));
+            let act = self.session_activity(e.value(), &sh, now).0;
+            best = max_severity(best, act);
         }
         best
+    }
+
+    /// One live session's activity, plus its hook state for Claude.
+    ///
+    /// Claude sessions use hook events (see `agent::hooks`), which are
+    /// authoritative; before the first event fires the agent is sitting at
+    /// its prompt, so it reads as Idle. Other backends (Kiro, Codex) use a
+    /// hybrid heuristic: byte timing for Working/Idle, plus a pattern scan
+    /// for common confirmation prompts (`[y/N]`, "Press enter") that
+    /// promotes Idle to NeedsAttention when a response is clearly pending.
+    fn session_activity(
+        &self,
+        h: &AgentHandle,
+        sh: &AgentShared,
+        now: Instant,
+    ) -> (AgentActivity, Option<HookSession>) {
+        if !matches!(h.session.backend, AgentBackendKind::ClaudeCode) {
+            return (Self::classify(h.session.backend, sh, now), None);
+        }
+        let Some(hook) = self.hook_sessions.get(&h.session.id).map(|e| e.value().clone())
+        else {
+            return (AgentActivity::Idle, None);
+        };
+        // Claude doesn't always fire another hook after the user rejects a
+        // permission prompt in the terminal, so `NeedsAttention` would stick.
+        // Once someone has typed into the agent since the prompt appeared,
+        // expire it after a grace period. An untouched prompt stays up:
+        // the agent really is blocked.
+        const NEEDS_ATTENTION_TTL: Duration = Duration::from_secs(45);
+        let answered = sh.last_input.is_some_and(|t| t > hook.set_at);
+        let act = if hook.activity == AgentActivity::NeedsAttention
+            && answered
+            && now.saturating_duration_since(hook.set_at) > NEEDS_ATTENTION_TTL
+        {
+            AgentActivity::Idle
+        } else {
+            hook.activity
+        };
+        (act, Some(hook))
+    }
+
+    /// Everything the agent board shows, for every session whose worktree
+    /// passes `include`. Exited sessions are included as `Inactive` until
+    /// their tab is closed.
+    pub fn overview<F: Fn(WorktreeId) -> bool>(
+        &self,
+        include: F,
+        diff_stats: impl Fn(WorktreeId) -> Option<crate::diff::DiffStats>,
+    ) -> Vec<AgentOverview> {
+        let now = Instant::now();
+        let now_ms = now_millis();
+        let at_ms = |t: Instant| now_ms.saturating_sub(now.saturating_duration_since(t).as_millis() as u64);
+        let mut out = Vec::new();
+        for e in self.inner.iter() {
+            let h = e.value();
+            if !include(h.session.worktree_id) {
+                continue;
+            }
+            let sh = h.shared.lock();
+            let mut session = h.session.clone();
+            session.status = sh.status.clone();
+            let live = matches!(sh.status, AgentStatus::Running | AgentStatus::Starting);
+            let (activity, hook) = if live {
+                self.session_activity(h, &sh, now)
+            } else {
+                (AgentActivity::Inactive, None)
+            };
+            let row = match hook {
+                Some(hook) => {
+                    let can_answer_inline = activity == AgentActivity::NeedsAttention
+                        && matches!(hook.pending, Some(PendingPrompt::Permission { .. }))
+                        && !sh.last_input.is_some_and(|t| t > hook.set_at);
+                    AgentOverview {
+                        activity,
+                        changed_at: hook.changed_at,
+                        task: hook.task,
+                        current_tool: hook.current_tool,
+                        last_message: hook.last_message,
+                        pending: if activity == AgentActivity::NeedsAttention {
+                            hook.pending
+                        } else {
+                            None
+                        },
+                        can_answer_inline,
+                        diff_stats: diff_stats(session.worktree_id),
+                        session,
+                    }
+                }
+                None => {
+                    let changed_at = match activity {
+                        AgentActivity::Inactive if !live => at_ms(sh.last_any_output),
+                        _ if matches!(h.session.backend, AgentBackendKind::ClaudeCode) => {
+                            h.session.started_at
+                        }
+                        _ => at_ms(sh.last_any_output),
+                    };
+                    AgentOverview {
+                        activity,
+                        changed_at,
+                        task: None,
+                        current_tool: None,
+                        last_message: None,
+                        pending: None,
+                        can_answer_inline: false,
+                        diff_stats: diff_stats(session.worktree_id),
+                        session,
+                    }
+                }
+            };
+            out.push(row);
+        }
+        out.sort_by_key(|o| o.session.started_at);
+        out
     }
 
     /// Classify one non-Claude agent's activity from its output-timing and
@@ -274,6 +357,7 @@ impl AgentRegistry {
     pub fn kill_all(&self) {
         let ids: Vec<_> = self.inner.iter().map(|e| *e.key()).collect();
         for id in ids {
+            self.hook_sessions.remove(&id);
             if let Some((_, h)) = self.inner.remove(&id) {
                 let _ = h.child.lock().kill();
             }
@@ -322,7 +406,7 @@ pub fn launch(
     // Install Claude Code hooks in the worktree *before* spawning the
     // child, so the config is on disk when Claude reads settings.
     if matches!(backend, AgentBackendKind::ClaudeCode) {
-        if let Err(e) = hooks::install(app, &cwd, worktree_id) {
+        if let Err(e) = hooks::install(app, &cwd) {
             tracing::warn!(?e, %worktree_id, "failed to install Claude hooks");
         }
     }
@@ -365,6 +449,8 @@ pub fn launch(
     if let Ok(ct) = std::env::var("COLORTERM") {
         cmd.env("COLORTERM", ct);
     }
+    // Hook commands key their state files by this; see `agent::hooks`.
+    cmd.env(hooks::SESSION_ENV, session_id.to_string());
 
     let child = pair
         .slave
@@ -399,6 +485,7 @@ pub fn launch(
         last_any_output: Instant::now(),
         last_attention_match: None,
         last_idle_match: None,
+        last_input: None,
     }));
 
     // Announce "Running" immediately so the UI can swap state.
@@ -530,11 +617,50 @@ pub fn write_stdin(
         .inner
         .get(&id)
         .ok_or_else(|| AppError::Unknown(format!("unknown agent: {id}")))?;
+    handle.shared.lock().last_input = Some(Instant::now());
     let mut w = handle.writer.lock();
     w.write_all(data)
         .map_err(|e| AppError::Io(format!("agent write: {e}")))?;
     w.flush()
         .map_err(|e| AppError::Io(format!("agent flush: {e}")))?;
+    Ok(())
+}
+
+/// Answer a Claude permission dialog without opening the agent: Enter picks
+/// the dialog's default ("Yes"), Esc rejects it. Refuses unless the board
+/// would offer the buttons right now (`can_answer_inline`), so a stale
+/// click can't press Enter into whatever the agent shows next.
+pub fn respond_permission(
+    registry: &AgentRegistry,
+    id: AgentSessionId,
+    allow: bool,
+) -> AppResult<()> {
+    let answerable = registry
+        .overview(|_| true, |_| None)
+        .into_iter()
+        .any(|o| o.session.id == id && o.can_answer_inline);
+    if !answerable {
+        return Err(AppError::Unknown(
+            "This agent is no longer waiting on that permission prompt. Open the agent to see what it's doing."
+                .into(),
+        ));
+    }
+    write_stdin(registry, id, if allow { b"\r" } else { b"\x1b" })?;
+    let now = Instant::now();
+    if let Some(mut hook) = registry.hook_sessions.get_mut(&id) {
+        if allow {
+            // PreToolUse/PostToolUse will confirm; show it moving meanwhile.
+            hook.activity = AgentActivity::Working;
+            hook.changed_at = now_millis();
+            hook.set_at = now;
+            hook.pending = None;
+        } else {
+            // Rejecting leaves Claude waiting for instructions.
+            hook.pending = Some(PendingPrompt::Input {
+                message: Some("Denied. Tell the agent what to do instead.".into()),
+            });
+        }
+    }
     Ok(())
 }
 
@@ -595,6 +721,7 @@ pub fn is_live(registry: &AgentRegistry, id: AgentSessionId) -> bool {
 }
 
 pub fn kill(registry: &AgentRegistry, id: AgentSessionId) {
+    registry.hook_sessions.remove(&id);
     if let Some((_, handle)) = registry.inner.remove(&id) {
         let _ = handle.child.lock().kill();
         tracing::info!(%id, "killed agent");
@@ -609,6 +736,7 @@ pub fn kill_for_worktree(registry: &AgentRegistry, worktree_id: WorktreeId) {
         .map(|e| *e.key())
         .collect();
     for id in ids {
+        registry.hook_sessions.remove(&id);
         if let Some((_, handle)) = registry.inner.remove(&id) {
             let _ = handle.child.lock().kill();
             tracing::info!(%id, %worktree_id, "killed agent for removed worktree");
@@ -862,6 +990,7 @@ mod tests {
             last_any_output: any,
             last_attention_match: attention,
             last_idle_match: idle,
+            last_input: None,
         }
     }
 

@@ -21,6 +21,7 @@ import { SendQueueButton } from "@/components/SendQueueButton";
 import { FileFinder } from "@/components/FileFinder";
 import { CommandPalette } from "@/components/CommandPalette";
 import { SystemFileViewer } from "@/components/SystemFileViewer";
+import { AgentBoard } from "@/components/AgentBoard";
 
 export function Workspace() {
   const workspaceCount = useWorkspaceStore((s) => s.workspaces.length);
@@ -141,6 +142,10 @@ export function Workspace() {
         if (!selectedWorktreeId) return;
         e.preventDefault();
         useUiStore.getState().requestAgentLaunch();
+      } else if (e.shiftKey && (e.key === "d" || e.key === "D")) {
+        // ⌘⇧D — agent board overlay.
+        e.preventDefault();
+        useUiStore.getState().toggleAgentBoard();
       } else if (e.shiftKey && (e.key === "n" || e.key === "N")) {
         // ⌘⇧N — new worktree in the active (or first open) workspace.
         e.preventDefault();
@@ -278,6 +283,7 @@ export function Workspace() {
         onClose={() => setCommandPaletteOpen(false)}
       />
       <SystemFileViewerMount />
+      <AgentBoard />
     </div>
   );
 }

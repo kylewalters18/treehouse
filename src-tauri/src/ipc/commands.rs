@@ -3,7 +3,9 @@ use std::path::PathBuf;
 use tauri::ipc::Channel;
 use tauri::{AppHandle, Emitter, Manager, State};
 
-use crate::agent::{self, AgentBackendKind, AgentEvent, AgentSession, WorktreeActivity};
+use crate::agent::{
+    self, AgentBackendKind, AgentEvent, AgentOverview, AgentSession, WorktreeActivity,
+};
 use crate::diff::{self, DiffMode, DiffSet};
 use crate::forge::{
     self, ForgeApproval, ForgeIssue, ForgeJob, ForgeMr, ForgePipeline, ForgeStatus, ForgeThread,
@@ -785,10 +787,12 @@ pub async fn agent_resize(
 
 #[tauri::command]
 pub async fn kill_agent(
+    app: AppHandle,
     agent_id: AgentSessionId,
     state: State<'_, AppState>,
 ) -> AppResult<()> {
     agent::supervisor::kill(&state.agents, agent_id);
+    agent::hooks::remove_session_files(&app, agent_id);
     Ok(())
 }
 
@@ -798,6 +802,35 @@ pub async fn list_agents_for_worktree(
     state: State<'_, AppState>,
 ) -> AppResult<Vec<AgentSession>> {
     Ok(state.agents.list_for_worktree(worktree_id))
+}
+
+/// Every agent session across the given workspaces, for the agent board.
+/// In-memory only (hook state, PTY timing, diff cache), so it's safe to poll.
+#[tauri::command]
+pub async fn list_agent_overview(
+    workspace_ids: Vec<WorkspaceId>,
+    state: State<'_, AppState>,
+) -> AppResult<Vec<AgentOverview>> {
+    let worktrees = &state.worktrees;
+    let diffs = &state.diffs;
+    Ok(state.agents.overview(
+        |wt| {
+            worktrees
+                .get(&wt)
+                .is_some_and(|w| workspace_ids.contains(&w.workspace_id))
+        },
+        |wt| diffs.get(&wt).map(|d| d.stats),
+    ))
+}
+
+/// Allow or deny the permission dialog a Claude agent is blocked on.
+#[tauri::command]
+pub async fn agent_respond_permission(
+    agent_id: AgentSessionId,
+    allow: bool,
+    state: State<'_, AppState>,
+) -> AppResult<()> {
+    agent::supervisor::respond_permission(&state.agents, agent_id, allow)
 }
 
 /// Discover the named sub-agents the backend's CLI knows about (e.g.

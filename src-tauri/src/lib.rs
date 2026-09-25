@@ -129,6 +129,8 @@ pub fn run() {
             ipc::commands::list_backend_agents,
             ipc::commands::attach_agent,
             ipc::commands::list_agent_activity,
+            ipc::commands::list_agent_overview,
+            ipc::commands::agent_respond_permission,
             ipc::commands::lsp_ensure,
             ipc::commands::lsp_write,
             ipc::commands::lsp_kill,

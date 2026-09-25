@@ -2,6 +2,7 @@ import { invoke, Channel } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   AgentBackendKind,
+  AgentOverview,
   AgentEvent,
   AgentSession,
   AgentSessionId,
@@ -383,6 +384,21 @@ export function listAgentActivity(
   workspaceId: WorkspaceId,
 ): Promise<WorktreeActivity[]> {
   return invoke<WorktreeActivity[]>("list_agent_activity", { workspaceId });
+}
+
+export function listAgentOverview(
+  workspaceIds: WorkspaceId[],
+): Promise<AgentOverview[]> {
+  return invoke<AgentOverview[]>("list_agent_overview", { workspaceIds });
+}
+
+/// Answer the permission dialog a Claude agent is blocked on: Enter for
+/// allow, Esc for deny. Rejects if the prompt is no longer pending.
+export function agentRespondPermission(
+  agentId: AgentSessionId,
+  allow: boolean,
+): Promise<void> {
+  return invoke<void>("agent_respond_permission", { agentId, allow });
 }
 
 // --- LSP ---
