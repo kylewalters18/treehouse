@@ -14,4 +14,11 @@ baseBranch: string, head: string, dirty: boolean,
  * the top of the sidebar with a distinct style; launch / merge /
  * remove are all refused for this entry.
  */
-isMainClone: boolean, };
+isMainClone: boolean, 
+/**
+ * Branch of the worktree whose agent spawned this one via the treehouse
+ * MCP server. `None` for human-created / adopted / main-clone entries.
+ * Persisted in the repo's local git config (`branch.<b>.treehouse-parent`)
+ * so it survives restarts via reconcile and dies with the branch.
+ */
+createdBy: string | null, };

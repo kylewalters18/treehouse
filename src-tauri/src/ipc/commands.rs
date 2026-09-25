@@ -307,7 +307,7 @@ pub async fn create_worktree(
         Some(&app),
         workspace_id,
         &name,
-        CreateOptions { init_submodules, base },
+        CreateOptions { init_submodules, base, created_by: None },
         &state,
     )
     .await?;
@@ -318,7 +318,7 @@ pub async fn create_worktree(
 /// Post-create wiring shared by `create_worktree` and
 /// `forge_create_worktree_from_issue`: start the watcher + initial diff,
 /// kick a status recompute, and fan out the sidebar refresh signal.
-fn finish_create(app: &AppHandle, workspace_id: WorkspaceId, result: &CreateWorktreeResult) {
+pub fn finish_create(app: &AppHandle, workspace_id: WorkspaceId, result: &CreateWorktreeResult) {
     prime_worktree_watch(app, &result.worktree);
     worktree::status::spawn_recompute(app, result.worktree.id);
     let _ = app.emit(&events::worktrees_changed(workspace_id), ());
@@ -757,9 +757,10 @@ pub async fn launch_agent(
         wt.path,
         backend,
         argv,
+        None,
         cols,
         rows,
-        channel,
+        Some(channel),
     )
 }
 

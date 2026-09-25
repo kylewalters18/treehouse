@@ -5,6 +5,7 @@ mod fs_api;
 mod fs_watch;
 mod ipc;
 mod lsp;
+mod mcp;
 mod pty;
 mod state;
 mod storage;
@@ -184,6 +185,10 @@ pub fn run() {
             if let Err(e) = state.agents.start_hook_watcher(&handle) {
                 tracing::warn!(?e, "failed to start Claude hook watcher");
             }
+            // Before any agent can launch: Claude sessions pick up the port
+            // when they're spawned. Worktrees restored below adopt existing
+            // agents only, so there's no race with an earlier launch.
+            mcp::start(&handle);
             // First-boot migration: legacy per-feature TOMLs →
             // unified `treehouse.toml`. Idempotent — only runs when
             // the unified file is absent and at least one legacy is

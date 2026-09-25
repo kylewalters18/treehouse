@@ -24,6 +24,12 @@ impl AgentBackendKind {
             AgentBackendKind::Kiro => vec!["kiro-cli".to_string()],
         }
     }
+
+    /// Whether `<cli> -- "<prompt>"` starts an interactive session with that
+    /// prompt already submitted. Kiro's equivalent is unverified.
+    pub fn accepts_positional_prompt(self) -> bool {
+        matches!(self, AgentBackendKind::ClaudeCode | AgentBackendKind::Codex)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]

@@ -459,7 +459,11 @@ export function WorktreeSidebar() {
           selectedId === w.id && "bg-neutral-900",
         )}
         onClick={() => selectWorktree(w.id)}
-        title={w.path}
+        title={
+          w.createdBy
+            ? `${w.path}\nCreated by the agent in ${w.createdBy}`
+            : w.path
+        }
       >
         {/* Dim the row CONTENT but not the row itself — `opacity` <1
             creates a stacking context, and applying it to the <li>
@@ -482,16 +486,25 @@ export function WorktreeSidebar() {
           </span>
           {/* Badges give way to the ⋯ menu on hover (and while it's
               open) so the one-line row never has to fit both. */}
-          <span className="flex shrink-0 items-center gap-2 group-hover:hidden group-has-[[data-open]]:hidden">
+          <span className="flex min-w-0 shrink items-center gap-2 group-hover:hidden group-has-[[data-open]]:hidden">
+            {/* Spawned by another worktree's agent over MCP. Shrinks
+                (and truncates) before the branch name does. */}
+            {w.createdBy && (
+              <span className="min-w-0 max-w-[8rem] shrink truncate font-mono text-[10px] text-neutral-600">
+                ↳ {w.createdBy}
+              </span>
+            )}
             {(a?.agentCount ?? 0) > 1 && (
               <span
-                className="font-mono text-[10px] text-neutral-500"
+                className="shrink-0 font-mono text-[10px] text-neutral-500"
                 title={`${a?.agentCount} agents`}
               >
                 ×{a?.agentCount}
               </span>
             )}
-            <AheadBehind ahead={a?.ahead ?? 0} behind={a?.behind ?? 0} />
+            <span className="shrink-0">
+              <AheadBehind ahead={a?.ahead ?? 0} behind={a?.behind ?? 0} />
+            </span>
           </span>
         </div>
         <RowMenu

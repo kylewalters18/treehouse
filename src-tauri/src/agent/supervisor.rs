@@ -298,7 +298,15 @@ fn max_severity(a: AgentActivity, b: AgentActivity) -> AgentActivity {
 }
 
 /// Launch an agent in `cwd` and stream its PTY output over `channel`.
-/// At most one agent per worktree — launching a second returns `AlreadyOpen`.
+///
+/// `channel` is `None` for headless launches (an agent spawning a sibling
+/// worktree over MCP): output only fills the ring buffer until the user
+/// opens that worktree and `AgentPane` adopts the session via `attach`.
+///
+/// `prompt` seeds the session's first turn (Claude Code / Codex take it as a
+/// positional arg; ignored for Kiro). Claude Code sessions also get the
+/// treehouse MCP server injected via `--mcp-config` — see `crate::mcp`.
+#[allow(clippy::too_many_arguments)]
 pub fn launch(
     app: &AppHandle,
     registry: &AgentRegistry,
@@ -306,9 +314,10 @@ pub fn launch(
     cwd: PathBuf,
     backend: AgentBackendKind,
     argv_override: Option<Vec<String>>,
+    prompt: Option<String>,
     cols: u16,
     rows: u16,
-    channel: Channel<AgentEvent>,
+    channel: Option<Channel<AgentEvent>>,
 ) -> AppResult<AgentSession> {
     // Install Claude Code hooks in the worktree *before* spawning the
     // child, so the config is on disk when Claude reads settings.
@@ -337,8 +346,18 @@ pub fn launch(
         })
         .map_err(|e| AppError::Unknown(format!("agent openpty: {e}")))?;
 
-    let mut cmd = CommandBuilder::new(&argv[0]);
-    for arg in argv.iter().skip(1) {
+    // Minted before spawn so the token can ride in argv; the handler checks
+    // the session is still live, so a failed spawn just leaves a dead token.
+    let session_id = AgentSessionId::new();
+    let spawn_argv = build_spawn_argv(
+        backend,
+        &argv,
+        crate::mcp::claude_config_for(app, backend, session_id, worktree_id).as_deref(),
+        prompt.as_deref(),
+    );
+
+    let mut cmd = CommandBuilder::new(&spawn_argv[0]);
+    for arg in spawn_argv.iter().skip(1) {
         cmd.arg(arg);
     }
     cmd.cwd(&cwd);
@@ -361,7 +380,6 @@ pub fn launch(
         .take_writer()
         .map_err(|e| AppError::Unknown(format!("take writer: {e}")))?;
 
-    let session_id = AgentSessionId::new();
     let session = AgentSession {
         id: session_id,
         worktree_id,
@@ -375,7 +393,7 @@ pub fn launch(
 
     let shared = Arc::new(Mutex::new(AgentShared {
         ring: VecDeque::with_capacity(RING_MAX_BYTES / 16),
-        channel: Some(channel.clone()),
+        channel: channel.clone(),
         status: AgentStatus::Running,
         last_newline: Instant::now(),
         last_any_output: Instant::now(),
@@ -384,9 +402,11 @@ pub fn launch(
     }));
 
     // Announce "Running" immediately so the UI can swap state.
-    let _ = channel.send(AgentEvent::Status {
-        status: AgentStatus::Running,
-    });
+    if let Some(ch) = &channel {
+        let _ = ch.send(AgentEvent::Status {
+            status: AgentStatus::Running,
+        });
+    }
 
     // Reader thread: pump PTY output into the ring buffer + currently-attached
     // channel. Exit event fires on EOF and updates the shared status so future
@@ -539,6 +559,39 @@ pub fn resize(
         })
         .map_err(|e| AppError::Unknown(format!("agent resize: {e}")))?;
     Ok(())
+}
+
+/// Final argv for the child: the user-visible `argv` (what `AgentSession`
+/// records and tab labels derive from) plus injected flags. A seeded prompt
+/// goes last behind `--`, because Claude's `--mcp-config <configs...>` is
+/// variadic and would otherwise swallow it.
+fn build_spawn_argv(
+    backend: AgentBackendKind,
+    argv: &[String],
+    mcp_config: Option<&str>,
+    prompt: Option<&str>,
+) -> Vec<String> {
+    let mut out = argv.to_vec();
+    if let Some(cfg) = mcp_config {
+        out.push("--mcp-config".into());
+        out.push(cfg.into());
+    }
+    let prompt = prompt.map(str::trim).filter(|p| !p.is_empty());
+    if let (Some(p), true) = (prompt, backend.accepts_positional_prompt()) {
+        out.push("--".into());
+        out.push(p.into());
+    }
+    out
+}
+
+/// `true` while the session exists and its child hasn't exited.
+pub fn is_live(registry: &AgentRegistry, id: AgentSessionId) -> bool {
+    registry.inner.get(&id).is_some_and(|h| {
+        matches!(
+            h.shared.lock().status,
+            AgentStatus::Running | AgentStatus::Starting
+        )
+    })
 }
 
 pub fn kill(registry: &AgentRegistry, id: AgentSessionId) {
@@ -756,6 +809,22 @@ fn parse_kiro_agents(text: &str) -> Vec<super::BackendAgent> {
 mod tests {
     use super::*;
     use super::super::patterns::{AgentPatterns, Which};
+
+    #[test]
+    fn spawn_argv_puts_prompt_after_variadic_mcp_config() {
+        let argv = vec!["claude".to_string(), "--agent".into(), "x".into()];
+        assert_eq!(
+            build_spawn_argv(AgentBackendKind::ClaudeCode, &argv, Some("{}"), Some("  do it  ")),
+            vec!["claude", "--agent", "x", "--mcp-config", "{}", "--", "do it"]
+        );
+        // No extras → argv untouched; blank prompt ignored.
+        assert_eq!(build_spawn_argv(AgentBackendKind::ClaudeCode, &argv, None, Some(" ")), argv);
+        // Kiro has no verified positional-prompt form.
+        assert_eq!(
+            build_spawn_argv(AgentBackendKind::Kiro, &["kiro-cli".into()], None, Some("hi")),
+            vec!["kiro-cli"]
+        );
+    }
 
     fn has_attention_kiro(chunk: &[u8]) -> bool {
         AgentPatterns::defaults().matches(AgentBackendKind::Kiro, chunk, Which::Attention)

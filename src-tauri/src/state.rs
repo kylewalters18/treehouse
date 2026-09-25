@@ -7,6 +7,7 @@ use crate::agent::supervisor::AgentRegistry;
 use crate::diff::DiffSet;
 use crate::fs_watch::{WatchRegistry, WorkspaceWatchRegistry};
 use crate::lsp::registry::LspRegistry;
+use crate::mcp::McpRegistry;
 use crate::pty::manager::TerminalRegistry;
 use crate::util::ids::{WorkspaceId, WorktreeId};
 use crate::workspace::Workspace;
@@ -39,6 +40,8 @@ pub struct AppState {
     /// repo doesn't re-fork `git remote get-url` on every forge poll. Evicted in
     /// `close_workspace`.
     pub forge_remotes: Arc<DashMap<WorkspaceId, Option<crate::forge::RemoteInfo>>>,
+    /// Treehouse MCP server: bound port + per-agent bearer tokens.
+    pub mcp: Arc<McpRegistry>,
 }
 
 impl AppState {
@@ -56,6 +59,7 @@ impl AppState {
             worktree_status: Arc::new(DashMap::new()),
             merge_check_cache: Arc::new(DashMap::new()),
             forge_remotes: Arc::new(DashMap::new()),
+            mcp: Arc::new(McpRegistry::new()),
         }
     }
 }

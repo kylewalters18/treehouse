@@ -37,6 +37,7 @@ bytes = "1"
 dunce = "1"
 toml = "0.8"
 toml_edit = { version = "0.22", features = ["serde"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
 
 [dev-dependencies]
 tempfile = "3"
