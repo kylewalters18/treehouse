@@ -90,6 +90,22 @@ export function Workspace() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // ⌘K — agent board overlay. Capture phase so it wins everywhere,
+  // including Monaco, which would otherwise swallow ⌘K as the start of a
+  // chord (⌘K ⌘0 fold all, …) — we deliberately give those up. Cmd only:
+  // Ctrl+K is kill-to-end-of-line in shells and agent inputs.
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (!e.metaKey || e.shiftKey || e.altKey || e.ctrlKey) return;
+      if (e.key !== "k" && e.key !== "K") return;
+      e.preventDefault();
+      e.stopPropagation();
+      useUiStore.getState().toggleAgentBoard();
+    }
+    window.addEventListener("keydown", onKey, { capture: true });
+    return () => window.removeEventListener("keydown", onKey, { capture: true });
+  }, []);
+
   // Cmd+\ (Ctrl+\ on Linux/Win) toggles focus mode.
   // Cmd+B toggles the worktree sidebar (VS Code muscle memory).
   // Cmd+P opens the fuzzy file finder; Cmd+Shift+P opens the command
@@ -143,10 +159,6 @@ export function Workspace() {
         if (!selectedWorktreeId) return;
         e.preventDefault();
         useUiStore.getState().requestAgentLaunch();
-      } else if (e.shiftKey && (e.key === "d" || e.key === "D")) {
-        // ⌘⇧D — agent board overlay.
-        e.preventDefault();
-        useUiStore.getState().toggleAgentBoard();
       } else if (e.metaKey && !e.shiftKey && (e.key === "j" || e.key === "J")) {
         // ⌘J — scratch agent popup. Cmd only: Ctrl+J is a newline in
         // Claude's input (and LF in shells), so it must reach the xterm.

@@ -1,4 +1,4 @@
-/// Agent board: a full-screen overlay (⌘⇧D) listing every agent session
+/// Agent board: a full-screen overlay (⌘K) listing every agent session
 /// across open repos, sorted by whether it needs the user. It's a triage
 /// view, not a place to work: pick a card and you land in that worktree's
 /// diff (⏎) or agent tab (t). The one inline action is answering a Claude

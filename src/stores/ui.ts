@@ -58,7 +58,7 @@ type UiState = {
   /// out of WorktreeSidebar-local state so the Cmd+Shift+N global
   /// shortcut can open it for the active workspace.
   newWorktreeWorkspace: WorkspaceId | null;
-  /// Agent board overlay (⌘⇧D).
+  /// Agent board overlay (⌘K).
   agentBoardOpen: boolean;
   agentBoardLayout: "board" | "list";
   /// Scratch agent popup (⌘J).
@@ -233,16 +233,19 @@ export const useUiStore = create<UiState>((set, get) => ({
       const visible = visibleAgent(get());
       if (visible) get().markAgentSeen(visible);
     }
-    set({ agentBoardOpen: open });
+    // One overlay at a time: the board and scratch both want the keyboard.
+    set(open ? { agentBoardOpen: true, scratchOpen: false } : { agentBoardOpen: false });
   },
   toggleAgentBoard() {
     get().setAgentBoardOpen(!get().agentBoardOpen);
   },
   setScratchOpen(open) {
-    set({ scratchOpen: open });
+    // Hiding scratch only detaches its xterm, so closing it for the board
+    // (and vice versa) loses nothing.
+    set(open ? { scratchOpen: true, agentBoardOpen: false } : { scratchOpen: false });
   },
   toggleScratch() {
-    set((s) => ({ scratchOpen: !s.scratchOpen }));
+    get().setScratchOpen(!get().scratchOpen);
   },
   setAgentBoardLayout(layout) {
     set({ agentBoardLayout: layout });

@@ -100,11 +100,11 @@ async function openWorkspaceWithAgents(page: Page) {
   await expect(page.getByText("agent/feature").first()).toBeVisible();
 }
 
-test("⌘⇧D opens the board with agents sorted by what needs you", async ({
+test("⌘K opens the board with agents sorted by what needs you", async ({
   page,
 }) => {
   await openWorkspaceWithAgents(page);
-  await page.keyboard.press("ControlOrMeta+Shift+D");
+  await page.keyboard.press("Meta+K");
 
   const board = page.getByRole("dialog", { name: "Agent board" });
   await expect(board).toBeVisible();
@@ -125,7 +125,7 @@ test("a answers the selected permission prompt from the board", async ({
   page,
 }) => {
   await openWorkspaceWithAgents(page);
-  await page.keyboard.press("ControlOrMeta+Shift+D");
+  await page.keyboard.press("Meta+K");
   const board = page.getByRole("dialog", { name: "Agent board" });
   await expect(board.getByText("docker compose up -d redis")).toBeVisible();
 
@@ -143,7 +143,7 @@ test("enter on a card jumps to that worktree and closes the board", async ({
   page,
 }) => {
   await openWorkspaceWithAgents(page);
-  await page.keyboard.press("ControlOrMeta+Shift+D");
+  await page.keyboard.press("Meta+K");
   const board = page.getByRole("dialog", { name: "Agent board" });
   await expect(board).toBeVisible();
 

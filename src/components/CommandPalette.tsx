@@ -60,7 +60,7 @@ function buildCommands(deps: {
     category: "Agents",
     title: "Open agent board",
     description:
-      "Every agent across open repos, sorted by what needs you (⌘⇧D)",
+      "Every agent across open repos, sorted by what needs you (⌘K)",
     run: () => {
       useUiStore.getState().setAgentBoardOpen(true);
     },

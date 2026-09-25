@@ -77,6 +77,18 @@ describe("ui store", () => {
     expect(useUiStore.getState().agentSeenAt["a-1"]).toBeGreaterThan(0);
   });
 
+  it("board and scratch overlays close each other", () => {
+    const s = useUiStore.getState();
+    s.toggleScratch();
+    expect(useUiStore.getState().scratchOpen).toBe(true);
+    s.toggleAgentBoard();
+    expect(useUiStore.getState()).toMatchObject({ agentBoardOpen: true, scratchOpen: false });
+    s.toggleScratch();
+    expect(useUiStore.getState()).toMatchObject({ agentBoardOpen: false, scratchOpen: true });
+    s.toggleScratch();
+    expect(useUiStore.getState()).toMatchObject({ agentBoardOpen: false, scratchOpen: false });
+  });
+
   it("reset wipes everything back to defaults", () => {
     const s = useUiStore.getState();
     s.selectWorktree("x");
