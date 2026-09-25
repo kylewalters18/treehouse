@@ -9,7 +9,7 @@ import {
   Plus,
   X,
 } from "lucide-react";
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { ask, open as openDialog } from "@tauri-apps/plugin-dialog";
 import { useWorkspaceStore } from "@/stores/workspace";
 import { useWorktreesStore } from "@/stores/worktrees";
 import { useUiStore } from "@/stores/ui";
@@ -247,29 +247,29 @@ export function WorktreeSidebar() {
   }
 
   async function onCloseRepo(ws: Workspace) {
-    // Confirm if there's a live agent or any dirty worktree in this
-    // repo — closing tears down PTYs and worktree state.
+    // Always confirm — the ✕ sits right next to the repo name and one
+    // stray click tears down every agent, terminal, and LSP in the repo.
+    // Live agents / dirty worktrees are called out when present.
     const repoWorktrees = worktrees.filter((w) => w.workspaceId === ws.id);
     const liveAgents = repoWorktrees.filter(
       (w) => activity[w.id] !== undefined && activity[w.id].activity !== "inactive",
     );
     const dirty = repoWorktrees.filter((w) => activity[w.id]?.dirty);
-    if (liveAgents.length > 0 || dirty.length > 0) {
-      const reasons: string[] = [];
-      if (liveAgents.length > 0)
-        reasons.push(
-          `• ${liveAgents.length} live agent(s) will be killed`,
-        );
-      if (dirty.length > 0)
-        reasons.push(
-          `• ${dirty.length} worktree(s) have uncommitted changes`,
-        );
-      const repoLabel = basenameOf(ws.root);
-      const ok = window.confirm(
-        `Close "${repoLabel}"?\n\n${ws.root}\n\n${reasons.join("\n")}\n\nThe on-disk worktrees are kept; this just detaches them from treehouse.`,
-      );
-      if (!ok) return;
-    }
+    const reasons: string[] = [];
+    if (liveAgents.length > 0)
+      reasons.push(`• ${liveAgents.length} live agent(s) will be killed`);
+    if (dirty.length > 0)
+      reasons.push(`• ${dirty.length} worktree(s) have uncommitted changes`);
+    const repoLabel = basenameOf(ws.root);
+    // Not `window.confirm`: tauri-plugin-dialog replaces it with an async
+    // version whose Promise is always truthy, so the guard never held.
+    const ok = await ask(
+      `Close "${repoLabel}"?\n\n${ws.root}\n\n` +
+        (reasons.length ? `${reasons.join("\n")}\n\n` : "") +
+        "Open agents and terminals will be closed. The on-disk worktrees are kept; this just detaches them from treehouse.",
+      { title: "Close repo", kind: "warning", okLabel: "Close" },
+    );
+    if (!ok) return;
     // Drop UI-side worktree entries immediately so the sidebar doesn't
     // briefly render the section after close while Rust tears down.
     dropForWorkspace(ws.id);
@@ -295,7 +295,11 @@ export function WorktreeSidebar() {
     const tail = warnings.length
       ? `\n\nWarning — this will be lost:\n${warnings.join("\n")}\n\nDelete anyway?`
       : "\n\nThis will delete the checkout and local branch.";
-    const ok = window.confirm(lead + tail);
+    const ok = await ask(lead + tail, {
+      title: "Remove worktree",
+      kind: "warning",
+      okLabel: "Remove",
+    });
     if (!ok) return;
     await removeWt(w.id, true);
   }

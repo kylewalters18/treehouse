@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { ask } from "@tauri-apps/plugin-dialog";
 import type { WorkspaceId } from "@/ipc/types";
 import { openExternalUrl } from "@/ipc/client";
 import { useForgeStore, forgeBranchKey } from "@/stores/forge";
@@ -70,12 +71,13 @@ export function MrBar({
 
   async function onMerge() {
     if (!mr) return;
-    if (
-      !window.confirm(
-        `Merge !${mr.number} into its target branch (using the project's merge method)? This closes the linked issue.`,
-      )
-    )
-      return;
+    // `ask`, not `window.confirm` — the dialog plugin makes the latter
+    // async (always-truthy Promise), which skipped the guard.
+    const confirmed = await ask(
+      `Merge !${mr.number} into its target branch (using the project's merge method)? This closes the linked issue.`,
+      { title: "Merge MR", kind: "warning", okLabel: "Merge" },
+    );
+    if (!confirmed) return;
     setBusy(true);
     const ok = await mergeMr(workspaceId, branch, mr.number);
     setBusy(false);
