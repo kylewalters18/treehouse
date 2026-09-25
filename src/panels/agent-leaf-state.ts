@@ -181,6 +181,12 @@ export function createAgentLeafState(
 
   (async () => {
     try {
+      // The caller mounts `host` into its slot synchronously after we
+      // return; yield once so the spawn below sees the fitted size
+      // instead of xterm's 80x24 default (which overflows a narrow pane).
+      await Promise.resolve();
+      if (state.killed) return;
+      if (host.isConnected) fitAndPin(fit, term);
       let id: AgentSessionId;
       if (mode.kind === "launch") {
         const s = await launchAgent(
@@ -239,6 +245,14 @@ export function createAgentLeafState(
           agentResize(state.sessionId, cols, rows).catch(() => {});
         }
       });
+      // Any fit() that landed while launch/attach was in flight fired
+      // onResize before the listener above existed, and the observer's
+      // initial fit below is a no-op when xterm is already at that size.
+      // Push the current size explicitly so the PTY can't stay stale.
+      if (host.isConnected) {
+        fitAndPin(fit, term);
+        agentResize(id, term.cols, term.rows).catch(() => {});
+      }
       state.resizeObserver = new ResizeObserver(() => {
         // While the host is detached from the DOM (worktree switch
         // parks it in the pool), its content box collapses to 0 and

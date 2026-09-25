@@ -562,6 +562,12 @@ export function createLeafState(
 
   (async () => {
     try {
+      // The caller mounts `host` into its slot synchronously after we
+      // return; yield once so the spawn below sees the fitted size
+      // instead of xterm's 80x24 default.
+      await Promise.resolve();
+      if (state.killed) return;
+      if (host.isConnected) fitAndPin(fit, term);
       let session;
       if (leaf.mode.kind === "open") {
         session = await openTerminal(worktreeId, term.cols, term.rows, onEvent);
@@ -602,6 +608,12 @@ export function createLeafState(
           ptyResize(state.sessionId, cols, rows).catch(() => {});
         }
       });
+      // A fit() during open/attach fired onResize before the listener
+      // above existed — push the current size so the PTY isn't stale.
+      if (host.isConnected) {
+        fitAndPin(fit, term);
+        ptyResize(session.id, term.cols, term.rows).catch(() => {});
+      }
       state.resizeObserver = new ResizeObserver(() => {
         // While the host is detached from the DOM (worktree switch
         // parks it in the pool), its content box collapses to 0 and

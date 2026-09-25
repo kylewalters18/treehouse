@@ -82,6 +82,10 @@ describe("LeafState lifecycle", () => {
       () => {},
     );
 
+    // Let the async path get past its pre-spawn fit yield so the
+    // openTerminal IPC is actually in flight.
+    await Promise.resolve();
+
     // User unmounts the pane (worktree switch / pane close) before the
     // PTY came back. dispose flips killed=true synchronously.
     disposeLeafState(state);
