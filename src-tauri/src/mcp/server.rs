@@ -117,7 +117,7 @@ async fn dispatch(app: &AppHandle, caller: McpCaller, msg: Value) -> Option<Valu
     let result = match method {
         "initialize" => Ok(initialize(&params)),
         "ping" => Ok(json!({})),
-        "tools/list" => Ok(json!({ "tools": tools::list() })),
+        "tools/list" => Ok(json!({ "tools": tools::list(caller.scope) })),
         "tools/call" => Ok(tools::call(app, caller, &params).await),
         _ => Err((-32601, format!("method not found: {method}"))),
     };

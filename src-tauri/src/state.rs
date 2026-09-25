@@ -9,6 +9,7 @@ use crate::fs_watch::{WatchRegistry, WorkspaceWatchRegistry};
 use crate::lsp::registry::LspRegistry;
 use crate::mcp::McpRegistry;
 use crate::pty::manager::TerminalRegistry;
+use crate::scratch::ScratchState;
 use crate::util::ids::{WorkspaceId, WorktreeId};
 use crate::workspace::Workspace;
 use crate::worktree::status::{MergeCheckCache, StatusCache};
@@ -42,6 +43,8 @@ pub struct AppState {
     pub forge_remotes: Arc<DashMap<WorkspaceId, Option<crate::forge::RemoteInfo>>>,
     /// Treehouse MCP server: bound port + per-agent bearer tokens.
     pub mcp: Arc<McpRegistry>,
+    /// The global ⌘J scratch agent — see `crate::scratch`.
+    pub scratch: Arc<ScratchState>,
 }
 
 impl AppState {
@@ -60,6 +63,7 @@ impl AppState {
             merge_check_cache: Arc::new(DashMap::new()),
             forge_remotes: Arc::new(DashMap::new()),
             mcp: Arc::new(McpRegistry::new()),
+            scratch: Arc::new(ScratchState::new()),
         }
     }
 }

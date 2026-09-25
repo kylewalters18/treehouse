@@ -1,6 +1,7 @@
 import { invoke, Channel } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
+  AgentActivity,
   AgentBackendKind,
   AgentOverview,
   AgentEvent,
@@ -378,6 +379,22 @@ export function attachAgent(
   const channel = new Channel<AgentEvent>();
   channel.onmessage = onEvent;
   return invoke<AgentSession>("attach_agent", { agentId, channel });
+}
+
+/// Show the global scratch agent: attaches to the running session (ring
+/// buffer replayed into the channel) or starts one.
+export function openScratchAgent(
+  cols: number,
+  rows: number,
+  onEvent: (ev: AgentEvent) => void,
+): Promise<AgentSession> {
+  const channel = new Channel<AgentEvent>();
+  channel.onmessage = onEvent;
+  return invoke<AgentSession>("open_scratch_agent", { cols, rows, channel });
+}
+
+export function scratchAgentActivity(): Promise<AgentActivity> {
+  return invoke<AgentActivity>("scratch_agent_activity");
 }
 
 export function listAgentActivity(

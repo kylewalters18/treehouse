@@ -4,7 +4,8 @@ use tauri::ipc::Channel;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::agent::{
-    self, AgentBackendKind, AgentEvent, AgentOverview, AgentSession, WorktreeActivity,
+    self, AgentActivity, AgentBackendKind, AgentEvent, AgentOverview, AgentSession,
+    WorktreeActivity,
 };
 use crate::diff::{self, DiffMode, DiffSet};
 use crate::forge::{
@@ -883,6 +884,25 @@ pub async fn list_agent_activity(
         });
     }
     Ok(out)
+}
+
+/// Show the global scratch agent: attach to the running session (ring-buffer
+/// replay) or start one. See `crate::scratch`.
+#[tauri::command]
+pub async fn open_scratch_agent(
+    app: AppHandle,
+    cols: u16,
+    rows: u16,
+    channel: Channel<AgentEvent>,
+    state: State<'_, AppState>,
+) -> AppResult<AgentSession> {
+    crate::scratch::open(&app, &state.scratch, &state.agents, cols, rows, channel).await
+}
+
+/// Scratch agent activity for the header pill. In-memory; safe to poll.
+#[tauri::command]
+pub async fn scratch_agent_activity(state: State<'_, AppState>) -> AppResult<AgentActivity> {
+    Ok(state.scratch.activity(&state.agents))
 }
 
 #[tauri::command]

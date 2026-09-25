@@ -31,7 +31,7 @@ import { useWorktreesStore } from "@/stores/worktrees";
 /// false-positive path link).
 export function registerTerminalLinks(
   term: Terminal,
-  worktreeId: WorktreeId,
+  worktreeId: WorktreeId | null,
 ): IDisposable {
   return term.registerLinkProvider({
     provideLinks(bufferLineNumber, callback) {
@@ -56,13 +56,15 @@ export function registerTerminalLinks(
 export function combinedLinksForLine(
   text: string,
   bufferLineNumber: number,
-  worktreeId: WorktreeId,
+  worktreeId: WorktreeId | null,
 ): ILink[] {
   const urls = urlLinksForLine(text, bufferLineNumber);
   // Build inclusive cell ranges of URL matches so we can filter
   // overlapping path matches out. `range.start.x` and `range.end.x`
   // are 1-based and inclusive.
   const urlRanges = urls.map((u) => [u.range.start.x, u.range.end.x] as const);
+  // No worktree (the scratch agent) → nowhere to resolve paths against.
+  if (!worktreeId) return urls;
   const paths = linksForLine(text, bufferLineNumber, worktreeId).filter((p) => {
     const ps = p.range.start.x;
     const pe = p.range.end.x;

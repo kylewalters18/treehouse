@@ -7,6 +7,7 @@ mod ipc;
 mod lsp;
 mod mcp;
 mod pty;
+mod scratch;
 mod state;
 mod storage;
 mod user_config;
@@ -129,6 +130,8 @@ pub fn run() {
             ipc::commands::list_backend_agents,
             ipc::commands::attach_agent,
             ipc::commands::list_agent_activity,
+            ipc::commands::open_scratch_agent,
+            ipc::commands::scratch_agent_activity,
             ipc::commands::list_agent_overview,
             ipc::commands::agent_respond_permission,
             ipc::commands::lsp_ensure,

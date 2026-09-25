@@ -61,6 +61,8 @@ type UiState = {
   /// Agent board overlay (⌘⇧D).
   agentBoardOpen: boolean;
   agentBoardLayout: "board" | "list";
+  /// Scratch agent popup (⌘J).
+  scratchOpen: boolean;
   /// Epoch ms each agent session was last on screen — its tab active in
   /// the selected worktree. Maintained by the subscription below; the
   /// board uses it to tell finished-and-unseen turns from seen ones.
@@ -99,6 +101,8 @@ type UiState = {
   closeNewWorktreeDialog: () => void;
   setAgentBoardOpen: (open: boolean) => void;
   toggleAgentBoard: () => void;
+  setScratchOpen: (open: boolean) => void;
+  toggleScratch: () => void;
   setAgentBoardLayout: (layout: "board" | "list") => void;
   markAgentSeen: (agentId: AgentSessionId) => void;
   /// Select `worktreeId` and make `agentId` its active agent tab.
@@ -123,6 +127,7 @@ export const useUiStore = create<UiState>((set, get) => ({
   newWorktreeWorkspace: null,
   agentBoardOpen: false,
   agentBoardLayout: "board",
+  scratchOpen: false,
   agentSeenAt: {},
   agentFocusRequest: null,
   selectWorktree(id) {
@@ -232,6 +237,12 @@ export const useUiStore = create<UiState>((set, get) => ({
   },
   toggleAgentBoard() {
     get().setAgentBoardOpen(!get().agentBoardOpen);
+  },
+  setScratchOpen(open) {
+    set({ scratchOpen: open });
+  },
+  toggleScratch() {
+    set((s) => ({ scratchOpen: !s.scratchOpen }));
   },
   setAgentBoardLayout(layout) {
     set({ agentBoardLayout: layout });

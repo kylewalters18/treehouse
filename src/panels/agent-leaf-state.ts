@@ -7,6 +7,7 @@ import {
   attachAgent,
   killAgent,
   launchAgent,
+  openScratchAgent,
 } from "@/ipc/client";
 import type {
   AgentBackendKind,
@@ -20,7 +21,9 @@ import { attachTerminalSearch } from "./term-search";
 
 export type AgentLeafMode =
   | { kind: "launch"; backend: AgentBackendKind; argv?: string[] }
-  | { kind: "attach"; agentId: AgentSessionId };
+  | { kind: "attach"; agentId: AgentSessionId }
+  /// The global scratch agent: attach-or-launch in one call.
+  | { kind: "scratch" };
 
 export type AgentLeafState = {
   host: HTMLDivElement;
@@ -30,6 +33,8 @@ export type AgentLeafState = {
   resizeObserver: ResizeObserver | null;
   links: { dispose: () => void } | null;
   killed: boolean;
+  /// The agent process has exited (or crashed); the xterm is a tombstone.
+  exited: boolean;
   error: string | null;
   errorListeners: Set<(err: string | null) => void>;
 };
@@ -101,7 +106,7 @@ export function clearAgentLeafStatesForWorktree(
 }
 
 export function createAgentLeafState(
-  worktreeId: WorktreeId,
+  worktreeId: WorktreeId | null,
   mode: AgentLeafMode,
   onSession: (id: AgentSessionId) => void,
 ): AgentLeafState {
@@ -150,6 +155,7 @@ export function createAgentLeafState(
       },
     },
     killed: false,
+    exited: false,
     error: null,
     errorListeners: new Set(),
   };
@@ -166,6 +172,7 @@ export function createAgentLeafState(
       term.write(new Uint8Array(ev.bytes));
     } else if (ev.kind === "status") {
       if (ev.status.kind === "exited" || ev.status.kind === "crashed") {
+        state.exited = true;
         const suffix =
           ev.status.kind === "exited"
             ? ev.status.code !== null
@@ -189,6 +196,7 @@ export function createAgentLeafState(
       if (host.isConnected) fitAndPin(fit, term);
       let id: AgentSessionId;
       if (mode.kind === "launch") {
+        if (!worktreeId) throw new Error("launch needs a worktree");
         const s = await launchAgent(
           worktreeId,
           mode.backend,
@@ -206,6 +214,12 @@ export function createAgentLeafState(
           await killAgent(id).catch(() => {});
           return;
         }
+      } else if (mode.kind === "scratch") {
+        const s = await openScratchAgent(term.cols, term.rows, onEvent);
+        id = s.id;
+        // Closed while starting: the backend holds onto the session, so
+        // detaching is enough — "New session" kills it explicitly.
+        if (state.killed) return;
       } else {
         const s = await attachAgent(mode.agentId, onEvent);
         id = s.id;

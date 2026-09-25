@@ -22,6 +22,7 @@ import { FileFinder } from "@/components/FileFinder";
 import { CommandPalette } from "@/components/CommandPalette";
 import { SystemFileViewer } from "@/components/SystemFileViewer";
 import { AgentBoard } from "@/components/AgentBoard";
+import { ScratchAgent, ScratchPill } from "@/components/ScratchAgent";
 
 export function Workspace() {
   const workspaceCount = useWorkspaceStore((s) => s.workspaces.length);
@@ -146,6 +147,11 @@ export function Workspace() {
         // ⌘⇧D — agent board overlay.
         e.preventDefault();
         useUiStore.getState().toggleAgentBoard();
+      } else if (e.metaKey && !e.shiftKey && (e.key === "j" || e.key === "J")) {
+        // ⌘J — scratch agent popup. Cmd only: Ctrl+J is a newline in
+        // Claude's input (and LF in shells), so it must reach the xterm.
+        e.preventDefault();
+        useUiStore.getState().toggleScratch();
       } else if (e.shiftKey && (e.key === "n" || e.key === "N")) {
         // ⌘⇧N — new worktree in the active (or first open) workspace.
         e.preventDefault();
@@ -187,6 +193,7 @@ export function Workspace() {
           )}
         </div>
         <div className="flex items-center gap-2">
+          <ScratchPill />
           <SendQueueButton />
           <SettingsMenu />
           <button
@@ -284,6 +291,7 @@ export function Workspace() {
       />
       <SystemFileViewerMount />
       <AgentBoard />
+      <ScratchAgent />
     </div>
   );
 }

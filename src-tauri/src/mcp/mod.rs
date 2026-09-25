@@ -9,7 +9,9 @@
 //!   and gets the server injected via `--mcp-config` (never written into the
 //!   repo). The token is how a tool call knows its caller's workspace and
 //!   parent worktree; it stops working once the agent exits.
-//! - Tools live in `tools`. Only `create_worktree` for now.
+//! - Tools live in `tools`: `create_worktree`, plus `list_repos` for the
+//!   scratch agent (`crate::scratch`), which isn't in any repo and so has to
+//!   name one.
 //! - Gating is Claude Code's own permission prompt: we don't pre-approve the
 //!   tool, so each call asks the user in the parent agent's pane (which also
 //!   flips that worktree to needs-attention in the sidebar).
@@ -36,7 +38,17 @@ pub const SERVER_NAME: &str = "treehouse";
 #[derive(Debug, Clone, Copy)]
 pub struct McpCaller {
     pub agent_id: AgentSessionId,
-    pub worktree_id: WorktreeId,
+    pub scope: CallerScope,
+}
+
+/// Where the calling agent lives, which decides the tool set and where
+/// `create_worktree` puts things.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CallerScope {
+    /// An agent inside a worktree: new worktrees go in the same repo.
+    Worktree(WorktreeId),
+    /// The global scratch agent: no repo of its own, names one per call.
+    Scratch,
 }
 
 pub struct McpRegistry {
@@ -83,9 +95,15 @@ pub fn claude_config_for(
     if !matches!(backend, AgentBackendKind::ClaudeCode) {
         return None;
     }
-    let mcp = &app.try_state::<AppState>()?.mcp;
+    let state = app.try_state::<AppState>()?;
+    let mcp = &state.mcp;
     let port = mcp.port()?;
-    let token = mcp.mint(McpCaller { agent_id, worktree_id });
+    let scope = if worktree_id == state.scratch.worktree_id {
+        CallerScope::Scratch
+    } else {
+        CallerScope::Worktree(worktree_id)
+    };
+    let token = mcp.mint(McpCaller { agent_id, scope });
     Some(
         json!({
             "mcpServers": {
@@ -116,7 +134,7 @@ fn random_token() -> String {
 /// Split a command line into argv — mirrors `src/lib/shell-words.ts` so a
 /// headless launch resolves the user's configured agent command exactly the
 /// way the AgentPane launcher does.
-fn split_command(input: &str) -> Vec<String> {
+pub(crate) fn split_command(input: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut cur = String::new();
     let mut started = false;
@@ -175,7 +193,7 @@ mod tests {
         let reg = McpRegistry::new();
         let caller = McpCaller {
             agent_id: AgentSessionId::new(),
-            worktree_id: WorktreeId::new(),
+            scope: CallerScope::Worktree(WorktreeId::new()),
         };
         let a = reg.mint(caller);
         let b = reg.mint(caller);

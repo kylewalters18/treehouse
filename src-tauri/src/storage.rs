@@ -35,7 +35,7 @@ struct RecentFile {
     items: Vec<RecentWorkspace>,
 }
 
-fn config_dir(app: &AppHandle) -> AppResult<PathBuf> {
+pub(crate) fn config_dir(app: &AppHandle) -> AppResult<PathBuf> {
     app.path()
         .app_config_dir()
         .map_err(|e| AppError::Unknown(format!("config dir: {e}")))
@@ -197,6 +197,18 @@ pub struct AgentCommands {
     pub claude_code: String,
     pub codex: String,
     pub kiro: String,
+}
+
+impl AgentCommands {
+    /// The user's configured command line for `backend`.
+    pub fn for_backend(&self, backend: crate::agent::AgentBackendKind) -> &str {
+        use crate::agent::AgentBackendKind::*;
+        match backend {
+            ClaudeCode => &self.claude_code,
+            Codex => &self.codex,
+            Kiro => &self.kiro,
+        }
+    }
 }
 
 impl Default for AgentCommands {
