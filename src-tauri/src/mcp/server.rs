@@ -21,7 +21,13 @@ const PROTOCOL_VERSIONS: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05"];
 const INSTRUCTIONS: &str = "You are running inside treehouse, a desktop app that runs \
 coding agents in parallel git worktrees. Use create_worktree to split independent pieces \
 of work into sibling worktrees, each with its own agent seeded with a prompt. The user sees \
-them appear in treehouse's sidebar and reviews/merges them there.";
+them appear in treehouse's sidebar and reviews/merges them there.
+
+Whenever you need a new git worktree, ALWAYS use create_worktree. NEVER run \
+`git worktree add` (in any form) and never use Claude Code's built-in worktree features \
+(the EnterWorktree tool, or subagents with worktree isolation). Worktrees made those ways \
+land outside treehouse's layout: they get no treehouse agent, and the user can't see, \
+review, or merge them from the app.";
 
 /// Bind the server and record its port. Called once from `setup()`; on
 /// failure agents simply launch without treehouse tools.

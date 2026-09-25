@@ -26,7 +26,9 @@ pub fn list() -> Value {
             shown in treehouse's sidebar like one the user created. If `prompt` is given, a new \
             agent is started in it with that prompt as its first message; that agent starts with \
             NO context from this conversation, so make the prompt self-contained (goal, relevant \
-            files, constraints, how to verify). The user is not switched to it.",
+            files, constraints, how to verify). The user is not switched to it. Always use this \
+            instead of `git worktree add` or EnterWorktree — worktrees created those ways are \
+            invisible to treehouse.",
         "inputSchema": {
             "type": "object",
             "properties": {
