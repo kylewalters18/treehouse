@@ -818,16 +818,39 @@ export function CommentOverlay({
     return () => document.removeEventListener("click", handle, true);
   }, [editor]);
 
-  // Build the set of zones (view zone + overlay widget pairs) that should
-  // exist right now, and reconcile against what's already there. The full
-  // rebuild is cheap because the set is small.
-  useEffect(() => {
-    const prev = entries;
-    for (const e of prev) {
-      editor.changeViewZones((acc) => acc.removeZone(e.viewZoneId));
-      editor.removeOverlayWidget(e.widget);
-    }
+  // Live zones keyed by `desc.key`, reconciled in place rather than rebuilt.
+  // A zone that persists keeps its DOM node, so the portal'd React subtree —
+  // and any half-typed text in the composer or a comment's edit box —
+  // survives. Rebuilding on every `visible` / `fileThreads` change (the
+  // forge poll refreshes threads every 20s; any comment-store write changes
+  // `visible`) remounted the composer and wiped in-progress comments.
+  const liveRef = useRef(new Map<string, ZoneEntry>());
 
+  // Full teardown only when the editor, file, or model changes. Monaco
+  // discards view zones on a model swap, so a reused entry (e.g. the
+  // `composer` key) would otherwise keep an overlay pinned to a dead zone;
+  // `modelEpoch` forces the reconcile below to recreate them.
+  const [modelEpoch, setModelEpoch] = useState(0);
+  useEffect(() => {
+    const live = liveRef.current;
+    const clear = () => {
+      for (const e of live.values()) {
+        editor.changeViewZones((acc) => acc.removeZone(e.viewZoneId));
+        editor.removeOverlayWidget(e.widget);
+      }
+      live.clear();
+    };
+    const sub = editor.onDidChangeModel(() => {
+      clear();
+      setModelEpoch((n) => n + 1);
+    });
+    return () => {
+      sub.dispose();
+      clear();
+    };
+  }, [editor, filePath]);
+
+  useEffect(() => {
     const want: ZoneDesc[] = [];
     for (const c of visible) {
       want.push({
@@ -863,13 +886,36 @@ export function CommentOverlay({
       });
     }
 
-    const next: ZoneEntry[] = [];
+    const live = liveRef.current;
+    const wantByKey = new Map(want.map((d) => [d.key, d]));
+
+    // Drop zones that are gone or moved lines (a view zone's anchor line
+    // can't be changed in place).
+    for (const [key, e] of live) {
+      const d = wantByKey.get(key);
+      if (!d || d.line !== e.desc.line) {
+        editor.changeViewZones((acc) => acc.removeZone(e.viewZoneId));
+        editor.removeOverlayWidget(e.widget);
+        live.delete(key);
+      }
+    }
+
     const info0 = editor.getLayoutInfo();
     const initLeft = info0.contentLeft;
     const initWidth =
       info0.width - info0.contentLeft - info0.verticalScrollbarWidth;
+    const next: ZoneEntry[] = [];
     editor.changeViewZones((acc) => {
       for (const desc of want) {
+        const existing = live.get(desc.key);
+        if (existing) {
+          // Same DOM node + zone; just refresh the data it renders. Thread
+          // zones keep their measured height (ThreadWidget re-measures).
+          const updated = { ...existing, desc };
+          live.set(desc.key, updated);
+          next.push(updated);
+          continue;
+        }
         const domNode = document.createElement("div");
         domNode.style.position = "absolute";
         domNode.style.zIndex = "5";
@@ -909,20 +955,14 @@ export function CommentOverlay({
         };
         const viewZoneId = acc.addZone(zone);
 
-        next.push({ desc, viewZoneId, widget, domNode, zone });
+        const entry = { desc, viewZoneId, widget, domNode, zone };
+        live.set(desc.key, entry);
+        next.push(entry);
       }
     });
 
     setEntries(next);
-
-    return () => {
-      for (const e of next) {
-        editor.changeViewZones((acc) => acc.removeZone(e.viewZoneId));
-        editor.removeOverlayWidget(e.widget);
-      }
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editor, visible, composerLine, fileThreads]);
+  }, [editor, visible, composerLine, fileThreads, modelEpoch]);
 
   // Keep the overlay widgets' horizontal position/width in sync with the
   // editor's content area as the layout changes (resizes, wrapping toggle,
