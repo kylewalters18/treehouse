@@ -16,6 +16,11 @@ import type { FileContent, WorktreeId } from "@/ipc/types";
 import { asMessage } from "@/lib/errors";
 import { getMarkdownHighlighter, highlightCode } from "./markdown-shiki";
 import { renderMermaid } from "./markdown-mermaid";
+import {
+  SUSPECT_RECHECK_MS,
+  classifyDiskRead,
+  createCoalescedRunner,
+} from "./disk-sync";
 
 type Props = {
   worktreeId: WorktreeId;
@@ -42,22 +47,57 @@ export function MarkdownPreview({ worktreeId, path }: Props) {
 
   useEffect(() => {
     let cancelled = false;
-    const fetch = async () => {
-      try {
-        const c = await readFile(worktreeId, path);
-        if (!cancelled) setContent(c);
-      } catch (e) {
-        if (!cancelled) setError(asMessage(e));
+    // Text currently rendered, so a refresh that reads the same bytes
+    // (or a transient mid-write empty/missing read) doesn't re-render.
+    let shown: string | null = null;
+    // Same pipeline as EditorPane's reload-on-disk: serialized +
+    // coalesced reads (no stale out-of-order results), and a failed or
+    // suddenly-empty read is re-checked before it replaces the preview.
+    const runner = createCoalescedRunner(async (isStale) => {
+      let confirmed = shown === null;
+      for (;;) {
+        let c: FileContent | null = null;
+        let err: unknown = null;
+        try {
+          c = await readFile(worktreeId, path);
+        } catch (e) {
+          err = e;
+        }
+        if (cancelled || isStale()) return;
+        const verdict = classifyDiskRead(
+          c ? { ok: true, text: c.text } : { ok: false },
+          shown ?? "",
+          confirmed,
+        );
+        if (verdict.kind === "suspect") {
+          await new Promise((r) => setTimeout(r, SUSPECT_RECHECK_MS));
+          if (cancelled || isStale()) return;
+          confirmed = true;
+          continue;
+        }
+        if (verdict.kind === "echo" && shown !== null) return;
+        if (c) {
+          shown = c.text;
+          setError(null);
+          setContent(c);
+        } else {
+          setError(asMessage(err));
+        }
+        return;
       }
-    };
-    void fetch();
+    });
+    runner.trigger();
 
-    // Live-refresh on agent writes, same pattern as EditorPane.
+    // Live-refresh on agent writes. Keep reacting for one event after
+    // the file leaves the diff so a revert-to-base still refreshes.
+    let wasInDiff = true;
     let unlisten: (() => void) | null = null;
     onDiffUpdated(worktreeId, (diff) => {
       if (cancelled) return;
-      if (!diff.files.some((f) => f.path === path)) return;
-      void fetch();
+      const inDiff = diff.files.some((f) => f.path === path);
+      const relevant = inDiff || wasInDiff;
+      wasInDiff = inDiff;
+      if (relevant) runner.trigger();
     }).then((fn) => {
       if (cancelled) fn();
       else unlisten = fn;
@@ -65,6 +105,7 @@ export function MarkdownPreview({ worktreeId, path }: Props) {
 
     return () => {
       cancelled = true;
+      runner.dispose();
       unlisten?.();
     };
   }, [worktreeId, path]);

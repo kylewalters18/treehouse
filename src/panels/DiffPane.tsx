@@ -133,17 +133,22 @@ function DiffView({ worktreeId }: { worktreeId: WorktreeId }) {
   //   since there's no diff to show. Preview is also a valid non-diff
   //   view; only force when the current tab is actually Diff so a
   //   freshly-selected Preview doesn't get clobbered.
+  //
+  // Never bounce File → Diff while the open buffer is dirty: that
+  // unmounts the editor and silently drops the user's unsaved edits.
+  // The editor's own "deleted on disk" banner owns that case.
+  const selectedDirty = useIsEditorDirty(worktreeId, selectedFile);
   useEffect(() => {
     if (!selectedFile) return;
     const inDiff = selected != null;
     const fileTabUnusable =
       (selected?.binary ?? false) || selected?.status.kind === "deleted";
-    if (view === "file" && fileTabUnusable && inDiff) {
+    if (view === "file" && fileTabUnusable && inDiff && !selectedDirty) {
       setView(worktreeId, "diff");
     } else if (view === "diff" && !inDiff) {
       setView(worktreeId, "file");
     }
-  }, [selectedFile, selected, view, worktreeId, setView]);
+  }, [selectedFile, selected, view, worktreeId, setView, selectedDirty]);
 
   if (error) {
     return (

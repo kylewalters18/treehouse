@@ -45,6 +45,13 @@ import {
 import { useDiffsStore } from "@/stores/diffs";
 import { useEditorViewStateStore } from "@/stores/editor-view-state";
 import { inferLanguage } from "./editor-language";
+import {
+  SUSPECT_RECHECK_MS,
+  classifyDiskRead,
+  computeLineEdits,
+  createCoalescedRunner,
+  type DiskRead,
+} from "./disk-sync";
 
 export { inferLanguage };
 
@@ -258,55 +265,77 @@ function EditorWithComments({
   }, [worktreeId, path, setDirtyStore]);
 
   // Conflict-aware reload-on-disk. When fs_watch emits diff_updated for
-  // our path, re-fetch the file and decide:
+  // our path, re-fetch the file and decide (see `classifyDiskRead`):
   //   - disk == lastRead  → echo of our own write, no-op
   //   - clean buffer, disk changed → silently apply to model + refresh
-  //     lastRead (today's behavior, preserved)
+  //     lastRead
   //   - dirty buffer, disk changed → show banner; stash the new content
-  //   - read errors as not-found → "deleted" variant
+  //   - read error / sudden empty → re-check once after a beat before
+  //     believing it (agents truncate-then-write), then "deleted"
+  //
+  // Reads go through a coalesced runner: one in flight, one pending,
+  // and a run superseded by a newer event drops its result. Without it
+  // a burst of events during a streaming agent write fans out into
+  // concurrent reads that resolve out of order and apply stale content
+  // over newer content.
   useEffect(() => {
     if (!editor) return;
     let cancelled = false;
     let unlisten: (() => void) | null = null;
-    onDiffUpdated(worktreeId, async (diff) => {
-      if (cancelled) return;
-      if (!diff.files.some((f) => f.path === path)) return;
-      let next: PendingDisk;
-      try {
-        const c = await readFile(worktreeId, path);
-        if (cancelled) return;
-        if (c.text === null) return; // binary / oversized — out of scope for editor conflict
-        if (c.text === lastReadContentRef.current) return; // echo
-        next = { kind: "changed", content: c.text };
-      } catch {
-        if (cancelled) return;
-        next = { kind: "deleted" };
-      }
-      const model = editor.getModel();
-      if (!model) return;
-      const isDirty = model.getValue() !== lastReadContentRef.current;
-      if (!isDirty) {
-        // Silent apply — but DO NOT `model.setValue` here. setValue
-        // wipes the whole buffer, which thrashes scroll/cursor/folds/
-        // tokenization on every agent write. Instead replace only the
-        // contiguous region that actually changed (longest common
-        // prefix + suffix), so the view sticks unless the cursor is
-        // inside the edit region.
-        const newText = next.kind === "changed" ? next.content : "";
-        applyMinimalReplace(model, newText);
-        lastReadContentRef.current = newText;
-        setDirtyStore(worktreeId, path, false);
+    const runner = createCoalescedRunner(async (isStale) => {
+      let confirmed = false;
+      for (;;) {
+        const read: DiskRead = await readFile(worktreeId, path).then(
+          (c) => ({ ok: true, text: c.text }),
+          () => ({ ok: false }),
+        );
+        if (isStale()) return;
+        const verdict = classifyDiskRead(read, lastReadContentRef.current, confirmed);
+        if (verdict.kind === "suspect") {
+          await new Promise((r) => setTimeout(r, SUSPECT_RECHECK_MS));
+          if (isStale()) return;
+          confirmed = true;
+          continue;
+        }
+        if (verdict.kind === "ignore" || verdict.kind === "echo") return;
+        const next: PendingDisk = verdict;
+        const model = editor.getModel();
+        if (!model) return;
+        const isDirty = model.getValue() !== lastReadContentRef.current;
+        if (!isDirty) {
+          const newText = next.kind === "changed" ? next.content : "";
+          // Update lastRead *before* the edit so the onDidChangeContent
+          // dirty tracker sees model == lastRead and never flips the
+          // tab's dirty dot on for an agent write.
+          lastReadContentRef.current = newText;
+          applyDiskText(model, newText);
+          setDirtyStore(worktreeId, path, false);
+          return;
+        }
+        // Dirty → surface conflict (or update the stashed disk content
+        // if the banner is already up from an earlier event).
+        setPendingDisk(next);
         return;
       }
-      // Dirty → surface conflict (or update the stashed disk content
-      // if the banner is already up from an earlier event).
-      setPendingDisk(next);
+    });
+    // The payload lists files that differ from base, so an agent write
+    // that reverts our file to base drops it from the list. Keep
+    // reacting for one event after it leaves so that revert still
+    // lands. Starts true: the first event always re-checks.
+    let wasInDiff = true;
+    onDiffUpdated(worktreeId, (diff) => {
+      if (cancelled) return;
+      const inDiff = diff.files.some((f) => f.path === path);
+      const relevant = inDiff || wasInDiff;
+      wasInDiff = inDiff;
+      if (relevant) runner.trigger();
     }).then((fn) => {
       if (cancelled) fn();
       else unlisten = fn;
     });
     return () => {
       cancelled = true;
+      runner.dispose();
       unlisten?.();
     };
   }, [editor, worktreeId, path, setDirtyStore]);
@@ -319,8 +348,8 @@ function EditorWithComments({
     const model = editor.getModel();
     if (!model) return;
     const newValue = pendingDisk.kind === "changed" ? pendingDisk.content : "";
-    applyMinimalReplace(model, newValue);
     lastReadContentRef.current = newValue;
+    applyDiskText(model, newValue);
     setDirtyStore(worktreeId, path, false);
     setPendingDisk(null);
   };
@@ -447,71 +476,55 @@ function EditorWithComments({
   );
 }
 
+/// Bring `model` to `newText` with one edit per changed hunk, instead
+/// of `model.setValue(newText)`. setValue is a full-buffer replace —
+/// every call wipes scroll position, cursor, selection, folds, and
+/// forces full re-tokenization. That's catastrophic when an agent is
+/// writing the open file at debounce cadence (~150ms).
+///
+/// Per-hunk rather than a single prefix/suffix span: Monaco keeps the
+/// viewport stable across edits by tracking the top visible line, but
+/// an edit whose range *covers* that line collapses the anchor to the
+/// edit start. A single span from the first change to the last (say
+/// lines 10 and 500) covers everything between, so a reader at line
+/// 200 got yanked to line 10 on every agent write. With per-hunk edits
+/// only lines that actually changed move; cursor and viewport outside
+/// them stay put.
+///
+/// Wrapped in undo stops so an agent write is its own undo step and
+/// never merges into the user's in-progress typing group.
+function applyDiskText(
+  model: MonacoEditor.ITextModel,
+  newText: string,
+): void {
+  const edits = computeLineEdits(model.getValue(), newText);
+  if (edits.length === 0) return;
+  model.pushStackElement();
+  model.pushEditOperations(
+    [],
+    edits.map((e) => {
+      const start = model.getPositionAt(e.start);
+      const end = model.getPositionAt(e.end);
+      return {
+        range: new monaco.Range(
+          start.lineNumber,
+          start.column,
+          end.lineNumber,
+          end.column,
+        ),
+        text: e.text,
+      };
+    }),
+    () => null,
+  );
+  model.pushStackElement();
+}
+
 /// Sticky banner above the editor surfacing the conflict policy: the
 /// file on disk diverged from the user's last-loaded state while they
 /// had unsaved local edits. "Reload from disk" hard-discards the local
 /// buffer; "Keep editing" dismisses — the next save then overwrites the
 /// agent's intervening writes (or recreates a deleted file).
-/// Replace just the contiguous span of `model` that differs from `newText`,
-/// instead of `model.setValue(newText)`. setValue is a full-buffer
-/// replace — every call wipes scroll position, cursor, selection,
-/// folds, and forces full re-tokenization. That's catastrophic when an
-/// agent is writing the open file at debounce cadence (~150ms): the
-/// view thrashes hard enough to be unusable.
-///
-/// Strategy: find the longest common prefix and longest common suffix
-/// between the old text and the new text, then push a single edit that
-/// replaces only the middle. Monaco preserves cursor position outside
-/// the edit range, restricts re-tokenization to changed lines, and
-/// leaves view state alone. Cursor *inside* the change region still
-/// gets repositioned by Monaco's own clamping — that's unavoidable for
-/// a real content change in that region.
-///
-/// O(n) in the text size for the prefix/suffix scan; no diff library.
-/// Identical-content fast path is a no-op (no edit pushed → no
-/// re-tokenize).
-function applyMinimalReplace(
-  model: MonacoEditor.ITextModel,
-  newText: string,
-): void {
-  const oldText = model.getValue();
-  if (oldText === newText) return;
-  const oldLen = oldText.length;
-  const newLen = newText.length;
-  let prefix = 0;
-  const minLen = Math.min(oldLen, newLen);
-  while (prefix < minLen && oldText.charCodeAt(prefix) === newText.charCodeAt(prefix)) {
-    prefix++;
-  }
-  let suffix = 0;
-  const maxSuffix = minLen - prefix;
-  while (
-    suffix < maxSuffix &&
-    oldText.charCodeAt(oldLen - 1 - suffix) ===
-      newText.charCodeAt(newLen - 1 - suffix)
-  ) {
-    suffix++;
-  }
-  const startPos = model.getPositionAt(prefix);
-  const endPos = model.getPositionAt(oldLen - suffix);
-  const replacement = newText.slice(prefix, newLen - suffix);
-  model.pushEditOperations(
-    [],
-    [
-      {
-        range: new monaco.Range(
-          startPos.lineNumber,
-          startPos.column,
-          endPos.lineNumber,
-          endPos.column,
-        ),
-        text: replacement,
-      },
-    ],
-    () => null,
-  );
-}
-
 function ConflictBanner({
   kind,
   onReload,
