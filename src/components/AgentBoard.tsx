@@ -395,7 +395,7 @@ function AgentBoardOverlay() {
           </button>
         </div>
 
-        <div className="min-h-0 flex-1 overflow-y-auto p-3">
+        <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-3">
           {overviews === null ? (
             <div className="p-6 text-center text-xs text-neutral-600">Loading agents…</div>
           ) : overviews.length === 0 ? (
@@ -408,10 +408,12 @@ function AgentBoardOverlay() {
               No agents match “{filter}”.
             </div>
           ) : layout === "board" ? (
-            <div className="grid grid-cols-1 items-start gap-3 md:grid-cols-2 xl:grid-cols-4">
+            <div className="grid grid-cols-1 gap-x-3 md:grid-cols-2 xl:grid-cols-4">
               {BOARD_COLUMNS.map((c) => (
                 <section key={c.key} className="flex min-w-0 flex-col gap-2">
-                  <ColumnHeader column={c.key} label={c.label} count={grouped[c.key].length} />
+                  <div className="sticky top-0 z-10 bg-neutral-900 pb-1 pt-3">
+                    <ColumnHeader column={c.key} label={c.label} count={grouped[c.key].length} />
+                  </div>
                   {grouped[c.key].length === 0 ? (
                     <div className="rounded border border-dashed border-neutral-800 px-3 py-2 text-xs text-neutral-600">
                       Nothing here
@@ -426,7 +428,7 @@ function AgentBoardOverlay() {
             <div className="flex flex-col gap-1">
               {BOARD_COLUMNS.filter((c) => grouped[c.key].length > 0).map((c) => (
                 <section key={c.key} className="flex flex-col gap-1">
-                  <div className="px-1 pt-2">
+                  <div className="sticky top-0 z-10 bg-neutral-900 px-1 pb-1 pt-3">
                     <ColumnHeader column={c.key} label={c.label} count={grouped[c.key].length} />
                   </div>
                   {grouped[c.key].map(renderCard)}
@@ -546,7 +548,8 @@ function AgentCard({
       onDoubleClick={onOpenDiff}
       title={selected ? "Click to open the diff" : undefined}
       className={cn(
-        "flex min-w-0 cursor-pointer flex-col gap-1.5 rounded-md border px-2.5 py-2 text-xs transition-colors",
+        // scroll-mt clears the sticky column header when j/k scrolls a card into view.
+        "flex min-w-0 scroll-mt-10 cursor-pointer flex-col gap-1.5 rounded-md border px-2.5 py-2 text-xs transition-colors",
         blocked
           ? "border-amber-500/30 bg-amber-500/[0.06] hover:bg-amber-500/10"
           : "border-neutral-800 bg-neutral-950/60 hover:bg-neutral-800/60",
