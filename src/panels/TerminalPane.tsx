@@ -283,6 +283,7 @@ function TerminalTabs({ worktreeId }: { worktreeId: WorktreeId }) {
                 worktreeId={worktreeId}
                 tabVisible={tabVisible}
                 activeLeafId={tab.activeLeafId}
+                split={tab.tree.kind !== "leaf"}
                 leafStates={leafStates}
                 onActivate={(leafId) => setActiveLeaf(tab.localId, leafId)}
                 onClose={(leafId) => void closePane(tab.localId, leafId)}
@@ -303,6 +304,7 @@ function PaneRender(props: {
   worktreeId: WorktreeId;
   tabVisible: boolean;
   activeLeafId: string;
+  split: boolean;
   leafStates: Map<string, LeafState>;
   onActivate: (leafId: string) => void;
   onClose: (leafId: string) => void;
@@ -339,6 +341,7 @@ function PaneLeafView({
   worktreeId,
   tabVisible,
   activeLeafId,
+  split,
   leafStates,
   onActivate,
   onClose,
@@ -348,6 +351,7 @@ function PaneLeafView({
   worktreeId: WorktreeId;
   tabVisible: boolean;
   activeLeafId: string;
+  split: boolean;
   leafStates: Map<string, LeafState>;
   onActivate: (leafId: string) => void;
   onClose: (leafId: string) => void;
@@ -359,7 +363,8 @@ function PaneLeafView({
       onMouseDown={() => onActivate(leaf.localId)}
       className={cn(
         "group relative h-full w-full",
-        isActive && "ring-1 ring-inset ring-blue-500/40",
+        // Only meaningful when there's another pane to tell apart from.
+        split && isActive && "ring-1 ring-inset ring-blue-400/20",
       )}
     >
       <TerminalLeafSlot
