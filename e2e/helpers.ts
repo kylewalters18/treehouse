@@ -1,4 +1,4 @@
-import type { Page } from "@playwright/test";
+import { expect, type Page } from "@playwright/test";
 
 /// Wait for the E2E harness (`window.__e2e`) to be installed, then
 /// optionally seed a batch of static command responses. Most tests only
@@ -9,6 +9,10 @@ export async function bootApp(
   page: Page,
   responses: Record<string, unknown> = {},
 ): Promise<void> {
+  if (process.env.E2E_CONSOLE) {
+    page.on("console", (m) => console.log(`[page ${m.type()}]`, m.text()));
+    page.on("pageerror", (e) => console.log("[pageerror]", e.message));
+  }
   await page.goto("/");
   await page.waitForFunction(
     () => !!(window as unknown as { __e2e?: unknown }).__e2e,
@@ -17,6 +21,22 @@ export async function bootApp(
   );
   if (Object.keys(responses).length > 0) {
     await mockCommands(page, responses);
+  }
+  // The workspace store re-reads `list_workspaces` after opening a repo.
+  // Unless a spec mocks it, answer like the Rust side: empty until
+  // `open_workspace` runs, then the workspace it returned.
+  if ("open_workspace" in responses && !("list_workspaces" in responses)) {
+    await page.evaluate((ws) => {
+      const w = window as unknown as {
+        __e2e: { mock: (cmd: string, fn: () => unknown) => void };
+      };
+      let opened = false;
+      w.__e2e.mock("open_workspace", () => {
+        opened = true;
+        return ws;
+      });
+      w.__e2e.mock("list_workspaces", () => (opened ? [ws] : []));
+    }, responses.open_workspace);
   }
 }
 
@@ -96,4 +116,15 @@ export function emptyDiff() {
     stats: { filesChanged: 0, insertions: 0, deletions: 0 },
     files: [],
   };
+}
+
+/// Select a worktree in the sidebar. Worktrees with no agent activity sit
+/// in a collapsed "N inactive" pile, so expand it first when the row
+/// isn't showing.
+export async function openWorktree(page: Page, branch: string): Promise<void> {
+  const row = page.getByText(branch, { exact: true });
+  const pile = page.getByRole("button", { name: /^\d+ inactive$/ });
+  await expect(row.or(pile).first()).toBeVisible();
+  if (!(await row.isVisible())) await pile.click();
+  await row.click();
 }

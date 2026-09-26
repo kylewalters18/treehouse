@@ -5,6 +5,7 @@ import {
   fakeMainClone,
   fakeWorktree,
   FAKE_WORKSPACE,
+  openWorktree,
 } from "./helpers";
 
 /// Three pre-existing agents seeded via `list_agents_for_worktree` so
@@ -130,7 +131,7 @@ async function setupAgentsAndOpen(page: Page) {
   }, agents);
 
   await page.getByRole("button", { name: /open repository/i }).click();
-  await page.getByText("agent/feature").click();
+  await openWorktree(page, "agent/feature");
 
   await expect(page.getByText("Claude 1", { exact: true })).toBeVisible();
   await expect(page.getByText("Codex 1", { exact: true })).toBeVisible();
@@ -257,7 +258,7 @@ test("agent tab order persists across worktree switches", async ({ page }) => {
   }, agents);
 
   await page.getByRole("button", { name: /open repository/i }).click();
-  await page.getByText("agent/feature").click();
+  await openWorktree(page, "agent/feature");
 
   await expect(page.getByText("Kiro 1", { exact: true })).toBeVisible();
   await dragTab(page, "Kiro 1", "Claude 1");
@@ -266,9 +267,9 @@ test("agent tab order persists across worktree switches", async ({ page }) => {
   }).toPass({ timeout: 2000 });
 
   // Switch to main clone — AgentPane is hidden for the main clone.
-  await page.getByRole("button", { name: /main clone/i }).click();
+  await page.getByTitle("Main clone (repo root)").click();
   // Switch back; order should be restored from the UI store.
-  await page.getByText("agent/feature").click();
+  await openWorktree(page, "agent/feature");
 
   await expect(page.getByText("Kiro 1", { exact: true })).toBeVisible();
   expect(await tabLabels(page)).toEqual(["Kiro 1", "Claude 1", "Codex 1"]);
@@ -340,7 +341,7 @@ test("agent tab labels are stable across worktree switches", async ({
   }, agents);
 
   await page.getByRole("button", { name: /open repository/i }).click();
-  await page.getByText("agent/feature").click();
+  await openWorktree(page, "agent/feature");
 
   await expect(page.getByText("Claude 1", { exact: true })).toBeVisible();
   expect(await tabLabels(page)).toEqual(["Claude 1", "Claude 2", "Claude 3"]);
@@ -353,8 +354,8 @@ test("agent tab labels are stable across worktree switches", async ({
   }).toPass({ timeout: 2000 });
 
   // Round-trip via the main clone (AgentPane unmounts and remounts).
-  await page.getByRole("button", { name: /main clone/i }).click();
-  await page.getByText("agent/feature").click();
+  await page.getByTitle("Main clone (repo root)").click();
+  await openWorktree(page, "agent/feature");
 
   // Labels MUST still be ["Claude 3", "Claude 1", "Claude 2"], not
   // re-numbered to ["Claude 1", "Claude 2", "Claude 3"].
@@ -391,15 +392,15 @@ test("active agent tab persists across worktree switches", async ({
   }, agents);
 
   await page.getByRole("button", { name: /open repository/i }).click();
-  await page.getByText("agent/feature").click();
+  await openWorktree(page, "agent/feature");
 
   // Default after adoption is the last tab — Kiro 1. Switch to Codex 1
   // explicitly so the test exercises the persisted-active code path.
   await page.getByText("Codex 1", { exact: true }).click();
 
   // Switch to main clone, then back.
-  await page.getByRole("button", { name: /main clone/i }).click();
-  await page.getByText("agent/feature").click();
+  await page.getByTitle("Main clone (repo root)").click();
+  await openWorktree(page, "agent/feature");
 
   // Codex 1 should remain the active tab. The active tab uses
   // `bg-neutral-800` whereas inactive ones use neither bg nor text-100,

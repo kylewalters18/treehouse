@@ -97,7 +97,7 @@ async function openWorkspaceWithAgents(page: Page) {
     });
   });
   await page.getByRole("button", { name: /open repository/i }).click();
-  await expect(page.getByText("agent/feature").first()).toBeVisible();
+  await expect(page.getByTitle("Main clone (repo root)")).toBeVisible();
 }
 
 test("⌘K opens the board with agents sorted by what needs you", async ({
@@ -152,6 +152,6 @@ test("enter on a card jumps to that worktree and closes the board", async ({
   await page.keyboard.press("Enter");
   await expect(board).toBeHidden();
   await expect(
-    page.getByRole("button", { name: /docs-refresh/ }).first(),
-  ).toBeVisible();
+    page.getByRole("listitem", { name: "/fake/repo__worktrees/docs" }),
+  ).toHaveAttribute("aria-current", "true");
 });

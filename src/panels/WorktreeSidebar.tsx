@@ -460,6 +460,7 @@ export function WorktreeSidebar() {
           selectedId === w.id && "bg-neutral-900",
         )}
         onClick={() => selectWorktree(w.id)}
+        aria-current={selectedId === w.id ? "true" : undefined}
         title={
           w.createdBy
             ? `${w.path}\nCreated by the agent in ${w.createdBy}`

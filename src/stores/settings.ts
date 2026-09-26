@@ -20,7 +20,7 @@ type SettingsState = {
   setEnabledLspLanguages: (ids: string[]) => Promise<void>;
 };
 
-const DEFAULT_SETTINGS: Settings = {
+export const DEFAULT_SETTINGS: Settings = {
   syncStrategy: "rebase",
   mergeBackStrategy: "rebaseFf",
   initSubmodules: false,

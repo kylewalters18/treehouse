@@ -8,6 +8,8 @@
 /// This file is only imported from `main.tsx` when the env flag is set,
 /// so production bundles never ship it.
 
+import { DEFAULT_SETTINGS } from "@/stores/settings";
+
 type InvokeFn = (cmd: string, args?: unknown) => unknown | Promise<unknown>;
 type InvokeHandler = (args?: unknown) => unknown | Promise<unknown>;
 
@@ -28,19 +30,19 @@ export function installE2EMocks(): void {
     list_recent_workspaces: async () => [],
     list_workspaces: async () => [],
     open_external_url: async () => null,
-    get_settings: async () => ({
-      syncStrategy: "rebase",
-      mergeBackStrategy: "rebaseFf",
-      initSubmodules: false,
-      defaultAgentBackend: "claudeCode",
-      autoStartAgent: true,
-    }),
+    get_settings: async () => structuredClone(DEFAULT_SETTINGS),
     list_comments: async () => [],
     list_branches: async () => [],
     lsp_list_configs: async () => [],
     lsp_resolve_command: async () => null,
   };
   const listeners: Record<string, Set<(ev: { payload: unknown }) => void>> = {};
+  // `@tauri-apps/api` registers every JS callback (Channel handlers,
+  // `listen` handlers) through `transformCallback` and passes the id.
+  const callbacks = new Map<number, (payload: unknown) => void>();
+  let nextCallbackId = 1;
+  const listenerFns = new Map<number, (ev: { payload: unknown }) => void>();
+  let nextListenerId = 1;
 
   const invoke: InvokeFn = async (cmd, args) => {
     // Tauri's event plugin routes through invoke("plugin:event|listen", ...)
@@ -48,15 +50,19 @@ export function installE2EMocks(): void {
     if (cmd === "plugin:event|listen") {
       const { event, handler } = args as {
         event: string;
-        handler: (ev: { payload: unknown }) => void;
+        handler: number | ((ev: { payload: unknown }) => void);
       };
+      const fn =
+        typeof handler === "number" ? callbacks.get(handler) : handler;
+      if (!fn) return 0;
       const set = listeners[event] ?? (listeners[event] = new Set());
-      set.add(handler);
-      return 1; // opaque listener id
+      set.add(fn);
+      const id = nextListenerId++;
+      listenerFns.set(id, fn);
+      return id;
     }
     if (cmd === "plugin:event|unlisten") {
-      // We don't track id→event mapping; tests don't depend on unlisten
-      // firing precisely, and per-page state resets between tests anyway.
+      // The handler was already dropped in `unregisterListener` below.
       return undefined;
     }
 
@@ -72,18 +78,46 @@ export function installE2EMocks(): void {
     window as unknown as {
       __TAURI_INTERNALS__: {
         invoke: InvokeFn;
+        transformCallback: (cb?: (payload: unknown) => void, once?: boolean) => number;
+        unregisterCallback: (id: number) => void;
         postMessage: () => void;
         metadata: unknown;
       };
     }
   ).__TAURI_INTERNALS__ = {
     invoke,
+    transformCallback(cb, once) {
+      const id = nextCallbackId++;
+      callbacks.set(id, (payload) => {
+        if (once) callbacks.delete(id);
+        cb?.(payload);
+      });
+      return id;
+    },
+    unregisterCallback(id) {
+      callbacks.delete(id);
+    },
     postMessage: () => {},
     metadata: {
       currentWindow: { label: "main" },
       currentWebview: { label: "main", windowLabel: "main" },
       windows: [],
       webviews: [],
+    },
+  };
+
+  // `unlisten()` drops the handler here before invoking the plugin.
+  (
+    window as unknown as {
+      __TAURI_EVENT_PLUGIN_INTERNALS__: {
+        unregisterListener: (event: string, id: number) => void;
+      };
+    }
+  ).__TAURI_EVENT_PLUGIN_INTERNALS__ = {
+    unregisterListener(event, id) {
+      const fn = listenerFns.get(id);
+      if (fn) listeners[event]?.delete(fn);
+      listenerFns.delete(id);
     },
   };
 

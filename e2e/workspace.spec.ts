@@ -5,6 +5,7 @@ import {
   fakeMainClone,
   fakeWorktree,
   FAKE_WORKSPACE,
+  openWorktree,
   mockCommands,
 } from "./helpers";
 
@@ -24,7 +25,9 @@ test("opening a workspace transitions to the Workspace route", async ({
 
   // Workspace route header has a Close button and the repo root in a
   // monospace badge. Both are reliable landmarks.
-  await expect(page.getByRole("button", { name: /close/i })).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Close", exact: true }),
+  ).toBeVisible();
   await expect(page.getByText(FAKE_WORKSPACE.root)).toBeVisible();
 });
 
@@ -50,8 +53,10 @@ test("worktree sidebar renders main clone + feature worktree", async ({
   // Scope the 'main' match to the sidebar to avoid colliding with the
   // default-branch badge in the header.
   await expect(
-    page.getByRole("button", { name: /main clone/i }),
+    page.getByTitle("Main clone (repo root)"),
   ).toBeVisible();
+  // No agent activity → the feature worktree sits in the inactive pile.
+  await page.getByRole("button", { name: /^1 inactive$/ }).click();
   await expect(page.getByText("agent/feature")).toBeVisible();
 });
 
@@ -78,7 +83,7 @@ test("selecting a file in the tree renders Monaco with its content", async ({
   await page.getByRole("button", { name: /open repository/i }).click();
 
   // Click the feature worktree in the sidebar.
-  await page.getByText("agent/feature").click();
+  await openWorktree(page, "agent/feature");
 
   // Click the file in the tree (rendered under the Files section of the
   // DiffPane left column).
@@ -121,7 +126,7 @@ test("editor click places the cursor at the clicked position", async ({
   });
 
   await page.getByRole("button", { name: /open repository/i }).click();
-  await page.getByText("agent/feature").click();
+  await openWorktree(page, "agent/feature");
   await page.getByRole("button", { name: "hello.py" }).click();
 
   // Wait for the Monaco model to be populated.
