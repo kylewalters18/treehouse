@@ -31,6 +31,17 @@ export function Toaster() {
                 </div>
               )}
             </div>
+            {t.action && (
+              <button
+                onClick={() => {
+                  t.action?.run();
+                  dismiss(t.id);
+                }}
+                className="shrink-0 text-[11px] font-medium text-blue-400 hover:text-blue-300"
+              >
+                {t.action.label}
+              </button>
+            )}
             <button
               onClick={() => dismiss(t.id)}
               className="shrink-0 text-[11px] opacity-60 hover:opacity-100"

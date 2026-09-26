@@ -6,6 +6,7 @@ import type {
   AgentOverview,
   AgentEvent,
   AgentSession,
+  AgentHistoryEntry,
   AgentSessionId,
   AppFileContent,
   BackendAgent,
@@ -334,6 +335,7 @@ export function launchAgent(
   rows: number,
   onEvent: (ev: AgentEvent) => void,
   argv?: string[],
+  resume?: string,
 ): Promise<AgentSession> {
   const channel = new Channel<AgentEvent>();
   channel.onmessage = onEvent;
@@ -341,6 +343,7 @@ export function launchAgent(
     worktreeId,
     backend,
     argv,
+    resume,
     cols,
     rows,
     channel,
@@ -370,6 +373,17 @@ export function listAgentsForWorktree(
   worktreeId: WorktreeId,
 ): Promise<AgentSession[]> {
   return invoke<AgentSession[]>("list_agents_for_worktree", { worktreeId });
+}
+
+/// Saved Claude conversations in a worktree, newest first.
+export function listAgentHistory(
+  worktreeId: WorktreeId,
+): Promise<AgentHistoryEntry[]> {
+  return invoke<AgentHistoryEntry[]>("list_agent_history", { worktreeId });
+}
+
+export function forgetAgentSession(claudeSessionId: string): Promise<void> {
+  return invoke<void>("forget_agent_session", { claudeSessionId });
 }
 
 export function attachAgent(

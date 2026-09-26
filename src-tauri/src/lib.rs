@@ -123,6 +123,8 @@ pub fn run() {
             ipc::commands::attach_terminal,
             ipc::commands::list_terminals_for_worktree,
             ipc::commands::launch_agent,
+            ipc::commands::list_agent_history,
+            ipc::commands::forget_agent_session,
             ipc::commands::agent_write,
             ipc::commands::agent_resize,
             ipc::commands::kill_agent,

@@ -28,6 +28,7 @@ export type { TerminalSession } from "./bindings/TerminalSession";
 export type { PtyEvent } from "./bindings/PtyEvent";
 
 export type { AgentSession } from "./bindings/AgentSession";
+export type { AgentHistoryEntry } from "./bindings/AgentHistoryEntry";
 export type { AgentBackendKind } from "./bindings/AgentBackendKind";
 export type { AgentStatus } from "./bindings/AgentStatus";
 export type { AgentEvent } from "./bindings/AgentEvent";

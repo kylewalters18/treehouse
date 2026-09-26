@@ -7,6 +7,8 @@ export type Toast = {
   kind: ToastKind;
   title: string;
   body?: string;
+  /// One button next to the dismiss ✕. Running it dismisses the toast.
+  action?: { label: string; run: () => void };
 };
 
 type ToastsState = {

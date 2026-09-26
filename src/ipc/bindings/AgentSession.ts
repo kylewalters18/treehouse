@@ -8,4 +8,8 @@ export type AgentSession = { id: AgentSessionId, worktreeId: WorktreeId, backend
 /**
  * Unix epoch milliseconds.
  */
-startedAt: bigint, cols: number, rows: number, status: AgentStatus, };
+startedAt: bigint, cols: number, rows: number, status: AgentStatus, 
+/**
+ * Launched with `--resume` to continue a saved conversation.
+ */
+resumed: boolean, };

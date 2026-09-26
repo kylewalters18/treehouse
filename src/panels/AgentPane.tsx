@@ -1,15 +1,22 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import "xterm/css/xterm.css";
 
 import { useSettingsStore } from "@/stores/settings";
 import { useUiStore } from "@/stores/ui";
 import { useWorktreesStore } from "@/stores/worktrees";
-import { killAgent, listAgentsForWorktree } from "@/ipc/client";
+import {
+  forgetAgentSession,
+  killAgent,
+  listAgentHistory,
+  listAgentsForWorktree,
+} from "@/ipc/client";
 import type {
   AgentBackendKind,
+  AgentHistoryEntry,
   AgentSessionId,
   WorktreeId,
 } from "@/ipc/types";
+import { useToastsStore } from "@/stores/toasts";
 import { cn } from "@/lib/cn";
 import { splitCommand } from "@/lib/shell-words";
 import { fitAndPin } from "./xterm-fit";
@@ -22,6 +29,7 @@ import {
   type AgentLeafMode,
   type AgentLeafState,
 } from "./agent-leaf-state";
+import { AgentHistoryList, AgentHistoryMenu, HistoryIcon } from "./AgentHistory";
 
 const BACKENDS: { label: string; value: AgentBackendKind }[] = [
   { label: "Claude Code", value: "claudeCode" },
@@ -48,7 +56,13 @@ export function AgentPane() {
       </div>
     );
   }
-  return <AgentTabs key={worktreeId} worktreeId={worktreeId} />;
+  return (
+    <AgentTabs
+      key={worktreeId}
+      worktreeId={worktreeId}
+      worktreeName={worktree.branch}
+    />
+  );
 }
 
 type Tab = {
@@ -56,7 +70,22 @@ type Tab = {
   mode: AgentLeafMode;
   backend: AgentBackendKind;
   label: string;
+  /// Continues a saved conversation (`claude --resume`).
+  resumed?: boolean;
 };
+
+/// How many times closing a Claude tab explains where it went.
+const CLOSE_TOAST_LIMIT = 3;
+const CLOSE_TOAST_KEY = "treehouse.agentHistoryToastCount";
+
+function takeCloseToast(): boolean {
+  try {
+    const n = Number(localStorage.getItem(CLOSE_TOAST_KEY) ?? 0);
+    if (n >= CLOSE_TOAST_LIMIT) return false;
+    localStorage.setItem(CLOSE_TOAST_KEY, String(n + 1));
+  } catch {}
+  return true;
+}
 
 /// Pull the sub-agent name back out of an argv so adopted sessions get
 /// the same `Claude 1 (foo)` label as freshly-launched ones, instead of
@@ -67,8 +96,40 @@ function argvAgentSuffix(argv: string[]): string {
   return ` (${argv[i + 1]})`;
 }
 
-function AgentTabs({ worktreeId }: { worktreeId: WorktreeId }) {
+function AgentTabs({
+  worktreeId,
+  worktreeName,
+}: {
+  worktreeId: WorktreeId;
+  worktreeName: string;
+}) {
   const [tabs, setTabs] = useState<Tab[]>([]);
+  const [history, setHistory] = useState<AgentHistoryEntry[]>([]);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+  const refreshHistory = useCallback(async () => {
+    try {
+      const h = (await listAgentHistory(worktreeId)) ?? [];
+      if (mounted.current) setHistory(h);
+      return h;
+    } catch {
+      return null;
+    }
+  }, [worktreeId]);
+  // Records appear once a conversation's first prompt lands, which
+  // happens inside the agent's TTY — nothing on this side sees it, so
+  // poll. The call is in-memory on the Rust side.
+  useEffect(() => {
+    void refreshHistory();
+    const t = window.setInterval(() => void refreshHistory(), 15_000);
+    return () => window.clearInterval(t);
+  }, [refreshHistory]);
   const [activeId, setActiveId] = useState<string | null>(null);
   /// xterm + host elements survive AgentTabs unmount/remount so scroll
   /// position, scrollback, selection, and search state aren't lost on
@@ -213,6 +274,7 @@ function AgentTabs({ worktreeId }: { worktreeId: WorktreeId }) {
             mode: { kind: "attach", agentId: s.id },
             backend: s.backend,
             label: labelBySession.get(s.id) as string,
+            resumed: s.resumed,
           };
         });
         setTabs(adopted);
@@ -314,6 +376,48 @@ function AgentTabs({ worktreeId }: { worktreeId: WorktreeId }) {
     setActiveId(next.localId);
   }
 
+  /// Reopen a saved conversation in a new tab, or switch to the tab that
+  /// already has it.
+  function resumeSession(entry: AgentHistoryEntry) {
+    setHistoryOpen(false);
+    if (entry.liveAgentId) {
+      const open = tabsRef.current.find(
+        (t) => sessionIds.current.get(t.localId) === entry.liveAgentId,
+      );
+      if (open) {
+        setActiveId(open.localId);
+        return;
+      }
+    }
+    counters.current.claudeCode = (counters.current.claudeCode ?? 0) + 1;
+    const parsed = splitCommand(agentCommands.claudeCode);
+    const argv = parsed.length > 0 ? parsed : undefined;
+    const next: Tab = {
+      localId: crypto.randomUUID(),
+      mode: {
+        kind: "launch",
+        backend: "claudeCode",
+        argv,
+        resume: entry.claudeSessionId,
+      },
+      backend: "claudeCode",
+      label: `${BACKEND_LABELS.claudeCode} ${counters.current.claudeCode}${argv ? argvAgentSuffix(argv) : ""}`,
+      resumed: true,
+    };
+    setTabs((prev) => [...prev, next]);
+    setActiveId(next.localId);
+  }
+  const resumeRef = useRef(resumeSession);
+  resumeRef.current = resumeSession;
+
+  async function forgetSession(entry: AgentHistoryEntry) {
+    setHistory((prev) =>
+      prev.filter((e) => e.claudeSessionId !== entry.claudeSessionId),
+    );
+    await forgetAgentSession(entry.claudeSessionId).catch(() => {});
+    void refreshHistory();
+  }
+
   // Run the latest `onLaunch` when the global launch nonce changes.
   // A ref holds the current closure (capturing live `backend`/`command`)
   // so the effect can depend on the nonce alone without re-firing when the
@@ -330,6 +434,12 @@ function AgentTabs({ worktreeId }: { worktreeId: WorktreeId }) {
 
   async function closeTab(localId: string) {
     const agentId = sessionIds.current.get(localId);
+    const closing = tabsRef.current.find((t) => t.localId === localId);
+    // Look the conversation up before the kill, while it's still live.
+    const saved =
+      agentId && closing?.backend === "claudeCode"
+        ? (await refreshHistory())?.find((e) => e.liveAgentId === agentId)
+        : undefined;
     // Pool entry is keyed by sessionId once known, falls back to
     // localId for in-flight launches whose onSession hasn't fired.
     const poolKey = agentId ?? localId;
@@ -355,6 +465,23 @@ function AgentTabs({ worktreeId }: { worktreeId: WorktreeId }) {
       return next;
     });
     // Sync runs from the `tabs`-watching useEffect after commit.
+    if (saved) {
+      void refreshHistory();
+      if (takeCloseToast()) {
+        useToastsStore.getState().push({
+          kind: "info",
+          title: "Saved to history",
+          body: saved.title ?? undefined,
+          action: {
+            label: "Undo",
+            run: () => {
+              if (mounted.current)
+                resumeRef.current({ ...saved, liveAgentId: null });
+            },
+          },
+        });
+      }
+    }
   }
 
   function onTabDragStart(e: React.DragEvent, localId: string) {
@@ -416,7 +543,7 @@ function AgentTabs({ worktreeId }: { worktreeId: WorktreeId }) {
   const hasTabs = tabs.length > 0;
 
   return (
-    <div className="flex h-full flex-col border-l border-neutral-800 bg-neutral-950">
+    <div className="relative flex h-full flex-col border-l border-neutral-800 bg-neutral-950">
       <div className="flex shrink-0 items-center gap-1 border-b border-neutral-800 px-1 py-0.5">
         <select
           value={backend}
@@ -452,7 +579,34 @@ function AgentTabs({ worktreeId }: { worktreeId: WorktreeId }) {
         >
           + Launch
         </button>
+        <button
+          data-agent-history-toggle
+          onClick={() => {
+            if (!historyOpen) void refreshHistory();
+            setHistoryOpen((o) => !o);
+          }}
+          title="Recent Claude Code sessions in this worktree"
+          aria-expanded={historyOpen}
+          className={cn(
+            "flex shrink-0 items-center gap-1 rounded border border-neutral-800 px-1.5 py-0.5 text-[11px]",
+            historyOpen
+              ? "bg-neutral-800 text-neutral-100"
+              : "text-neutral-400 hover:bg-neutral-800 hover:text-neutral-100",
+          )}
+        >
+          <HistoryIcon />
+          <span className="tabular-nums text-neutral-500">{history.length}</span>
+        </button>
       </div>
+      {historyOpen && (
+        <AgentHistoryMenu
+          worktreeName={worktreeName}
+          entries={history}
+          onResume={resumeSession}
+          onForget={forgetSession}
+          onClose={() => setHistoryOpen(false)}
+        />
+      )}
       {hasTabs && (
         <div className="flex shrink-0 items-center gap-1 overflow-x-auto border-b border-neutral-800 px-1 py-0.5">
           {tabs.map((tab) => (
@@ -482,13 +636,22 @@ function AgentTabs({ worktreeId }: { worktreeId: WorktreeId }) {
               )}
             >
               <span className="font-mono">{tab.label}</span>
+              {tab.resumed && (
+                <span className="text-neutral-500" title="Resumed conversation">
+                  ↺
+                </span>
+              )}
               <button
                 onClick={(e) => {
                   e.stopPropagation();
                   closeTab(tab.localId);
                 }}
                 className="opacity-0 transition group-hover:opacity-100 text-neutral-500 hover:text-red-400"
-                title="Kill agent"
+                title={
+                  tab.backend === "claudeCode"
+                    ? "Close (resume later from history)"
+                    : "Kill agent"
+                }
               >
                 ✕
               </button>
@@ -499,10 +662,33 @@ function AgentTabs({ worktreeId }: { worktreeId: WorktreeId }) {
 
       <div className="relative flex-1">
         {!hasTabs && (
-          <div className="absolute inset-0 flex items-center justify-center text-xs text-neutral-600">
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-3.5 text-xs text-neutral-600">
+            {!initLoading && history.length > 0 && (
+              <div className="w-96 max-w-[calc(100%-1.5rem)] overflow-hidden rounded-md border border-neutral-800">
+                <div className="flex items-baseline justify-between px-2.5 pb-1 pt-1.5 text-[11px]">
+                  <span className="font-semibold text-neutral-300">
+                    Resume a recent session
+                  </span>
+                  {history.length > 3 && (
+                    <button
+                      onClick={() => setHistoryOpen(true)}
+                      className="text-blue-400 hover:text-blue-300"
+                    >
+                      All {history.length} →
+                    </button>
+                  )}
+                </div>
+                <AgentHistoryList
+                  entries={history.slice(0, 3)}
+                  onResume={resumeSession}
+                />
+              </div>
+            )}
             {initLoading
               ? "Checking for running agents…"
-              : "Pick a backend and click + Launch"}
+              : history.length > 0
+                ? "or pick a backend and click + Launch"
+                : "Pick a backend and click + Launch"}
           </div>
         )}
         {tabs.map((tab) => {

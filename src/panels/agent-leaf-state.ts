@@ -20,7 +20,7 @@ import { registerTerminalLinks } from "./term-path-links";
 import { attachTerminalSearch } from "./term-search";
 
 export type AgentLeafMode =
-  | { kind: "launch"; backend: AgentBackendKind; argv?: string[] }
+  | { kind: "launch"; backend: AgentBackendKind; argv?: string[]; resume?: string }
   | { kind: "attach"; agentId: AgentSessionId }
   /// The global scratch agent: attach-or-launch in one call.
   | { kind: "scratch" };
@@ -204,6 +204,7 @@ export function createAgentLeafState(
           term.rows,
           onEvent,
           mode.argv,
+          mode.resume,
         );
         id = s.id;
         // disposeAgentLeafState fired while launchAgent was in flight —

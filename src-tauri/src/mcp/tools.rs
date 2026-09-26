@@ -172,6 +172,7 @@ async fn create_worktree(app: &AppHandle, caller: McpCaller, args: &Value) -> Re
             backend,
             Some(argv),
             prompt.clone(),
+            None,
             HEADLESS_COLS,
             HEADLESS_ROWS,
             None,

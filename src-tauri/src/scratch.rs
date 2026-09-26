@@ -78,6 +78,7 @@ pub async fn open(
         backend,
         Some(argv),
         None,
+        None,
         cols,
         rows,
         Some(channel),

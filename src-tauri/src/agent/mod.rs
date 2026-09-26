@@ -1,3 +1,4 @@
+pub mod history;
 pub mod hooks;
 pub mod patterns;
 pub mod supervisor;
@@ -55,6 +56,9 @@ pub struct AgentSession {
     pub cols: u16,
     pub rows: u16,
     pub status: AgentStatus,
+    /// Launched with `--resume` to continue a saved conversation.
+    #[serde(default)]
+    pub resumed: bool,
 }
 
 /// One named agent (sub-agent profile / context) the user can pre-select

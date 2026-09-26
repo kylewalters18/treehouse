@@ -343,6 +343,9 @@ pub async fn remove_worktree(
     fs_watch::stop(&app, &worktree_id);
     pty::manager::close_for_worktree(&state.terminals, worktree_id);
     agent::supervisor::kill_for_worktree(&state.agents, worktree_id);
+    if let Some(path) = state.worktrees.get(&worktree_id).map(|w| w.path.clone()) {
+        state.agents.forget_worktree_history(&path);
+    }
     lsp::supervisor::kill_for_worktree(&state.lsp, worktree_id);
     state.diffs.remove(&worktree_id);
     worktree::status::drop_for(&state, worktree_id);
@@ -743,6 +746,7 @@ pub async fn launch_agent(
     worktree_id: WorktreeId,
     backend: AgentBackendKind,
     argv: Option<Vec<String>>,
+    resume: Option<String>,
     cols: u16,
     rows: u16,
     channel: Channel<AgentEvent>,
@@ -761,10 +765,36 @@ pub async fn launch_agent(
         backend,
         argv,
         None,
+        resume,
         cols,
         rows,
         Some(channel),
     )
+}
+
+/// Saved Claude conversations in a worktree, newest first. See
+/// `agent::history`.
+#[tauri::command]
+pub async fn list_agent_history(
+    worktree_id: WorktreeId,
+    state: State<'_, AppState>,
+) -> AppResult<Vec<agent::history::AgentHistoryEntry>> {
+    let path = state
+        .worktrees
+        .get(&worktree_id)
+        .map(|w| w.path.clone())
+        .ok_or_else(|| AppError::Unknown(format!("unknown worktree: {worktree_id}")))?;
+    Ok(state.agents.history_for(&path))
+}
+
+/// Drop a conversation from treehouse's history. Claude's transcript stays.
+#[tauri::command]
+pub async fn forget_agent_session(
+    claude_session_id: String,
+    state: State<'_, AppState>,
+) -> AppResult<()> {
+    state.agents.forget_history(&claude_session_id);
+    Ok(())
 }
 
 #[tauri::command]

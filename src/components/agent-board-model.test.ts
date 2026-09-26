@@ -29,6 +29,7 @@ function ov(
       cols: 80,
       rows: 24,
       status: { kind: "running" },
+      resumed: false,
     },
     activity: "idle",
     changedAt: 1000,

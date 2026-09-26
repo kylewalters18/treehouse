@@ -654,6 +654,7 @@ pub async fn reconcile(workspace_id: WorkspaceId, state: &AppState) -> AppResult
         state.watchers.stop(&id);
         crate::pty::manager::close_for_worktree(&state.terminals, id);
         crate::agent::supervisor::kill_for_worktree(&state.agents, id);
+        state.agents.forget_worktree_history(&path);
         crate::lsp::supervisor::kill_for_worktree(&state.lsp, id);
         state.diffs.remove(&id);
         super::status::drop_for(state, id);

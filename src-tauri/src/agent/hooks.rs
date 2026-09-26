@@ -73,6 +73,11 @@ pub struct HookSession {
     pub current_tool: Option<String>,
     pub last_message: Option<String>,
     pub pending: Option<PendingPrompt>,
+    /// Claude's own conversation id (`session_id` in every payload), which
+    /// `claude --resume` takes. See `agent::history`.
+    pub claude_session_id: Option<String>,
+    /// First prompt this process saw. Unlike `task`, never overwritten.
+    pub first_prompt: Option<String>,
 }
 
 impl HookSession {
@@ -85,6 +90,8 @@ impl HookSession {
             current_tool: None,
             last_message: None,
             pending: None,
+            claude_session_id: None,
+            first_prompt: None,
         }
     }
 
@@ -108,6 +115,9 @@ pub fn apply_event(
     now_ms: u64,
     now: Instant,
 ) {
+    if let Some(id) = payload.get("session_id").and_then(Value::as_str) {
+        s.claude_session_id = Some(id.to_string());
+    }
     match event {
         "UserPromptSubmit" => {
             s.set_activity(AgentActivity::Working, now_ms, now);
@@ -116,6 +126,9 @@ pub fn apply_event(
             s.last_message = None;
             if let Some(p) = payload.get("prompt").and_then(Value::as_str) {
                 s.task = first_line(p, TASK_MAX);
+                if s.first_prompt.is_none() {
+                    s.first_prompt = s.task.clone();
+                }
             }
         }
         "PreToolUse" => {
@@ -329,12 +342,14 @@ fn now_millis() -> u64 {
 }
 
 /// Start a single watcher on the hook-state directory and fold every
-/// session file write into `sessions`. Files left over from a previous run
+/// session file write into `sessions`, then hand the event name and the
+/// updated state to `on_event`. Files left over from a previous run
 /// belong to sessions that no longer exist, so the directory is cleared
 /// first (this also drops the pre-session `<worktree_id>.state` files).
 pub fn start_watcher(
     app: &AppHandle,
     sessions: HookSessionMap,
+    on_event: impl Fn(AgentSessionId, &str, &HookSession) + Send + 'static,
 ) -> AppResult<Box<dyn Any + Send + Sync>> {
     let dir = hook_state_dir(app)?;
     std::fs::create_dir_all(&dir)
@@ -377,6 +392,9 @@ pub fn start_watcher(
                     .entry(id)
                     .or_insert_with(|| HookSession::new(now_ms, now));
                 apply_event(&mut entry, &event, &payload, now_ms, now);
+                let snapshot = entry.clone();
+                drop(entry);
+                on_event(id, &event, &snapshot);
             }
         },
     )
@@ -400,6 +418,16 @@ mod tests {
 
     fn apply(s: &mut HookSession, event: &str, payload: Value, at: u64) {
         apply_event(s, event, &payload, at, Instant::now());
+    }
+
+    #[test]
+    fn captures_claude_session_id_and_first_prompt() {
+        let mut s = fresh();
+        apply(&mut s, "UserPromptSubmit", json!({ "session_id": "abc", "prompt": "First" }), 1);
+        apply(&mut s, "UserPromptSubmit", json!({ "session_id": "abc", "prompt": "Second" }), 2);
+        assert_eq!(s.claude_session_id.as_deref(), Some("abc"));
+        assert_eq!(s.first_prompt.as_deref(), Some("First"));
+        assert_eq!(s.task.as_deref(), Some("Second"));
     }
 
     #[test]

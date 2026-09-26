@@ -3,6 +3,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { useWorkspaceStore } from "@/stores/workspace";
 import { listRecentWorkspaces } from "@/ipc/client";
 import type { RecentWorkspace } from "@/ipc/types";
+import { formatWhen } from "@/lib/time";
 
 export function Home() {
   const loading = useWorkspaceStore((s) => s.loading);
@@ -126,16 +127,4 @@ export function shortHome(p: string): string {
   return p.replace(/^\/Users\/[^/]+/, "~");
 }
 
-export function formatWhen(ms: number): string {
-  const now = Date.now();
-  const diff = Math.max(0, now - ms);
-  const mins = Math.floor(diff / 60_000);
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins}m`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h`;
-  const days = Math.floor(hours / 24);
-  if (days < 30) return `${days}d`;
-  const months = Math.floor(days / 30);
-  return `${months}mo`;
-}
+export { formatWhen };

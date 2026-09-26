@@ -13,6 +13,7 @@ use tauri::AppHandle;
 use crate::util::errors::{AppError, AppResult};
 use crate::util::ids::{AgentSessionId, WorktreeId};
 
+use super::history::{self, AgentHistory, AgentHistoryEntry};
 use super::hooks::{self, HookSession, HookSessionMap};
 use super::{
     AgentActivity, AgentBackendKind, AgentEvent, AgentOverview, AgentSession, AgentStatus,
@@ -86,6 +87,15 @@ pub struct AgentRegistry {
     /// a `set_patterns` call updates every running agent's view on
     /// the next chunk, no respawn needed.
     patterns: std::sync::Arc<parking_lot::RwLock<super::patterns::AgentPatterns>>,
+    /// Where each Claude session runs and which conversation it resumed,
+    /// so hook events can be filed into `history` by worktree path.
+    history_meta: Arc<DashMap<AgentSessionId, HistoryMeta>>,
+    history: Arc<AgentHistory>,
+}
+
+struct HistoryMeta {
+    cwd: PathBuf,
+    resumed_from: Option<String>,
 }
 
 impl AgentRegistry {
@@ -97,6 +107,8 @@ impl AgentRegistry {
             patterns: std::sync::Arc::new(parking_lot::RwLock::new(
                 super::patterns::AgentPatterns::defaults(),
             )),
+            history_meta: Arc::new(DashMap::new()),
+            history: Arc::new(AgentHistory::default()),
         }
     }
 
@@ -119,9 +131,58 @@ impl AgentRegistry {
         if guard.is_some() {
             return Ok(());
         }
-        let w = hooks::start_watcher(app, self.hook_sessions.clone())?;
+        let dir = crate::storage::config_dir(app)?;
+        self.history.load(dir.join(history::HISTORY_FILE));
+        let meta = self.history_meta.clone();
+        let hist = self.history.clone();
+        let w = hooks::start_watcher(app, self.hook_sessions.clone(), move |id, event, hook| {
+            // A turn starting (first one names the record) or ending (the
+            // reply to show) is all the history needs.
+            if !matches!(event, "UserPromptSubmit" | "Stop") {
+                return;
+            }
+            let (Some(cid), Some(m)) = (hook.claude_session_id.as_deref(), meta.get(&id)) else {
+                return;
+            };
+            hist.observe(
+                &m.cwd,
+                m.resumed_from.as_deref(),
+                cid,
+                hook.first_prompt.as_deref(),
+                hook.last_message.as_deref(),
+                now_millis(),
+            );
+        })?;
         *guard = Some(w);
         Ok(())
+    }
+
+    /// Resumable Claude conversations in `cwd`, newest first, each marked
+    /// with the live agent that has it open.
+    pub fn history_for(&self, cwd: &std::path::Path) -> Vec<AgentHistoryEntry> {
+        let mut entries = self.history.list_for(cwd);
+        for e in &mut entries {
+            e.live_agent_id = self
+                .hook_sessions
+                .iter()
+                .find(|h| h.value().claude_session_id.as_deref() == Some(&e.claude_session_id))
+                .map(|h| *h.key())
+                .filter(|id| is_live(self, *id));
+        }
+        entries
+    }
+
+    pub fn forget_history(&self, claude_session_id: &str) {
+        self.history.forget(claude_session_id);
+    }
+
+    pub fn forget_worktree_history(&self, cwd: &std::path::Path) {
+        self.history.forget_worktree(cwd);
+    }
+
+    fn drop_session_state(&self, id: &AgentSessionId) {
+        self.hook_sessions.remove(id);
+        self.history_meta.remove(id);
     }
 
     pub fn list_for_worktree(&self, worktree_id: WorktreeId) -> Vec<AgentSession> {
@@ -357,7 +418,7 @@ impl AgentRegistry {
     pub fn kill_all(&self) {
         let ids: Vec<_> = self.inner.iter().map(|e| *e.key()).collect();
         for id in ids {
-            self.hook_sessions.remove(&id);
+            self.drop_session_state(&id);
             if let Some((_, h)) = self.inner.remove(&id) {
                 let _ = h.child.lock().kill();
             }
@@ -390,6 +451,9 @@ fn max_severity(a: AgentActivity, b: AgentActivity) -> AgentActivity {
 /// `prompt` seeds the session's first turn (Claude Code / Codex take it as a
 /// positional arg; ignored for Kiro). Claude Code sessions also get the
 /// treehouse MCP server injected via `--mcp-config` — see `crate::mcp`.
+///
+/// `resume` reopens a saved Claude conversation (`claude --resume <id>`);
+/// see `agent::history`.
 #[allow(clippy::too_many_arguments)]
 pub fn launch(
     app: &AppHandle,
@@ -399,10 +463,21 @@ pub fn launch(
     backend: AgentBackendKind,
     argv_override: Option<Vec<String>>,
     prompt: Option<String>,
+    resume: Option<String>,
     cols: u16,
     rows: u16,
     channel: Option<Channel<AgentEvent>>,
 ) -> AppResult<AgentSession> {
+    if let Some(id) = &resume {
+        if !matches!(backend, AgentBackendKind::ClaudeCode) {
+            return Err(AppError::Unknown(
+                "Only Claude Code sessions can be resumed.".into(),
+            ));
+        }
+        if !history::is_valid_session_id(id) {
+            return Err(AppError::Unknown(format!("invalid Claude session id: {id}")));
+        }
+    }
     // Install Claude Code hooks in the worktree *before* spawning the
     // child, so the config is on disk when Claude reads settings.
     if matches!(backend, AgentBackendKind::ClaudeCode) {
@@ -437,6 +512,7 @@ pub fn launch(
         backend,
         &argv,
         crate::mcp::claude_config_for(app, backend, session_id, worktree_id).as_deref(),
+        resume.as_deref(),
         prompt.as_deref(),
     );
 
@@ -475,6 +551,7 @@ pub fn launch(
         cols,
         rows,
         status: AgentStatus::Running,
+        resumed: resume.is_some(),
     };
 
     let shared = Arc::new(Mutex::new(AgentShared {
@@ -566,6 +643,15 @@ pub fn launch(
         })
         .map_err(|e| AppError::Unknown(format!("spawn agent reader: {e}")))?;
 
+    if matches!(backend, AgentBackendKind::ClaudeCode) {
+        registry.history_meta.insert(
+            session_id,
+            HistoryMeta {
+                cwd: cwd.clone(),
+                resumed_from: resume,
+            },
+        );
+    }
     registry.inner.insert(
         session_id,
         AgentHandle {
@@ -695,9 +781,14 @@ fn build_spawn_argv(
     backend: AgentBackendKind,
     argv: &[String],
     mcp_config: Option<&str>,
+    resume: Option<&str>,
     prompt: Option<&str>,
 ) -> Vec<String> {
     let mut out = argv.to_vec();
+    if let Some(id) = resume {
+        out.push("--resume".into());
+        out.push(id.into());
+    }
     if let Some(cfg) = mcp_config {
         out.push("--mcp-config".into());
         out.push(cfg.into());
@@ -721,7 +812,7 @@ pub fn is_live(registry: &AgentRegistry, id: AgentSessionId) -> bool {
 }
 
 pub fn kill(registry: &AgentRegistry, id: AgentSessionId) {
-    registry.hook_sessions.remove(&id);
+    registry.drop_session_state(&id);
     if let Some((_, handle)) = registry.inner.remove(&id) {
         let _ = handle.child.lock().kill();
         tracing::info!(%id, "killed agent");
@@ -736,7 +827,7 @@ pub fn kill_for_worktree(registry: &AgentRegistry, worktree_id: WorktreeId) {
         .map(|e| *e.key())
         .collect();
     for id in ids {
-        registry.hook_sessions.remove(&id);
+        registry.drop_session_state(&id);
         if let Some((_, handle)) = registry.inner.remove(&id) {
             let _ = handle.child.lock().kill();
             tracing::info!(%id, %worktree_id, "killed agent for removed worktree");
@@ -942,15 +1033,32 @@ mod tests {
     fn spawn_argv_puts_prompt_after_variadic_mcp_config() {
         let argv = vec!["claude".to_string(), "--agent".into(), "x".into()];
         assert_eq!(
-            build_spawn_argv(AgentBackendKind::ClaudeCode, &argv, Some("{}"), Some("  do it  ")),
+            build_spawn_argv(AgentBackendKind::ClaudeCode, &argv, Some("{}"), None, Some("  do it  ")),
             vec!["claude", "--agent", "x", "--mcp-config", "{}", "--", "do it"]
         );
         // No extras → argv untouched; blank prompt ignored.
-        assert_eq!(build_spawn_argv(AgentBackendKind::ClaudeCode, &argv, None, Some(" ")), argv);
+        assert_eq!(
+            build_spawn_argv(AgentBackendKind::ClaudeCode, &argv, None, None, Some(" ")),
+            argv
+        );
         // Kiro has no verified positional-prompt form.
         assert_eq!(
-            build_spawn_argv(AgentBackendKind::Kiro, &["kiro-cli".into()], None, Some("hi")),
+            build_spawn_argv(AgentBackendKind::Kiro, &["kiro-cli".into()], None, None, Some("hi")),
             vec!["kiro-cli"]
+        );
+    }
+
+    #[test]
+    fn spawn_argv_resumes_before_mcp_config() {
+        assert_eq!(
+            build_spawn_argv(
+                AgentBackendKind::ClaudeCode,
+                &["claude".into()],
+                Some("{}"),
+                Some("abc-123"),
+                None,
+            ),
+            vec!["claude", "--resume", "abc-123", "--mcp-config", "{}"]
         );
     }
 
