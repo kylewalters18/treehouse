@@ -1,3 +1,5 @@
+import { iconButton, instanceStrip, instanceTab, instanceTabClose } from "@/lib/pane-chrome";
+import { Columns2, Plus, Rows2, SquareTerminal, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { Terminal } from "xterm";
@@ -402,54 +404,50 @@ function TabBar({
   canSplit: boolean;
 }) {
   return (
-    <div className="flex shrink-0 items-center gap-0.5 overflow-x-auto border-b border-neutral-800 px-1 py-0.5">
+    <div className={instanceStrip}>
       {tabs.map((tab) => (
         <div
           key={tab.localId}
           onClick={() => onSelect(tab.localId)}
-          className={cn(
-            "group flex shrink-0 cursor-pointer items-center gap-1 rounded px-2 py-0.5 text-[11px]",
-            tab.localId === activeId
-              ? "bg-neutral-800 text-neutral-100"
-              : "text-neutral-400 hover:bg-neutral-900",
-          )}
+          className={instanceTab(tab.localId === activeId)}
         >
+          <SquareTerminal size={12} className="shrink-0" />
           <span className="font-mono">{tab.label}</span>
           <button
             onClick={(e) => {
               e.stopPropagation();
               onClose(tab.localId);
             }}
-            className="opacity-0 transition group-hover:opacity-100 text-neutral-500 hover:text-red-400"
+            className={instanceTabClose(tab.localId === activeId)}
             title="Close terminal"
           >
-            ✕
+            <X size={11} />
           </button>
         </div>
       ))}
-      <div className="ml-auto flex shrink-0 items-center gap-0.5">
+      <div className="ml-auto flex shrink-0 items-center gap-0.5 px-1.5">
         <button
           onClick={onSplitRight}
           disabled={!canSplit}
           title="Split active pane to the right"
-          className="rounded px-1.5 py-0.5 text-xs text-neutral-500 hover:bg-neutral-900 hover:text-neutral-200 disabled:cursor-not-allowed disabled:opacity-40"
+          className={iconButton}
         >
-          ⇥
+          <Columns2 size={13} />
         </button>
         <button
           onClick={onSplitDown}
           disabled={!canSplit}
           title="Split active pane below"
-          className="rounded px-1.5 py-0.5 text-xs text-neutral-500 hover:bg-neutral-900 hover:text-neutral-200 disabled:cursor-not-allowed disabled:opacity-40"
+          className={iconButton}
         >
-          ⤓
+          <Rows2 size={13} />
         </button>
         <button
           onClick={onNew}
           title="New terminal"
-          className="ml-0.5 rounded px-1.5 py-0.5 text-xs text-neutral-500 hover:bg-neutral-900 hover:text-neutral-200"
+          className={iconButton}
         >
-          +
+          <Plus size={14} />
         </button>
       </div>
     </div>
@@ -507,7 +505,7 @@ export function createLeafState(
       'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace',
     fontSize: 13,
     theme: {
-      background: "#121314",
+      background: "#0F1114",
       foreground: "#BBBEBF",
       cursor: "#BBBEBF",
     },

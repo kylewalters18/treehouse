@@ -16,12 +16,12 @@ import type { Workspace } from "@/ipc/types";
 import { fuzzyFilter } from "@/lib/fuzzy";
 import { useWorkspaceStore } from "@/stores/workspace";
 import { cn } from "@/lib/cn";
+import { effectiveBaseRef } from "@/lib/base-ref";
 
 const MENU_WIDTH = 288;
 
 export function BaseRefPicker({ workspace }: { workspace: Workspace }) {
-  const effective =
-    workspace.baseRefOverride ?? `origin/${workspace.defaultBranch}`;
+  const effective = effectiveBaseRef(workspace);
   const isOverridden = workspace.baseRefOverride != null;
   const setBaseRef = useWorkspaceStore((s) => s.setBaseRef);
 

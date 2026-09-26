@@ -32,7 +32,16 @@ export function App() {
 
   return (
     <div className="h-full w-full bg-neutral-950 text-neutral-100">
-      {workspaceCount > 0 ? <Workspace /> : <Home />}
+      {workspaceCount > 0 ? (
+        <Workspace />
+      ) : (
+        <>
+          {/* Home has no title bar; this strip keeps the overlay-style
+              window draggable and clear of the traffic lights. */}
+          <div data-tauri-drag-region className="fixed inset-x-0 top-0 h-[38px]" />
+          <Home />
+        </>
+      )}
       <Toaster />
     </div>
   );

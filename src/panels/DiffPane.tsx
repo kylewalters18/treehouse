@@ -19,6 +19,8 @@ import type {
   WorktreeId,
 } from "@/ipc/types";
 import { cn } from "@/lib/cn";
+import { effectiveBaseRef } from "@/lib/base-ref";
+import { countBadge, sectionStrip, sectionTab } from "@/lib/pane-chrome";
 import { CommentOverlay, EditorPane } from "./EditorPane";
 import { useEditorViewStateStore } from "@/stores/editor-view-state";
 import { FileTree } from "./FileTree";
@@ -172,8 +174,8 @@ function DiffView({ worktreeId }: { worktreeId: WorktreeId }) {
         <aside className="flex h-full flex-col border-r border-neutral-800">
         {/* Changes / Files toggle — one list at a time so each gets
             the full sidebar height. */}
-        <div className="flex shrink-0 items-center justify-between gap-2 border-b border-neutral-900 px-2 text-[11px] uppercase tracking-wider">
-          <div className="flex">
+        <div className={cn(sectionStrip, "justify-between gap-2")}>
+          <div className="flex items-stretch gap-3">
             <SidebarTab
               active={sidebarTab === "files"}
               onClick={() => setSidebarTab("files")}
@@ -184,12 +186,15 @@ function DiffView({ worktreeId }: { worktreeId: WorktreeId }) {
               active={sidebarTab === "changes"}
               onClick={() => setSidebarTab("changes")}
             >
-              Changes ({diff?.stats.filesChanged ?? 0})
+              Changes
+              <span className={countBadge("neutral")}>
+                {diff?.stats.filesChanged ?? 0}
+              </span>
             </SidebarTab>
           </div>
           {sidebarTab === "changes"
             ? diff && (
-                <span className="font-mono text-[11px] normal-case tracking-normal">
+                <span className="self-center font-mono text-[11px]">
                   <span className="text-emerald-400">+{diff.stats.insertions}</span>{" "}
                   <span className="text-rose-400">-{diff.stats.deletions}</span>
                 </span>
@@ -203,7 +208,7 @@ function DiffView({ worktreeId }: { worktreeId: WorktreeId }) {
                       : "Show gitignored files (dimmed)"
                   }
                   className={cn(
-                    "rounded px-1 font-mono text-[10px] normal-case tracking-normal transition",
+                    "self-center rounded px-1 font-mono text-[10px] transition",
                     showIgnored
                       ? "bg-neutral-800 text-neutral-200"
                       : "text-neutral-600 hover:bg-neutral-900 hover:text-neutral-300",
@@ -256,8 +261,9 @@ function DiffView({ worktreeId }: { worktreeId: WorktreeId }) {
       <PanelResizeHandle className="w-px bg-neutral-800 hover:bg-neutral-700" />
       <Panel defaultSize={78}>
         <section className="flex h-full flex-col overflow-hidden">
-        <div className="flex shrink-0 items-center gap-1 border-b border-neutral-800 bg-neutral-950 px-2 py-1 text-[11px]">
+        <div className="flex h-[34px] shrink-0 items-center gap-1.5 border-b border-neutral-800 bg-chrome px-2 text-[11px]">
           <NavButtons worktreeId={worktreeId} />
+          <div className="flex shrink-0 gap-0.5 rounded-md border border-neutral-800 bg-neutral-950 p-0.5">
           <TabButton
             active={view === "file"}
             onClick={() => setView(worktreeId, "file")}
@@ -284,6 +290,7 @@ function DiffView({ worktreeId }: { worktreeId: WorktreeId }) {
               Preview
             </TabButton>
           )}
+          </div>
           {selectedFile && (
             <FilePathLabel
               worktreeId={worktreeId}
@@ -546,8 +553,7 @@ function NavButtons({ worktreeId }: { worktreeId: WorktreeId }) {
 }
 
 function baseRefLabel(workspace: Workspace | undefined): string {
-  if (!workspace) return "base";
-  return workspace.baseRefOverride ?? `origin/${workspace.defaultBranch}`;
+  return workspace ? effectiveBaseRef(workspace) : "base";
 }
 
 /// One collapsible group in the Changes tab: a header with the count
@@ -651,12 +657,7 @@ function SidebarTab({
   return (
     <button
       onClick={onClick}
-      className={cn(
-        "-mb-px border-b-2 px-1.5 py-2 uppercase tracking-wider transition-colors",
-        active
-          ? "border-blue-500 text-neutral-200"
-          : "border-transparent text-neutral-500 hover:text-neutral-300",
-      )}
+      className={sectionTab(active)}
     >
       {children}
     </button>
@@ -679,10 +680,10 @@ function TabButton({
       onClick={onClick}
       disabled={disabled}
       className={cn(
-        "rounded px-2 py-0.5 text-[11px] font-medium",
+        "rounded px-2 py-px text-[11px] font-medium",
         active
           ? "bg-neutral-800 text-neutral-100"
-          : "text-neutral-400 hover:bg-neutral-900 hover:text-neutral-200",
+          : "text-neutral-500 hover:text-neutral-200",
         disabled && "cursor-not-allowed opacity-40 hover:bg-transparent hover:text-neutral-400",
       )}
     >

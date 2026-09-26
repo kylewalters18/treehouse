@@ -191,11 +191,21 @@ export function SendQueueButton() {
         onClick={() => setOpen((v) => !v)}
         title={`${queued.length} queued comment${queued.length === 1 ? "" : "s"}`}
         className={cn(
-          "rounded border border-blue-700 bg-blue-950/40 px-2 py-1 text-[11px] font-medium text-blue-200 hover:bg-blue-950/60",
-          open && "bg-blue-950/70",
+          "flex h-6 items-center gap-1.5 rounded-md border border-neutral-700 bg-neutral-900 px-2 text-[11px] text-neutral-300 hover:bg-neutral-800 hover:text-neutral-100",
+          open && "bg-neutral-800",
         )}
       >
-        Send queue ({queued.length})
+        Send queue
+        <span
+          className={cn(
+            "rounded-full px-1.5 font-mono text-[10px] leading-4 tabular-nums",
+            queued.length > 0
+              ? "bg-blue-400/15 text-blue-400"
+              : "bg-neutral-800 text-neutral-500",
+          )}
+        >
+          {queued.length}
+        </span>
       </button>
       {open && (
         <div className="absolute right-0 top-[110%] z-30 w-[28rem] rounded-lg border border-neutral-800 bg-neutral-900 shadow-2xl">

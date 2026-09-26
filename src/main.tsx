@@ -5,6 +5,8 @@ import { loader } from "@monaco-editor/react";
 import { App } from "./App";
 import { setupShiki } from "./panels/monaco-shiki";
 import { defineTreehouseTheme } from "./panels/monaco-theme";
+import "@fontsource-variable/geist";
+import "@fontsource-variable/geist-mono";
 import "./styles.css";
 
 // E2E harness: stub the Tauri IPC layer before any app code imports it,

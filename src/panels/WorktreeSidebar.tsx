@@ -4,6 +4,7 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
+  FolderGit2,
   Home,
   Loader2,
   Plus,
@@ -13,6 +14,7 @@ import { ask, open as openDialog } from "@tauri-apps/plugin-dialog";
 import { useWorkspaceStore } from "@/stores/workspace";
 import { useWorktreesStore } from "@/stores/worktrees";
 import { useUiStore } from "@/stores/ui";
+import { useActivityStore } from "@/stores/activity";
 import { useSettingsStore } from "@/stores/settings";
 import {
   listAgentActivity,
@@ -83,9 +85,8 @@ export function WorktreeSidebar() {
   const initSubmodulesDefault = useSettingsStore(
     (s) => s.settings.initSubmodules,
   );
-  const [activity, setActivity] = useState<
-    Record<WorktreeId, WorktreeActivity>
-  >({});
+  const activity = useActivityStore((s) => s.byWorktree);
+  const setActivity = useActivityStore((s) => s.setAll);
   // Per-repo collapse state. Expanded by default; the header's status
   // tally keeps a collapsed repo legible. The repo owning the
   // *selected* worktree auto-expands so a click from the "Needs you"
@@ -456,8 +457,9 @@ export function WorktreeSidebar() {
         className={cn(
           // Fixed height, not padding: the hover swap (badges → ⋯) trades
           // content of slightly different heights, which made the row jump.
-          "group relative flex h-6 cursor-pointer items-center pl-3 pr-1 hover:bg-neutral-900/50",
-          selectedId === w.id && "bg-neutral-900",
+          "group relative flex h-7 cursor-pointer items-center pl-3 pr-1 hover:bg-neutral-900/60",
+          selectedId === w.id &&
+            "bg-blue-400/[0.08] hover:bg-blue-400/[0.1] before:absolute before:inset-y-1 before:left-0 before:w-[2px] before:rounded-r before:bg-blue-400",
         )}
         onClick={() => selectWorktree(w.id)}
         aria-current={selectedId === w.id ? "true" : undefined}
@@ -479,8 +481,13 @@ export function WorktreeSidebar() {
         >
           <StatusDot activity={a?.activity ?? "inactive"} />
           {opts.chip && (
-            <span className="shrink-0 font-mono text-[11px] text-neutral-500">
-              {repoName(w)} /
+            <span
+              className="flex shrink-0 items-center gap-1 text-[11px] text-neutral-500"
+              title={repoName(w)}
+            >
+              <RepoMark name={repoName(w)} />
+              {repoName(w)}
+              <span className="text-neutral-700">/</span>
             </span>
           )}
           <span className="min-w-0 flex-1 truncate font-mono text-xs text-neutral-200">
@@ -549,8 +556,8 @@ export function WorktreeSidebar() {
 
   return (
     <div className="flex h-full flex-col border-r border-neutral-800">
-      <div className="flex items-center justify-between border-b border-neutral-900 px-3 py-2">
-        <span className="text-[11px] font-semibold uppercase tracking-wider text-neutral-500">
+      <div className="flex h-[34px] shrink-0 items-center justify-between border-b border-neutral-800 bg-chrome px-3">
+        <span className="text-[10.5px] font-semibold uppercase tracking-[0.08em] text-neutral-500">
           {showRepoChips ? "Repos" : "Worktrees"}
         </span>
         <div className="flex items-center gap-2">
@@ -567,7 +574,7 @@ export function WorktreeSidebar() {
 
       <div className="flex-1 overflow-y-auto">
         {inbox.length > 0 && (
-          <div className="border-b border-neutral-800 bg-amber-400/[0.03]">
+          <div className="border-b border-neutral-800 bg-amber-400/[0.03] pb-1">
             <SectionHeader label="Needs you" count={inbox.length} />
             <ul>{inbox.map((w) => renderRow(w, { chip: showRepoChips }))}</ul>
           </div>
@@ -586,20 +593,29 @@ export function WorktreeSidebar() {
           const expanded = !collapsedRepos.has(ws.id);
           const inactiveOpen = openInactive.has(ws.id);
           return (
-            <div key={ws.id} className="border-b border-neutral-900">
+            <div
+              key={ws.id}
+              className={cn("border-b border-neutral-800", expanded && "pb-1.5")}
+            >
+              {/* Sticky so a long repo keeps its name in view while you
+                  scroll its worktrees. Opaque background required. */}
               <div
                 role="button"
                 onClick={() => toggleIn(setCollapsedRepos, ws.id)}
-                className="group/repo flex w-full cursor-pointer items-center justify-between gap-2 bg-neutral-950 px-2 py-1.5 hover:bg-neutral-900/60"
+                className={cn(
+                  "group/repo sticky top-0 z-10 flex h-8 w-full cursor-pointer items-center justify-between gap-2 bg-neutral-900 px-2 hover:bg-[#1A1D21]",
+                  expanded && "mb-1 border-b border-neutral-800",
+                )}
                 title={ws.root}
               >
-                <span className="flex min-w-0 flex-1 items-center gap-1">
+                <span className="flex min-w-0 flex-1 items-center gap-1.5">
                   {expanded ? (
                     <ChevronDown size={12} className="shrink-0 text-neutral-500" />
                   ) : (
                     <ChevronRight size={12} className="shrink-0 text-neutral-500" />
                   )}
-                  <span className="truncate font-mono text-[11px] text-neutral-300">
+                  <RepoMark name={basenameOf(ws.root)} />
+                  <span className="truncate text-xs font-semibold text-neutral-100">
                     {basenameOf(ws.root)}
                   </span>
                   <RepoStatus counts={statusCounts(repoWorktrees, activity)} />
@@ -680,12 +696,13 @@ export function WorktreeSidebar() {
         })}
       </div>
 
-      <div className="flex items-center justify-end border-t border-neutral-800 px-3 py-2">
+      <div className="flex items-center justify-end border-t border-neutral-800 px-2 py-2">
         <button
           onClick={() => void pickAndOpenAnotherRepo()}
-          className="rounded border border-neutral-700 px-2 py-1 text-[11px] text-neutral-300 hover:bg-neutral-800"
+          className="flex h-6 w-full items-center justify-center gap-1 rounded-md border border-neutral-700 bg-neutral-900 text-[11px] text-neutral-300 hover:bg-neutral-800 hover:text-neutral-100"
         >
-          + Open repo
+          <Plus size={12} />
+          Open repo
         </button>
       </div>
 
@@ -1170,8 +1187,11 @@ function MenuItem({
 
 function SectionHeader({ label, count }: { label: string; count: number }) {
   return (
-    <div className="border-t border-neutral-800 px-3 py-1.5 text-[11px] uppercase tracking-wider text-neutral-600">
-      {label} ({count})
+    <div className="flex h-7 items-center gap-1.5 px-3 text-[10.5px] font-semibold uppercase tracking-[0.08em] text-amber-400/80">
+      {label}
+      <span className="rounded-full bg-amber-400/15 px-1.5 font-mono text-[10px] font-medium leading-4 tracking-normal text-amber-400">
+        {count}
+      </span>
     </div>
   );
 }
@@ -1182,7 +1202,7 @@ function RepoStatus({ counts }: { counts: StatusCounts }) {
   const parts: [number, React.ReactNode, string][] = [
     [counts.needsAttention, <AlertTriangle size={10} className="text-amber-400" />, "needs attention"],
     [counts.idle, <Check size={10} className="text-emerald-400" />, "idle"],
-    [counts.working, <Loader2 size={10} className="text-sky-400" />, "working"],
+    [counts.working, <Loader2 size={10} className="text-blue-400" />, "working"],
   ];
   const shown = parts.filter(([n]) => n > 0);
   if (shown.length === 0) return null;
@@ -1194,6 +1214,36 @@ function RepoStatus({ counts }: { counts: StatusCounts }) {
           {n}
         </span>
       ))}
+    </span>
+  );
+}
+
+/// Tints for repo marks. Deliberately avoids emerald / amber / rose,
+/// which carry agent state elsewhere in the sidebar. Full class strings
+/// so Tailwind's scanner keeps them.
+const REPO_TINTS = [
+  "bg-violet-400/15 text-violet-300",
+  "bg-cyan-400/15 text-cyan-300",
+  "bg-fuchsia-400/15 text-fuchsia-300",
+  "bg-indigo-400/20 text-indigo-300",
+  "bg-sky-400/15 text-sky-300",
+  "bg-pink-400/15 text-pink-300",
+];
+
+/// Small tinted tile identifying a repo. The tint is hashed from the
+/// name, so a repo keeps its color across sessions.
+function RepoMark({ name }: { name: string }) {
+  let h = 0;
+  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) | 0;
+  return (
+    <span
+      aria-hidden
+      className={cn(
+        "flex h-4 w-4 shrink-0 items-center justify-center rounded",
+        REPO_TINTS[Math.abs(h) % REPO_TINTS.length],
+      )}
+    >
+      <FolderGit2 size={11} strokeWidth={2.25} />
     </span>
   );
 }
@@ -1247,7 +1297,7 @@ function StatusDot({
     case "working":
       return (
         <span title="agent: working" className={cn(wrapper, className)}>
-          <Loader2 size={12} className="animate-spin text-sky-400" />
+          <Loader2 size={12} className="animate-spin text-blue-400" />
         </span>
       );
     case "idle":

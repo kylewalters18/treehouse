@@ -18,6 +18,8 @@ import type {
 } from "@/ipc/types";
 import { useToastsStore } from "@/stores/toasts";
 import { cn } from "@/lib/cn";
+import { instanceStrip, instanceTab, instanceTabClose } from "@/lib/pane-chrome";
+import { Plus, X } from "lucide-react";
 import { splitCommand } from "@/lib/shell-words";
 import { fitAndPin } from "./xterm-fit";
 import {
@@ -544,11 +546,11 @@ function AgentTabs({
 
   return (
     <div className="relative flex h-full flex-col border-l border-neutral-800 bg-neutral-950">
-      <div className="flex shrink-0 items-center gap-1 border-b border-neutral-800 px-1 py-0.5">
+      <div className="flex h-[34px] shrink-0 items-center gap-1.5 border-b border-neutral-800 bg-chrome px-2">
         <select
           value={backend}
           onChange={(e) => selectBackend(e.target.value as AgentBackendKind)}
-          className="shrink-0 rounded border border-neutral-800 bg-neutral-900 px-1 py-0.5 text-[11px] focus:outline-none"
+          className="h-6 shrink-0 rounded-md border border-neutral-800 bg-neutral-900 px-1.5 text-[11px] text-neutral-300 focus:border-blue-500 focus:outline-none"
         >
           {BACKENDS.map((b) => (
             <option key={b.value} value={b.value}>
@@ -570,14 +572,15 @@ function AgentTabs({
           spellCheck={false}
           autoCapitalize="off"
           autoCorrect="off"
-          className="min-w-0 flex-1 rounded border border-neutral-800 bg-neutral-900 px-1.5 py-0.5 font-mono text-[11px] text-neutral-200 focus:border-blue-600 focus:outline-none"
+          className="h-6 min-w-0 flex-1 rounded-md border border-neutral-800 bg-neutral-900 px-2 font-mono text-[11px] text-neutral-200 placeholder:text-neutral-600 focus:border-blue-500 focus:outline-none"
         />
         <button
           onClick={onLaunch}
           title="Launch new agent"
-          className="shrink-0 rounded bg-blue-600 px-2 py-0.5 text-[11px] font-medium text-white hover:bg-blue-500"
+          className="flex h-6 shrink-0 items-center gap-1 rounded-md bg-blue-600 px-2 text-[11px] font-medium text-white hover:bg-blue-500"
         >
-          + Launch
+          <Plus size={12} />
+          Launch
         </button>
         <button
           data-agent-history-toggle
@@ -588,7 +591,7 @@ function AgentTabs({
           title="Recent Claude Code sessions in this worktree"
           aria-expanded={historyOpen}
           className={cn(
-            "flex shrink-0 items-center gap-1 rounded border border-neutral-800 px-1.5 py-0.5 text-[11px]",
+            "flex h-6 shrink-0 items-center gap-1 rounded-md border border-neutral-800 px-1.5 text-[11px]",
             historyOpen
               ? "bg-neutral-800 text-neutral-100"
               : "text-neutral-400 hover:bg-neutral-800 hover:text-neutral-100",
@@ -608,11 +611,13 @@ function AgentTabs({
         />
       )}
       {hasTabs && (
-        <div className="flex shrink-0 items-center gap-1 overflow-x-auto border-b border-neutral-800 px-1 py-0.5">
+        <div className={instanceStrip}>
           {tabs.map((tab) => (
             <div
               key={tab.localId}
               onClick={() => setActiveId(tab.localId)}
+              role="tab"
+              aria-selected={tab.localId === activeId}
               draggable
               onDragStart={(e) => onTabDragStart(e, tab.localId)}
               onDragOver={(e) => onTabDragOver(e, tab.localId)}
@@ -622,16 +627,13 @@ function AgentTabs({
               onDrop={(e) => onTabDrop(e, tab.localId)}
               onDragEnd={onTabDragEnd}
               className={cn(
-                "group flex shrink-0 cursor-pointer items-center gap-1 rounded px-2 py-0.5 text-[11px] border-l-2",
-                tab.localId === activeId
-                  ? "bg-neutral-800 text-neutral-100"
-                  : "text-neutral-400 hover:bg-neutral-900",
-                // Drop-target indicator: subtle blue left border on the
-                // tab being hovered, but suppress on the dragged tab
-                // itself to avoid confusing self-drop feedback.
-                dragOverLocalId === tab.localId && dragLocalId !== tab.localId
-                  ? "border-l-blue-500"
-                  : "border-l-transparent",
+                instanceTab(tab.localId === activeId),
+                // Drop-target indicator: blue inset left edge on the tab
+                // being hovered, but suppress on the dragged tab itself
+                // to avoid confusing self-drop feedback.
+                dragOverLocalId === tab.localId &&
+                  dragLocalId !== tab.localId &&
+                  "shadow-[inset_2px_0_0_theme(colors.blue.400)]",
                 dragLocalId === tab.localId && "opacity-50",
               )}
             >
@@ -646,14 +648,14 @@ function AgentTabs({
                   e.stopPropagation();
                   closeTab(tab.localId);
                 }}
-                className="opacity-0 transition group-hover:opacity-100 text-neutral-500 hover:text-red-400"
+                className={instanceTabClose(tab.localId === activeId)}
                 title={
                   tab.backend === "claudeCode"
                     ? "Close (resume later from history)"
                     : "Kill agent"
                 }
               >
-                ✕
+                <X size={11} />
               </button>
             </div>
           ))}

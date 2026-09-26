@@ -115,7 +115,7 @@ export function ScratchAgent() {
             {error}
           </div>
         )}
-        <div className="relative flex-1 bg-[#121314]">
+        <div className="relative flex-1 bg-[#0F1114]">
           <div ref={slotRef} className="absolute inset-0" />
         </div>
       </div>
@@ -160,10 +160,10 @@ export function ScratchPill() {
       onClick={toggle}
       title="Scratch agent (⌘J)"
       className={cn(
-        "flex items-center gap-1.5 rounded-full border px-2 py-0.5",
+        "flex h-6 items-center gap-1.5 rounded-md border px-2 text-[11px]",
         needsYou
           ? "border-amber-500/60 text-amber-400"
-          : "border-neutral-700 text-neutral-400 hover:bg-neutral-800",
+          : "border-neutral-700 bg-neutral-900 text-neutral-400 hover:bg-neutral-800",
       )}
     >
       <span
@@ -172,7 +172,7 @@ export function ScratchPill() {
           needsYou
             ? "bg-amber-400"
             : activity === "working"
-              ? "bg-sky-400"
+              ? "bg-blue-400"
               : activity === "inactive"
                 ? "bg-neutral-600"
                 : "bg-emerald-400",

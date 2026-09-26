@@ -20,6 +20,7 @@ import { useWorktreesStore } from "@/stores/worktrees";
 import { workspaceForWorktree } from "@/stores/workspace";
 import { latestJobsPerName } from "@/lib/forge-jobs";
 import { cn } from "@/lib/cn";
+import { countBadge, sectionStrip, sectionTab } from "@/lib/pane-chrome";
 
 /// Counts for the Review / CI tab badges. Derived reactively from the forge
 /// store, so an action elsewhere (resolving a thread in the Review tab,
@@ -90,7 +91,7 @@ export function BottomPane() {
 
   return (
     <div className="flex h-full flex-col bg-neutral-950">
-      <div className="flex shrink-0 items-center gap-1 border-b border-neutral-900 px-2 py-1">
+      <div className={sectionStrip}>
         <TabButton
           active={tab === "terminal"}
           onClick={() => setTab("terminal")}
@@ -103,16 +104,7 @@ export function BottomPane() {
         >
           Problems
           {problemsCount > 0 && (
-            <span
-              className={cn(
-                "ml-1.5 rounded-full px-1.5 py-[1px] text-[10px] font-semibold",
-                tab === "problems"
-                  ? "bg-blue-700 text-blue-100"
-                  : "bg-neutral-700 text-neutral-200",
-              )}
-            >
-              {problemsCount}
-            </span>
+            <TabBadge active={tab === "problems"}>{problemsCount}</TabBadge>
           )}
         </TabButton>
         <TabButton active={tab === "review"} onClick={() => setTab("review")}>
@@ -169,16 +161,7 @@ function TabBadge({
   children: React.ReactNode;
 }) {
   return (
-    <span
-      className={cn(
-        "ml-1.5 rounded-full px-1.5 py-[1px] text-[10px] font-semibold",
-        danger
-          ? "bg-red-700 text-red-100"
-          : active
-            ? "bg-blue-700 text-blue-100"
-            : "bg-neutral-700 text-neutral-200",
-      )}
-    >
+    <span className={countBadge(danger ? "danger" : active ? "accent" : "neutral")}>
       {children}
     </span>
   );
@@ -196,12 +179,7 @@ function TabButton({
   return (
     <button
       onClick={onClick}
-      className={cn(
-        "flex items-center rounded px-2 py-0.5 text-[11px] uppercase tracking-wider transition-colors",
-        active
-          ? "bg-neutral-800 text-neutral-100"
-          : "text-neutral-500 hover:bg-neutral-900 hover:text-neutral-300",
-      )}
+      className={sectionTab(active)}
     >
       {children}
     </button>

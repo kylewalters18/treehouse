@@ -1,3 +1,4 @@
+import { Settings } from "lucide-react";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useSettingsStore } from "@/stores/settings";
 import { useLspStore } from "@/stores/lsp";
@@ -77,12 +78,12 @@ export function SettingsMenu() {
       <button
         onClick={() => setOpen(true)}
         className={cn(
-          "rounded border px-2 py-1 text-neutral-400 hover:bg-neutral-800",
-          open ? "border-neutral-600 bg-neutral-800" : "border-neutral-700",
+          "flex h-6 w-6 items-center justify-center rounded-md text-neutral-500 hover:bg-neutral-800 hover:text-neutral-200",
+          open && "bg-neutral-800 text-neutral-200",
         )}
         title="Settings"
       >
-        ⚙
+        <Settings size={14} />
       </button>
       {open && (
         <div

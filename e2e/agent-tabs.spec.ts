@@ -402,11 +402,9 @@ test("active agent tab persists across worktree switches", async ({
   await page.getByTitle("Main clone (repo root)").click();
   await openWorktree(page, "agent/feature");
 
-  // Codex 1 should remain the active tab. The active tab uses
-  // `bg-neutral-800` whereas inactive ones use neither bg nor text-100,
-  // so we assert the class on the tab element.
+  // Codex 1 should remain the active tab.
   const codexTab = page
     .locator("[draggable='true']")
     .filter({ hasText: "Codex 1" });
-  await expect(codexTab).toHaveClass(/bg-neutral-800/);
+  await expect(codexTab).toHaveAttribute("aria-selected", "true");
 });

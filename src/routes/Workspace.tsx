@@ -21,8 +21,11 @@ import { SendQueueButton } from "@/components/SendQueueButton";
 import { FileFinder } from "@/components/FileFinder";
 import { CommandPalette } from "@/components/CommandPalette";
 import { SystemFileViewer } from "@/components/SystemFileViewer";
-import { AgentBoard } from "@/components/AgentBoard";
+import { AgentBoard, AgentBoardPill } from "@/components/AgentBoard";
 import { ScratchAgent, ScratchPill } from "@/components/ScratchAgent";
+import { StatusBar } from "@/components/StatusBar";
+import { effectiveBaseRef } from "@/lib/base-ref";
+import { Search, X } from "lucide-react";
 
 export function Workspace() {
   const workspaceCount = useWorkspaceStore((s) => s.workspaces.length);
@@ -43,9 +46,12 @@ export function Workspace() {
   // selected (fresh launch before the user has clicked anywhere).
   const selectedWorktree =
     worktrees.find((w) => w.id === selectedWorktreeId) ?? null;
+  // Subscribed (not `workspaceForWorktree`, which reads a snapshot) so
+  // the title bar re-renders when e.g. the base-ref override changes.
+  const workspaces = useWorkspaceStore((s) => s.workspaces);
   const activeWorkspace =
-    workspaceForWorktree(selectedWorktree?.workspaceId) ??
-    useWorkspaceStore.getState().workspaces[0] ??
+    workspaces.find((w) => w.id === selectedWorktree?.workspaceId) ??
+    workspaces[0] ??
     null;
   const toggleProblemsTab = useUiStore((s) => s.toggleProblemsTab);
   // Cmd+P "Go to file" picker. Open state lives here so the
@@ -185,26 +191,77 @@ export function Workspace() {
 
   return (
     <div className="flex h-full w-full flex-col">
-      <header className="flex items-center justify-between border-b border-neutral-800 px-4 py-2 text-xs">
-        <div className="flex items-center gap-3">
-          <span className="font-semibold">treehouse</span>
+      {/* Overlay title bar (tauri.conf `titleBarStyle: Overlay`): the
+          macOS traffic lights float over the left 80px, and every
+          non-interactive element carries `data-tauri-drag-region` so the
+          window drags from any empty patch of the strip. */}
+      <header
+        data-tauri-drag-region
+        className="grid h-[38px] shrink-0 grid-cols-[1fr_minmax(16rem,26rem)_1fr] items-center gap-3 border-b border-neutral-800 bg-chrome pl-20 pr-2 text-xs"
+      >
+        <div
+          data-tauri-drag-region
+          className="flex min-w-0 items-center gap-2 text-neutral-500"
+        >
           {activeWorkspace && (
             <>
-              <span className="font-mono text-neutral-400">
-                {activeWorkspace.root}
+              <span
+                data-tauri-drag-region
+                className="truncate font-medium text-neutral-100"
+                title={activeWorkspace.root}
+              >
+                {repoLabel(activeWorkspace.root)}
               </span>
-              <span className="rounded bg-neutral-800 px-2 py-0.5 font-mono text-[11px] text-neutral-300">
-                {activeWorkspace.defaultBranch}
+              {selectedWorktree && !selectedWorktree.isMainClone && (
+                <>
+                  <span data-tauri-drag-region className="text-neutral-600">
+                    /
+                  </span>
+                  <span
+                    data-tauri-drag-region
+                    className="truncate font-mono text-[11.5px] text-neutral-200"
+                  >
+                    {selectedWorktree.branch}
+                  </span>
+                </>
+              )}
+              {/* On a worktree: the ref its branch diff compares against
+                  (tracks the diff pane's base-ref picker). On the main
+                  clone: just the checked-out default branch. */}
+              <span
+                data-tauri-drag-region
+                className="shrink-0 rounded border border-neutral-800 bg-neutral-900 px-1.5 font-mono text-[10.5px] leading-[18px] text-neutral-400"
+                title={
+                  selectedWorktree && !selectedWorktree.isMainClone
+                    ? "Diff base — change it from the Branch section of the Changes list"
+                    : undefined
+                }
+              >
+                {selectedWorktree && !selectedWorktree.isMainClone
+                  ? `vs ${effectiveBaseRef(activeWorkspace)}`
+                  : activeWorkspace.defaultBranch}
               </span>
             </>
           )}
-          {focusMode && (
-            <span className="rounded bg-blue-900/40 px-2 py-0.5 font-mono text-[11px] text-blue-300">
-              focus · ⌘\ to exit
-            </span>
-          )}
         </div>
-        <div className="flex items-center gap-2">
+        <button
+          onClick={() => setCommandPaletteOpen(true)}
+          className="flex h-6 items-center gap-2 rounded-md border border-neutral-800 bg-neutral-900 px-2 text-neutral-500 hover:border-neutral-700 hover:text-neutral-300"
+          title="Command palette (⌘⇧P)"
+        >
+          <Search size={13} className="shrink-0" />
+          <span className="flex-1 truncate text-left">
+            Search commands, files, worktrees
+          </span>
+          <kbd className="rounded border border-neutral-700 bg-neutral-950 px-1 font-sans text-[10px] leading-4 text-neutral-500">
+            ⌘⇧P
+          </kbd>
+        </button>
+        <div
+          data-tauri-drag-region
+          className="flex items-center justify-end gap-1.5"
+        >
+          <AgentBoardPill />
           <ScratchPill />
           <SendQueueButton />
           <SettingsMenu />
@@ -214,9 +271,10 @@ export function Workspace() {
             }}
             disabled={!activeWorkspace}
             title="Close this repo (other open repos stay open)"
-            className="rounded border border-neutral-700 px-2 py-1 text-neutral-400 hover:bg-neutral-800 disabled:opacity-50"
+            aria-label="Close"
+            className="flex h-6 w-6 items-center justify-center rounded-md text-neutral-500 hover:bg-neutral-800 hover:text-neutral-200 disabled:opacity-50"
           >
-            Close
+            <X size={14} />
           </button>
         </div>
       </header>
@@ -225,7 +283,7 @@ export function Workspace() {
         <PanelGroup
           key="focus"
           direction="horizontal"
-          className="flex-1"
+          className="min-h-0 flex-1"
           autoSaveId="layout-focus"
         >
           <Panel
@@ -252,7 +310,7 @@ export function Workspace() {
         // long as each Panel carries a stable `id` + `order`.
         <PanelGroup
           direction="horizontal"
-          className="flex-1"
+          className="min-h-0 flex-1"
           autoSaveId="layout-normal"
         >
           <Panel
@@ -290,6 +348,10 @@ export function Workspace() {
           </Panel>
         </PanelGroup>
       )}
+      <StatusBar
+        worktree={selectedWorktree}
+        defaultBranch={activeWorkspace?.defaultBranch ?? null}
+      />
       {selectedWorktreeId && (
         <FileFinder
           worktreeId={selectedWorktreeId}
@@ -319,3 +381,9 @@ function SystemFileViewerMount() {
   return <SystemFileViewer open={true} onClose={close} kind={kind} />;
 }
 
+
+/// Last path segment of a repo root — the breadcrumb shows the repo's
+/// name; the full path lives in the tooltip.
+function repoLabel(root: string): string {
+  return root.split("/").filter(Boolean).pop() ?? root;
+}

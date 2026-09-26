@@ -62,7 +62,7 @@ export function attachTerminalSearch(
   wrapper.style.gap = "6px";
   wrapper.style.padding = "4px 6px";
   wrapper.style.background = "#1A1B1Cf2";
-  wrapper.style.border = "1px solid #2A2B2C";
+  wrapper.style.border = "1px solid #22262B";
   wrapper.style.borderRadius = "6px";
   wrapper.style.fontSize = "11px";
   wrapper.style.color = "#BBBEBF";
@@ -76,7 +76,7 @@ export function attachTerminalSearch(
   input.spellcheck = false;
   input.style.background = "#0E0F10";
   input.style.color = "#BBBEBF";
-  input.style.border = "1px solid #2A2B2C";
+  input.style.border = "1px solid #22262B";
   input.style.borderRadius = "3px";
   input.style.padding = "3px 6px";
   input.style.fontSize = "11px";
@@ -187,7 +187,7 @@ function makeButton(label: string, title: string): HTMLButtonElement {
   b.style.lineHeight = "1";
   b.style.cursor = "pointer";
   b.addEventListener("mouseenter", () => {
-    b.style.background = "#2A2B2C";
+    b.style.background = "#22262B";
   });
   b.addEventListener("mouseleave", () => {
     b.style.background = "transparent";

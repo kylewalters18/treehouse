@@ -23,12 +23,14 @@ test("opening a workspace transitions to the Workspace route", async ({
 
   await page.getByRole("button", { name: /open repository/i }).click();
 
-  // Workspace route header has a Close button and the repo root in a
-  // monospace badge. Both are reliable landmarks.
+  // Workspace title bar has a Close button and the repo name (last path
+  // segment of the root) in the breadcrumb. Both are reliable landmarks.
   await expect(
     page.getByRole("button", { name: "Close", exact: true }),
   ).toBeVisible();
-  await expect(page.getByText(FAKE_WORKSPACE.root)).toBeVisible();
+  await expect(
+    page.getByRole("banner").getByTitle(FAKE_WORKSPACE.root),
+  ).toHaveText("repo");
 });
 
 test("worktree sidebar renders main clone + feature worktree", async ({

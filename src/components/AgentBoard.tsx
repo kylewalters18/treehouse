@@ -5,7 +5,7 @@
 /// permission prompt, where switching worktrees would be pure friction.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, Check, Loader2 } from "lucide-react";
+import { AlertTriangle, Check, LayoutGrid, Loader2 } from "lucide-react";
 import {
   agentRespondPermission,
   listAgentActivity,
@@ -24,6 +24,7 @@ import { useCommentsStore } from "@/stores/comments";
 import { useDiffsStore } from "@/stores/diffs";
 import { toastError } from "@/stores/toasts";
 import { useUiStore } from "@/stores/ui";
+import { useActivityStore } from "@/stores/activity";
 import { useWorkspaceStore } from "@/stores/workspace";
 import { useWorktreesStore } from "@/stores/worktrees";
 import {
@@ -48,6 +49,39 @@ type CardContext = {
   status: WorktreeActivity | undefined;
   queuedComments: number;
 };
+
+/// Title-bar button for the board, beside the scratch pill. Turns amber
+/// with a count when any worktree's agent needs you and the board is
+/// closed.
+export function AgentBoardPill() {
+  const open = useUiStore((s) => s.agentBoardOpen);
+  const toggle = useUiStore((s) => s.toggleAgentBoard);
+  const needsYou = useActivityStore(
+    (s) =>
+      Object.values(s.byWorktree).filter(
+        (w) => w.activity === "needsAttention",
+      ).length,
+  );
+  const alert = needsYou > 0 && !open;
+  return (
+    <button
+      onClick={toggle}
+      title="Agent board (⌘K)"
+      className={cn(
+        "flex h-6 items-center gap-1.5 rounded-md border px-2 text-[11px]",
+        alert
+          ? "border-amber-500/60 text-amber-400"
+          : open
+            ? "border-neutral-600 bg-neutral-800 text-neutral-200"
+            : "border-neutral-700 bg-neutral-900 text-neutral-400 hover:bg-neutral-800",
+      )}
+    >
+      <LayoutGrid size={12} />
+      {alert ? `${needsYou} need${needsYou === 1 ? "s" : ""} you` : "board"}
+      <span className="font-mono text-[10px] text-neutral-500">⌘K</span>
+    </button>
+  );
+}
 
 export function AgentBoard() {
   const open = useUiStore((s) => s.agentBoardOpen);

@@ -125,7 +125,7 @@ export function createAgentLeafState(
       'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace',
     fontSize: 13,
     theme: {
-      background: "#121314",
+      background: "#0F1114",
       foreground: "#BBBEBF",
       cursor: "#BBBEBF",
     },
