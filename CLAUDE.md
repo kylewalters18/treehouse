@@ -1,14 +1,10 @@
 # treehouse
 
-Desktop ADE (agentic development environment) centered on **parallel AI-agent development in git worktrees**.
+macOS desktop app for running AI coding agents (Claude Code / Codex / Kiro) in parallel git worktrees. Each worktree has tabbed agents and terminals (PTY subprocesses), a Monaco editor with opt-in LSPs, and a live diff against a base ref. Inline review comments are queued and batch-sent to an agent as a prompt; merge-back supports merge / squash / rebase.
 
-**Design north star: a tmux session per worktree, made native and opinionated.** The model treehouse chases is the one a tmux power-user assembles by hand — a session per worktree holding an editor (think nvim), an agent, and a shell, cycled like tmux windows. treehouse ships that layout as a native app and adds the one thing raw tmux can't cheaply give: a live, scroll-stable diff of the worktree against a base ref as the primary review surface, with inline comments that batch back to the agent as prompts. When weighing a feature, favor what sharpens that per-worktree editor/agent/shell loop and the diff review at its center. Treat the multiplexing/terminal/persistence plumbing as commodity (it's what tmux would hand you free) — the moat is the review surface, not the panes.
+Tauri v2 (Rust backend) + React 19 + Vite. macOS only.
 
-**A fork in philosophy, not in code.** treehouse borrows VS Code's editor core (Monaco) and visual language (Dark Modern, TextMate/Shiki grammars) but deliberately rejects its workbench and `window = workspace` model — that model is exactly what would fight the tmux-shaped, agent-first layout. So this is neither a VS Code extension (which makes you a guest in someone else's workbench) nor a Code-OSS fork (which inherits the workbench you don't want); it's VS Code's editor in a tmux-shaped shell we own. The accepted cost: no extension marketplace, and we re-implement the editor-adjacent bits the full workbench gives free (LSP wiring, syntax highlighting via Shiki) — chosen tradeoffs, not gaps to close.
-
-The unit of work is a worktree; agents (Claude Code / Codex / Kiro) run as long-lived subprocesses inside each worktree, and the primary review surface is a live-updating diff of that worktree against a base ref. Multiple agents and `xterm.js` terminals per worktree are tabbed; opt-in LSPs wire into Monaco for hover/goto/completions; inline review comments queue up and batch-send to the active agent; merge-back (merge / squash / rebase) is one click.
-
-Greenfield, built macOS-first. Tauri v2 (Rust backend) + React 19 + Vite.
+**Design constraints.** The layout is one self-contained session per worktree (editor, agents, shell), with the diff as the main review surface — prefer changes that serve that loop. The editor is Monaco with Shiki grammars, but this is not a VS Code extension or Code-OSS fork: there is no workbench or extension host, so editor-adjacent features (LSP wiring, highlighting) are implemented here.
 
 ## Stack at a glance
 
@@ -45,6 +41,9 @@ src-tauri/src/
   state.rs                # AppState: DashMap registries + async merge lock
   storage.rs              # Persisted JSON under ~/Library/Application Support/com.treehouse.app/
                           #   recent workspaces, comments, settings (LSP toggles, merge strategy)
+  user_config.rs          # User-edited treehouse.toml: custom LSPs, LSP overrides, worktree hooks,
+                          #   agent status patterns
+  scratch.rs              # Global ⌘J scratch agent, not tied to a repo
   fs_api.rs               # File tree + read-file commands (ignore-aware)
   test_support.rs         # Shared fixtures (repo scaffolding, etc.) for #[cfg(test)]
   ipc/
@@ -60,6 +59,8 @@ src-tauri/src/
                           #   registry + supervisor; opt-in via settings, Monaco-facing events
   diff/                   # DiffSet types + compute (git2 diff_tree_to_workdir)
   fs_watch/               # Per-worktree debounced notify watcher → triggers diff recompute
+  forge/                  # GitLab/GitHub issues, MR/PR threads, CI via glab/gh CLIs
+  mcp/                    # Local MCP server exposed to launched Claude sessions (create_worktree, …)
   util/
     ids.rs                # ULID-backed typed ID newtypes (WorktreeId, AgentSessionId, LspServerId, ...)
     errors.rs             # AppError → serde { kind, message }
@@ -94,8 +95,8 @@ On first run the Rust side compiles ~450 crates — give it a few minutes. Subse
 ```sh
 npm run gen-types         # after changing any Rust #[derive(TS)] type
 npx tsc -b                # TypeScript project-reference build (use this, not `tsc --noEmit`)
-cd src-tauri && cargo test --quiet   # 73 Rust tests (git ops, reconcile, diff, LSP roots)
-npm test                  # 59 Vitest tests (Zustand stores + pure utils)
+cd src-tauri && cargo test --quiet   # Rust tests
+npm test                  # Vitest (Zustand stores + pure utils)
 npx playwright test       # Playwright e2e against the Tauri-IPC stub
 ```
 
@@ -111,27 +112,13 @@ The tauri-dev log is the place to look for runtime signals. Default log level is
 - **Agent reattach uses a ring buffer.** Supervisor keeps a bounded byte buffer per session; on pane remount the `attach_agent` command replays the buffer into a fresh Channel before live output resumes. Don't bypass this by wiring new UI directly to `launch_agent` — go through the attach path or reconnects will silently drop output.
 - **Graceful shutdown hook.** `on_window_event(CloseRequested)` calls `agents.kill_all()` + `terminals.kill_all()` + `lsp.kill_all()`. New long-lived subprocess registries should plug in here to avoid orphans.
 - **Startup reconciliation.** `open_workspace` runs `worktree::reconcile`: `git worktree prune`, then any path under `<repo>__worktrees/` in `git worktree list --porcelain` that we don't know about gets adopted into state with a fresh `WorktreeId`. IDs are not stable across app restarts — frontend should not persist them.
-- **LSP is opt-in, per language, per worktree.** Settings toggles a language on; on first file open in an enabled language the supervisor spawns the configured binary (`rust-analyzer`, `pyright-langserver`, …) rooted at the nearest project marker (`Cargo.toml`, `package.json`, …). Custom servers are appended to `~/Library/Application Support/com.treehouse.app/languages.toml` — don't hardcode them.
+- **LSP is opt-in, per language, per worktree.** Settings toggles a language on; on first file open in an enabled language the supervisor spawns the configured binary (`rust-analyzer`, `pyright-langserver`, …) rooted at the nearest project marker (`Cargo.toml`, `package.json`, …). Custom servers and per-workspace overrides go in `~/Library/Application Support/com.treehouse.app/treehouse.toml` (see `user_config.rs`) — don't hardcode them.
 - **Playwright e2e stubs Tauri IPC.** Specs run against the Vite dev server with `src/test/e2e-bootstrap.ts` shimming `window.__TAURI_INTERNALS__`; they don't exercise real Rust. Treat them as UI regression, not integration.
 - **Shell PATH is imported at startup.** macOS `.app` bundles launched from Finder/launchd inherit a minimal `/usr/bin:/bin:…` PATH — `.zshrc` never runs, so brew / `~/.local/bin` / language-manager shims are invisible. `lib.rs::import_shell_path` shells out to `$SHELL -ilc 'printf %s "$PATH"'` at boot and exports the captured PATH before the Tauri builder starts. All downstream `CommandBuilder` spawns (agents, LSP, terminals) inherit it. Best-effort: on failure we leave PATH alone, never fatal.
 
-## Scope — what's in vs. what's not
+## Scope
 
-**In v0 MVP:**
-- Open repo, multiple worktrees, multiple tabbed agents per worktree (Claude Code / Codex / Kiro), live diff, tabbed terminals per worktree, merge-back with three strategies (merge / squash / rebase), sync-down (merge or rebase), ring-buffer agent reattach, error toasts, graceful shutdown.
-- Inline review comments: gutter `+`; new comments are pending and batch-sent (with an optional summary and any MR threads pulled in) from the Review tab as one prompt. Status is pending → sent → resolved; the Review tab works without a forge.
-- Opt-in LSPs (Rust / TS / Python / Go / C-C++ / Ruby / Lua + `languages.toml` extensions) — hover, completions, signature help, diagnostics, cmd-click goto (same-file + cross-file within the worktree).
-- Editable Monaco editor (⌘S save → sandboxed `write_worktree_file`, dirty-state tracking, reload-from-disk conflict flow when an agent writes a file you have open) with Markdown preview tab, live refresh when agents write the open file.
-- Typed ID newtypes (`WorktreeId`, `AgentSessionId`, `TerminalId`, `WorkspaceId`, `LspServerId`) all ULID-backed.
-- Persisted state under `~/Library/Application Support/com.treehouse.app/` (recent workspaces, comments, settings).
-- macOS only.
-
-**Deferred (post-MVP):**
-- Codex / Kiro backends ship but haven't been road-tested like Claude Code
-- Linux / Windows
-- Sandboxing (macOS `sandbox-exec`)
-- Cross-worktree search / command palette
-- LSP: indexing-progress surfacing, semantic tokens, inlay hints, `workspace/configuration`, goto into external stdlib paths
-- Notifications when agents need attention
-
-See `/Users/kylewalters/.claude/plans/i-want-to-make-delightful-mccarthy.md` for the full design doc this codebase is built against.
+- macOS only; Linux / Windows are not supported.
+- Codex and Kiro backends work but are less tested than Claude Code.
+- No sandboxing of agent processes.
+- LSP gaps: no indexing-progress UI, semantic tokens, inlay hints, `workspace/configuration`, or goto into external stdlib paths.
