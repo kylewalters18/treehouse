@@ -6,7 +6,9 @@ import type { AgentSessionId } from "./AgentSessionId";
  */
 export type AgentHistoryEntry = { claudeSessionId: string, 
 /**
- * First prompt of the conversation.
+ * Claude Code's generated title, or the first prompt when there's none
+ * yet (records from before titles were read, or a conversation that
+ * ended before Claude named it).
  */
 title: string | null, 
 /**

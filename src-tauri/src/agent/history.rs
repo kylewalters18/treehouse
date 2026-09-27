@@ -64,7 +64,9 @@ struct HistoryFile {
 #[ts(export)]
 pub struct AgentHistoryEntry {
     pub claude_session_id: String,
-    /// First prompt of the conversation.
+    /// Claude Code's generated title, or the first prompt when there's none
+    /// yet (records from before titles were read, or a conversation that
+    /// ended before Claude named it).
     pub title: Option<String>,
     /// Claude's most recent reply.
     pub last_message: Option<String>,
@@ -134,7 +136,7 @@ impl AgentHistory {
             .filter(|r| r.worktree_path == worktree_path)
             .map(|r| AgentHistoryEntry {
                 claude_session_id: r.claude_session_id.clone(),
-                title: r.title.clone(),
+                title: r.ai_title.clone().or_else(|| r.title.clone()),
                 last_message: r.last_message.clone(),
                 started_at: r.started_at,
                 last_active_at: r.last_active_at,
@@ -356,8 +358,21 @@ mod tests {
         assert_eq!(h2.last_turn("s1"), Some(t));
         let list = h2.list_for(&wt());
         assert_eq!(list.len(), 1);
-        assert_eq!(list[0].title.as_deref(), Some("hello"));
+        assert_eq!(list[0].title.as_deref(), Some("Greeting"));
         h2.forget_worktree(&wt());
         assert!(h2.list_for(&wt()).is_empty());
+    }
+
+    #[test]
+    fn list_title_falls_back_to_first_prompt() {
+        let h = AgentHistory::default();
+        h.observe(&wt(), None, "s1", Some("fix the bug"), &LastTurn::default(), 1);
+        assert_eq!(h.list_for(&wt())[0].title.as_deref(), Some("fix the bug"));
+        let named = LastTurn {
+            ai_title: Some("Login redirect loop".into()),
+            ..LastTurn::default()
+        };
+        h.observe(&wt(), None, "s1", None, &named, 2);
+        assert_eq!(h.list_for(&wt())[0].title.as_deref(), Some("Login redirect loop"));
     }
 }
