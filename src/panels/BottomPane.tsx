@@ -15,6 +15,7 @@ import { TerminalPane } from "@/panels/TerminalPane";
 import { CIPanel } from "@/panels/CIPanel";
 import { ReviewPanel } from "@/panels/ReviewPanel";
 import { useForgeStore, forgeBranchKey } from "@/stores/forge";
+import { commentStatus, useCommentsStore } from "@/stores/comments";
 import { useUiStore } from "@/stores/ui";
 import { useWorktreesStore } from "@/stores/worktrees";
 import { workspaceForWorktree } from "@/stores/workspace";
@@ -83,11 +84,32 @@ function useForgeBadges(): { unresolved: number; failedJobs: number } {
   return { unresolved, failedJobs };
 }
 
+/// Local review comments still waiting to go out, for the Review badge.
+/// Works with no forge at all.
+function usePendingReviewCount(): number {
+  const selectedWorktreeId = useUiStore((s) => s.selectedWorktreeId);
+  const worktrees = useWorktreesStore((s) => s.worktrees);
+  const selected = worktrees.find((w) => w.id === selectedWorktreeId) ?? null;
+  const root = workspaceForWorktree(selected?.workspaceId)?.root;
+  const branch = selected?.branch;
+  return useCommentsStore(
+    (s) =>
+      s.items.filter(
+        (c) =>
+          c.workspaceRoot === root &&
+          c.branch === branch &&
+          commentStatus(c) === "pending",
+      ).length,
+  );
+}
+
 export function BottomPane() {
   const tab = useUiStore((s) => s.bottomPaneTab);
   const setTab = useUiStore((s) => s.setBottomPaneTab);
   const problemsCount = useProblemsCount();
   const { unresolved, failedJobs } = useForgeBadges();
+  const pendingReview = usePendingReviewCount();
+  const reviewCount = pendingReview + unresolved;
 
   return (
     <div className="flex h-full flex-col bg-neutral-950">
@@ -109,8 +131,8 @@ export function BottomPane() {
         </TabButton>
         <TabButton active={tab === "review"} onClick={() => setTab("review")}>
           Review
-          {unresolved > 0 && (
-            <TabBadge active={tab === "review"}>{unresolved}</TabBadge>
+          {reviewCount > 0 && (
+            <TabBadge active={tab === "review"}>{reviewCount}</TabBadge>
           )}
         </TabButton>
         <TabButton active={tab === "ci"} onClick={() => setTab("ci")}>

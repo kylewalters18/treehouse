@@ -20,7 +20,7 @@ import type {
 } from "@/ipc/types";
 import { cn } from "@/lib/cn";
 import { asMessage } from "@/lib/errors";
-import { useCommentsStore } from "@/stores/comments";
+import { commentStatus, useCommentsStore } from "@/stores/comments";
 import { useDiffsStore } from "@/stores/diffs";
 import { toastError } from "@/stores/toasts";
 import { useUiStore } from "@/stores/ui";
@@ -47,7 +47,7 @@ type CardContext = {
   repo: string | null;
   label: string;
   status: WorktreeActivity | undefined;
-  queuedComments: number;
+  pendingComments: number;
 };
 
 /// Title-bar button for the board, beside the scratch pill. Turns amber
@@ -105,7 +105,6 @@ function AgentBoardOverlay() {
   const workspaces = useWorkspaceStore((s) => s.workspaces);
   const worktrees = useWorktreesStore((s) => s.worktrees);
   const comments = useCommentsStore((s) => s.items);
-  const queue = useCommentsStore((s) => s.queue);
 
   const [overviews, setOverviews] = useState<AgentOverview[] | null>(null);
   const [statuses, setStatuses] = useState<Record<WorktreeId, WorktreeActivity>>({});
@@ -162,10 +161,10 @@ function AgentBoardOverlay() {
         repo: showRepo && ws ? basename(ws.root) : null,
         label: publishedLabels[o.session.id] ?? fallback[o.session.id],
         status: statuses[wt.id],
-        queuedComments: ws
+        pendingComments: ws
           ? comments.filter(
               (c) =>
-                queue.has(c.id) &&
+                commentStatus(c) === "pending" &&
                 c.workspaceRoot === ws.root &&
                 c.branch === wt.branch,
             ).length
@@ -173,7 +172,7 @@ function AgentBoardOverlay() {
       });
     }
     return out;
-  }, [overviews, worktreeById, workspaces, showRepo, publishedLabels, statuses, comments, queue]);
+  }, [overviews, worktreeById, workspaces, showRepo, publishedLabels, statuses, comments]);
 
   const visible = useMemo(() => {
     const q = filter.trim().toLowerCase();
@@ -659,9 +658,9 @@ function Meta({
       ) : (
         <span>no changes</span>
       )}
-      {ctx.queuedComments > 0 && (
+      {ctx.pendingComments > 0 && (
         <Chip className="border-blue-700/60 text-blue-300">
-          {ctx.queuedComments} queued {ctx.queuedComments === 1 ? "comment" : "comments"}
+          {ctx.pendingComments} pending {ctx.pendingComments === 1 ? "comment" : "comments"}
         </Chip>
       )}
       {behind > 0 && (

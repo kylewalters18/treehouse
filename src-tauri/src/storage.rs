@@ -320,7 +320,18 @@ pub struct Comment {
     pub workspace_root: String,
     pub branch: String,
     pub file_path: String,
+    /// First (or only) line the comment covers, 1-based, in the file on
+    /// `side`. `0` means a file-level comment with no line anchor.
     pub line: u32,
+    /// Last line of a multi-line range (inclusive). `None` for a single
+    /// line or a file-level comment.
+    #[serde(default)]
+    #[ts(type = "number | null")]
+    pub end_line: Option<u32>,
+    /// Which version of the file the lines refer to: `head` (the worktree)
+    /// or `base` (the diff base — lines the agent removed or changed).
+    #[serde(default)]
+    pub side: CommentSide,
     pub text: String,
     /// Epoch milliseconds. Fits in `Number.MAX_SAFE_INTEGER` for the next
     /// ~285k years, so ts-rs is overridden to surface it as `number` rather
@@ -328,8 +339,25 @@ pub struct Comment {
     /// `JSON.stringify`s arguments).
     #[ts(type = "number")]
     pub created_at: u64,
+    /// When the comment was last handed to an agent. Status is derived:
+    /// `resolved_at` set → resolved; else `sent_at` set → sent (awaiting
+    /// the agent); else pending (part of the next review batch).
+    /// `serde(default)` so comment files written before this field load
+    /// with every unresolved comment as pending.
+    #[serde(default)]
+    #[ts(type = "number | null")]
+    pub sent_at: Option<u64>,
     #[ts(type = "number | null")]
     pub resolved_at: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "lowercase")]
+#[ts(export)]
+pub enum CommentSide {
+    #[default]
+    Head,
+    Base,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -365,4 +393,24 @@ pub async fn save_comments(app: &AppHandle, items: &[Comment]) -> AppResult<()> 
         .await
         .map_err(|e| AppError::Io(format!("write {}: {e}", path.display())))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Comment files written before `sent_at` existed must still parse —
+    /// `load_comments` falls back to an empty list on a parse error, so a
+    /// missing default here would silently drop every saved comment.
+    #[test]
+    fn comments_file_from_before_new_fields_loads_as_pending_head_comments() {
+        let json = br#"{"items":[{"id":"c1","workspaceRoot":"/r","branch":"b",
+            "filePath":"a.rs","line":3,"text":"hi","createdAt":1,"resolvedAt":null}]}"#;
+        let file: CommentsFile = serde_json::from_slice(json).unwrap();
+        assert_eq!(file.items.len(), 1);
+        assert_eq!(file.items[0].sent_at, None);
+        assert_eq!(file.items[0].resolved_at, None);
+        assert_eq!(file.items[0].end_line, None);
+        assert_eq!(file.items[0].side, CommentSide::Head);
+    }
 }

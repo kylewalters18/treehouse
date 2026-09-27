@@ -258,6 +258,12 @@ impl GitlabForge {
         let path = format!("projects/{}/merge_requests/{}/discussions", self.pid(), iid);
         let mut failures = Vec::new();
         for c in comments {
+            // Removed lines anchor on the old side; everything else on the new.
+            let line_field = if c.removed {
+                "position[old_line]"
+            } else {
+                "position[new_line]"
+            };
             let form = [
                 ("body", c.body.clone()),
                 ("position[position_type]", "text".to_string()),
@@ -266,7 +272,7 @@ impl GitlabForge {
                 ("position[head_sha]", refs.head_sha.clone()),
                 ("position[new_path]", c.file_path.clone()),
                 ("position[old_path]", c.file_path.clone()),
-                ("position[new_line]", c.line.to_string()),
+                (line_field, c.line.to_string()),
             ];
             if let Err(e) = self.send(reqwest::Method::POST, &path, &form).await {
                 failures.push(format!("{}:{} — {e}", c.file_path, c.line));

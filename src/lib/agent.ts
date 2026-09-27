@@ -18,9 +18,8 @@ export async function pasteAndSubmit(
 
 /// Pick a sendable agent for a worktree: prefer `preferredId` (typically the
 /// active tab) when it's still running, else the first running/starting agent.
-/// Returns null when the worktree has no live agent to send to. Mirrors the
-/// selection the Send-queue dropdown does, for callers (e.g. the Review tab)
-/// that send directly without showing a picker.
+/// Returns null when the worktree has no live agent to send to. Used by
+/// callers that send directly without showing a picker.
 export async function resolveSendableAgent(
   worktreeId: WorktreeId,
   preferredId: AgentSessionId | null,

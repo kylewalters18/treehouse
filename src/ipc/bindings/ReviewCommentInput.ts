@@ -4,4 +4,9 @@
  * Input for a line-anchored review comment — mirrors the renderer's stored
  * `Comment` (filePath + line + text). The provider fetches the diff SHAs itself.
  */
-export type ReviewCommentInput = { filePath: string, line: number, body: string, };
+export type ReviewCommentInput = { filePath: string, line: number, body: string, 
+/**
+ * `line` refers to the base version (a removed line) rather than the
+ * new one.
+ */
+removed: boolean, };

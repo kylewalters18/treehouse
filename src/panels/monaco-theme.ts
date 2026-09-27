@@ -1,9 +1,108 @@
 import type { Monaco } from "@monaco-editor/react";
 
 /// Shared Monaco theme used by both the file editor (EditorPane) and the
-/// diff viewer (DiffEditorView). Ported from Dark Modern 2026
-/// (icarogabryel/dark-modern-2026) with Dark+ token colors.
+/// diff viewer (DiffEditorView): Dark+ token colors over the treehouse
+/// chrome ladder.
 export const THEME_NAME = "treehouse-dark";
+
+/// Editor chrome colors, shared by this Monarch fallback theme and the
+/// Shiki theme (monaco-shiki.ts) so the two can't drift. Every value is a
+/// Tailwind token from tailwind.config.js — neutral ladder for surfaces,
+/// `blue-*` as the single accent, emerald / amber / rose for git status
+/// and diagnostics, matching the rest of the UI.
+export const EDITOR_CHROME: Record<string, string> = {
+  // Surfaces: editor sits on neutral-950; the active line lifts to 900.
+  "editor.background": "#0F1114",
+  "editor.foreground": "#BEC3CA",
+  "editorGutter.background": "#0F1114",
+  "editor.lineHighlightBackground": "#16191D",
+  "editor.lineHighlightBorder": "#00000000",
+  "editorLineNumber.foreground": "#555C65",
+  "editorLineNumber.activeForeground": "#B4BAC2",
+  "editorCursor.foreground": "#6AA1FF",
+
+  // Selection / highlights — all blue accent at varying strength.
+  "editor.selectionBackground": "#3874E059",
+  "editor.inactiveSelectionBackground": "#3874E02E",
+  "editor.selectionHighlightBackground": "#4F8CF526",
+  "editor.wordHighlightBackground": "#4F8CF51F",
+  "editor.wordHighlightStrongBackground": "#4F8CF533",
+  "editor.findMatchBackground": "#4F8CF566",
+  "editor.findMatchBorder": "#6AA1FF",
+  "editor.findMatchHighlightBackground": "#4F8CF52E",
+  "editor.findRangeHighlightBackground": "#16191D",
+  "editor.hoverHighlightBackground": "#4F8CF51A",
+  "editor.rangeHighlightBackground": "#16191D",
+  "editorBracketMatch.background": "#4F8CF526",
+  "editorBracketMatch.border": "#4F8CF580",
+  "editorLink.activeForeground": "#6AA1FF",
+
+  // Hairlines: guides and rulers sit on the 800/700 steps.
+  "editorIndentGuide.background1": "#22262B",
+  "editorIndentGuide.activeBackground1": "#2C3137",
+  "editorWhitespace.foreground": "#555C6566",
+  "editorRuler.foreground": "#22262B",
+  "editorCodeLens.foreground": "#7D858F",
+  "editorOverviewRuler.border": "#00000000",
+
+  // Git gutter + diagnostics follow the status colors used in the
+  // file tree / Changes list (emerald-400 / amber-400 / rose-400).
+  "editorGutter.addedBackground": "#34D399",
+  "editorGutter.modifiedBackground": "#FBBF24",
+  "editorGutter.deletedBackground": "#FB7185",
+  "editorError.foreground": "#FB7185",
+  "editorWarning.foreground": "#FBBF24",
+  "editorInfo.foreground": "#6AA1FF",
+
+  // Flat scrollbars — no drop shadow, neutral-500 thumb.
+  "scrollbar.shadow": "#00000000",
+  "scrollbarSlider.background": "#7D858F26",
+  "scrollbarSlider.hoverBackground": "#7D858F4D",
+  "scrollbarSlider.activeBackground": "#7D858F73",
+  "minimapSlider.background": "#7D858F26",
+  "minimapSlider.hoverBackground": "#7D858F4D",
+  "minimapSlider.activeBackground": "#7D858F73",
+
+  // Widgets (find, suggest, hover, peek) are raised 900 cards with a
+  // 700 border, like the app's popovers.
+  "widget.shadow": "#0000007A",
+  "editorWidget.background": "#16191D",
+  "editorWidget.border": "#2C3137",
+  "editorWidget.foreground": "#D0D4D9",
+  "editorSuggestWidget.background": "#16191D",
+  "editorSuggestWidget.border": "#2C3137",
+  "editorSuggestWidget.foreground": "#B4BAC2",
+  "editorSuggestWidget.highlightForeground": "#6AA1FF",
+  "editorSuggestWidget.focusHighlightForeground": "#98BDFF",
+  "editorSuggestWidget.selectedForeground": "#F4F5F7",
+  "editorSuggestWidget.selectedBackground": "#3874E033",
+  "editorHoverWidget.background": "#16191D",
+  "editorHoverWidget.border": "#2C3137",
+  "list.hoverBackground": "#22262B",
+  "list.activeSelectionBackground": "#3874E033",
+  "list.activeSelectionForeground": "#F4F5F7",
+  "list.highlightForeground": "#6AA1FF",
+  "input.background": "#0F1114",
+  "input.foreground": "#D0D4D9",
+  "input.border": "#2C3137",
+  "input.placeholderForeground": "#555C65",
+  "inputOption.activeBorder": "#4F8CF5",
+  "inputOption.activeBackground": "#3874E033",
+  focusBorder: "#4F8CF599",
+
+  // Diff: low-alpha emerald / rose washes; collapsed unchanged regions
+  // drop to the chrome surface.
+  "diffEditor.insertedLineBackground": "#34D39912",
+  "diffEditor.insertedTextBackground": "#34D39933",
+  "diffEditor.removedLineBackground": "#FB718512",
+  "diffEditor.removedTextBackground": "#FB718533",
+  "diffEditorGutter.insertedLineBackground": "#34D3991F",
+  "diffEditorGutter.removedLineBackground": "#FB71851F",
+  "diffEditor.border": "#22262B",
+  "diffEditor.unchangedRegionBackground": "#0B0C0E",
+  "diffEditor.unchangedRegionForeground": "#7D858F",
+  "diffEditor.unchangedCodeBackground": "#00000000",
+};
 
 export function defineTreehouseTheme(monaco: Monaco) {
   monaco.editor.defineTheme(THEME_NAME, {
@@ -62,60 +161,6 @@ export function defineTreehouseTheme(monaco: Monaco) {
       { token: "type.yaml", foreground: "9CDCFE" },
       { token: "string.yaml", foreground: "CE9178" },
     ],
-    colors: {
-      "editor.background": "#0F1114",
-      "editor.foreground": "#BBBEBF",
-      "editorLineNumber.foreground": "#858889",
-      "editorLineNumber.activeForeground": "#BBBEBF",
-      "editor.lineHighlightBackground": "#1D2126",
-      "editor.lineHighlightBorder": "#00000000",
-      "editor.selectionBackground": "#276782dd",
-      "editor.inactiveSelectionBackground": "#27678260",
-      "editor.selectionHighlightBackground": "#27678260",
-      "editor.wordHighlightBackground": "#27678250",
-      "editor.wordHighlightStrongBackground": "#27678280",
-      "editor.findMatchBackground": "#27678290",
-      "editor.findMatchHighlightBackground": "#27678280",
-      "editor.findRangeHighlightBackground": "#1D2126",
-      "editor.hoverHighlightBackground": "#1D2126",
-      "editor.rangeHighlightBackground": "#1D2126",
-      "editorCursor.foreground": "#BBBEBF",
-      "editorIndentGuide.background1": "#8384854D",
-      "editorIndentGuide.activeBackground1": "#838485",
-      "editorWhitespace.foreground": "#8C8C8C4D",
-      "editorRuler.foreground": "#848484",
-      "editorBracketMatch.background": "#3994BC55",
-      "editorBracketMatch.border": "#22262BFF",
-      "editorGutter.background": "#0F1114",
-      "editorGutter.addedBackground": "#72C892",
-      "editorGutter.deletedBackground": "#F28772",
-      "editorLink.activeForeground": "#3a94bc",
-      "editorCodeLens.foreground": "#8C8C8C",
-      "editorOverviewRuler.border": "#22262BFF",
-      "scrollbar.shadow": "#191B1D4D",
-      "scrollbarSlider.background": "#83848533",
-      "scrollbarSlider.hoverBackground": "#83848566",
-      "scrollbarSlider.activeBackground": "#83848599",
-      "minimapSlider.background": "#83848533",
-      "minimapSlider.hoverBackground": "#83848566",
-      "minimapSlider.activeBackground": "#83848599",
-      "editorWidget.background": "#1A1D21",
-      "editorWidget.border": "#22262BFF",
-      "editorWidget.foreground": "#bfbfbf",
-      "editorSuggestWidget.background": "#1A1D21",
-      "editorSuggestWidget.border": "#22262BFF",
-      "editorSuggestWidget.foreground": "#bfbfbf",
-      "editorSuggestWidget.highlightForeground": "#bfbfbf",
-      "editorSuggestWidget.selectedBackground": "#3994BC26",
-      "editorHoverWidget.background": "#1A1D21",
-      "editorHoverWidget.border": "#22262BFF",
-      "input.background": "#16191D",
-      "input.border": "#2C3137FF",
-      focusBorder: "#3994BCB3",
-      "diffEditor.insertedLineBackground": "#347d3926",
-      "diffEditor.insertedTextBackground": "#57ab5a4d",
-      "diffEditor.removedLineBackground": "#c93c3726",
-      "diffEditor.removedTextBackground": "#f470674d",
-    },
+    colors: EDITOR_CHROME,
   });
 }

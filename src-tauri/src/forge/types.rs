@@ -168,6 +168,10 @@ pub struct ReviewCommentInput {
     pub file_path: String,
     pub line: u32,
     pub body: String,
+    /// `line` refers to the base version (a removed line) rather than the
+    /// new one.
+    #[serde(default)]
+    pub removed: bool,
 }
 
 /// Normalize a forge state string to lowercase `open`/`closed`/`merged`.

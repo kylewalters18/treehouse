@@ -132,3 +132,31 @@ export function statusFilenameColor(kind: string): string {
       return "text-neutral-200";
   }
 }
+
+/// One-letter git status badge shown at the end of file-tree / Changes
+/// rows (VS Code's M / A / D / R / U), in the same hue as the filename.
+export function statusLetter(kind: string): string | null {
+  switch (kind) {
+    case "added":
+      return "A";
+    case "modified":
+      return "M";
+    case "deleted":
+      return "D";
+    case "renamed":
+      return "R";
+    case "untracked":
+      return "U";
+    default:
+      return null;
+  }
+}
+
+/// Shared row recipe for the file explorer's Files and Changes lists:
+/// fixed-height rows, neutral hover, and the sidebar's accent-tinted
+/// selection with a 2px accent bar on the leading edge.
+export function explorerRow(selected: boolean): string {
+  return selected
+    ? "bg-blue-400/[0.08] text-neutral-100 before:absolute before:inset-y-0 before:left-0 before:w-[2px] before:bg-blue-400"
+    : "hover:bg-neutral-900";
+}

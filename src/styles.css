@@ -21,22 +21,51 @@ body {
 }
 
 /* A subtle "+" painted on every line's glyph margin — click to add a review
-   comment on that line. Dims by default; brightens on row hover. */
+   comment on that line. Faint neutral-600 at rest; on hover it becomes a
+   filled accent chip (blue-600) so the hit target reads as a button. */
 .treehouse-comment-plus {
   cursor: pointer;
   pointer-events: auto !important;
-  color: #555555;
-  font-weight: 700;
-  font-size: 12px;
-  text-align: center;
-  line-height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #555c65;
+  opacity: 0.55;
+  transition:
+    opacity 80ms ease,
+    color 80ms ease;
 }
 .treehouse-comment-plus::before {
   content: "+";
   pointer-events: auto;
+  display: block;
+  width: 14px;
+  height: 14px;
+  border-radius: 4px;
+  font-family: "Geist Mono Variable", ui-monospace, monospace;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 14px;
+  text-align: center;
+  transition: background-color 80ms ease;
 }
 .treehouse-comment-plus:hover {
-  color: #3b82f6;
+  color: #fff;
+  opacity: 1;
+}
+.treehouse-comment-plus:hover::before {
+  background-color: #3874e0;
+}
+
+/* Lines covered by a range review comment: faint accent wash plus a 2px
+   accent bar in the line-decorations column. */
+.monaco-editor .treehouse-review-range {
+  background-color: rgba(79, 140, 245, 0.07);
+}
+.monaco-editor .treehouse-review-range-bar {
+  background-color: #6aa1ff;
+  width: 2px !important;
+  margin-left: 3px;
 }
 
 /* Suppress Monaco's keybinding tooltip on action-bar buttons — the

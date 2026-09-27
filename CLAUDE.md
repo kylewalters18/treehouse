@@ -75,7 +75,7 @@ src/
     client.ts             # Typed invoke()/listen()/Channel wrappers
     types.ts              # Re-exports from ./bindings/
     bindings/             # ts-rs OUTPUT — commit these; regen with `npm run gen-types`
-  components/             Toaster, SendQueueButton, SettingsMenu
+  components/             Toaster, SettingsMenu, StatusBar, AgentBoard, …
   lib/                    cn.ts (clsx + tailwind-merge), errors.ts, agent.ts
   test/                   setup.ts, e2e-bootstrap.ts (stubs Tauri IPC for Playwright)
 
@@ -119,7 +119,7 @@ The tauri-dev log is the place to look for runtime signals. Default log level is
 
 **In v0 MVP:**
 - Open repo, multiple worktrees, multiple tabbed agents per worktree (Claude Code / Codex / Kiro), live diff, tabbed terminals per worktree, merge-back with three strategies (merge / squash / rebase), sync-down (merge or rebase), ring-buffer agent reattach, error toasts, graceful shutdown.
-- Inline review comments: gutter `+`, queued, batch-sent to the active agent as one prompt.
+- Inline review comments: gutter `+`; new comments are pending and batch-sent (with an optional summary and any MR threads pulled in) from the Review tab as one prompt. Status is pending → sent → resolved; the Review tab works without a forge.
 - Opt-in LSPs (Rust / TS / Python / Go / C-C++ / Ruby / Lua + `languages.toml` extensions) — hover, completions, signature help, diagnostics, cmd-click goto (same-file + cross-file within the worktree).
 - Editable Monaco editor (⌘S save → sandboxed `write_worktree_file`, dirty-state tracking, reload-from-disk conflict flow when an agent writes a file you have open) with Markdown preview tab, live refresh when agents write the open file.
 - Typed ID newtypes (`WorktreeId`, `AgentSessionId`, `TerminalId`, `WorkspaceId`, `LspServerId`) all ULID-backed.

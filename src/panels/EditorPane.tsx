@@ -1,5 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import {
+  AlertTriangle,
+  Check,
+  ChevronDown,
+  GitPullRequest,
+  MessageSquare,
+  X,
+} from "lucide-react";
 import Editor, { type OnMount } from "@monaco-editor/react";
 import * as monaco from "monaco-editor";
 import type { editor as MonacoEditor } from "monaco-editor";
@@ -16,13 +24,18 @@ import type {
   AgentSession,
   AgentSessionId,
   Comment,
+  CommentSide,
   FileContent,
   ForgeThread,
   WorktreeId,
 } from "@/ipc/types";
 import {
+  anchorLabel,
+  commentStatus,
   formatCommentForAgent,
+  reviewKey,
   useCommentsStore,
+  type CommentStatus,
 } from "@/stores/comments";
 import { useForgeStore, forgeBranchKey } from "@/stores/forge";
 import { useLspStore } from "@/stores/lsp";
@@ -34,6 +47,7 @@ import { useWorktreesStore } from "@/stores/worktrees";
 import { toastError, toastInfo, toastSuccess } from "@/stores/toasts";
 import { asMessage } from "@/lib/errors";
 import { cn } from "@/lib/cn";
+import { countBadge } from "@/lib/pane-chrome";
 import { findConfigForLanguage } from "@/lsp/languages";
 import {
   LspNotFoundError,
@@ -45,6 +59,12 @@ import {
 import { useDiffsStore } from "@/stores/diffs";
 import { useEditorViewStateStore } from "@/stores/editor-view-state";
 import { inferLanguage } from "./editor-language";
+import {
+  baseLineMapper,
+  rangeFromSelection,
+  targetLabel,
+  type CommentTarget,
+} from "./review-anchors";
 import {
   SUSPECT_RECHECK_MS,
   classifyDiskRead,
@@ -101,21 +121,21 @@ export function EditorPane({ worktreeId, path }: Props) {
 
   if (!path) {
     return (
-      <div className="flex h-full items-center justify-center text-xs text-neutral-600">
+      <div className="flex h-full items-center justify-center bg-neutral-950 text-xs text-neutral-500">
         Pick a file on the left to view its contents
       </div>
     );
   }
   if (loading) {
     return (
-      <div className="flex h-full items-center justify-center text-xs text-neutral-600">
+      <div className="flex h-full items-center justify-center bg-neutral-950 text-xs text-neutral-500">
         Loading…
       </div>
     );
   }
   if (error) {
     return (
-      <div className="m-3 rounded border border-red-900/60 bg-red-950/40 px-3 py-2 text-xs text-red-300">
+      <div className="m-3 rounded-md border border-rose-400/20 bg-rose-400/[0.06] px-3 py-2 text-xs text-rose-300">
         {error}
       </div>
     );
@@ -124,7 +144,7 @@ export function EditorPane({ worktreeId, path }: Props) {
 
   if (content.binary) {
     return (
-      <div className="m-3 rounded border border-neutral-800 bg-neutral-900/60 p-4 text-center text-xs text-neutral-500">
+      <div className="m-3 rounded-md border border-neutral-800 bg-neutral-900 p-4 text-center text-xs text-neutral-500">
         Binary file — {(Number(content.size) / 1024).toFixed(1)} KB
       </div>
     );
@@ -444,9 +464,11 @@ function EditorWithComments({
           renderLineHighlight: "line",
           tabSize: 2,
           padding: { top: 8, bottom: 8 },
+          cursorBlinking: "smooth",
           scrollbar: {
             verticalScrollbarSize: 10,
             horizontalScrollbarSize: 10,
+            useShadows: false,
           },
           overviewRulerBorder: false,
           overviewRulerLanes: 0,
@@ -465,7 +487,7 @@ function EditorWithComments({
       )}
       {cursorPos && (
         <div
-          className="pointer-events-none absolute bottom-1 right-3 z-20 rounded bg-neutral-900/80 px-1.5 py-0.5 font-mono text-[10px] text-neutral-400"
+          className="pointer-events-none absolute bottom-1.5 right-4 z-20 rounded-md border border-neutral-800 bg-chrome/90 px-1.5 py-px font-mono text-[10px] tabular-nums text-neutral-500"
           aria-label="Cursor position"
         >
           Ln {cursorPos.line}, Col {cursorPos.column}
@@ -544,18 +566,21 @@ function ConflictBanner({
       ? "Keep editing"
       : "Keep editing — next save recreates the file";
   return (
-    <div className="flex shrink-0 items-center justify-between gap-3 border-b border-amber-900/50 bg-amber-950/30 px-3 py-2 text-xs text-amber-200">
-      <span className="min-w-0 truncate">⚠ {title}</span>
+    <div className="flex h-[34px] shrink-0 items-center justify-between gap-3 border-b border-amber-400/20 bg-amber-400/[0.06] px-3 text-xs text-amber-200">
+      <span className="flex min-w-0 items-center gap-2">
+        <AlertTriangle size={13} className="shrink-0 text-amber-400" />
+        <span className="truncate">{title}</span>
+      </span>
       <div className="flex shrink-0 items-center gap-1">
         <button
           onClick={onReload}
-          className="rounded border border-amber-800/60 bg-amber-900/40 px-2 py-0.5 text-[11px] text-amber-100 hover:bg-amber-900/60"
+          className="flex h-6 items-center rounded-md bg-amber-400/15 px-2 text-[11px] font-medium text-amber-100 transition-colors hover:bg-amber-400/25"
         >
           {reloadLabel}
         </button>
         <button
           onClick={onDismiss}
-          className="rounded border border-neutral-800 bg-neutral-900/60 px-2 py-0.5 text-[11px] text-neutral-300 hover:bg-neutral-800"
+          className="flex h-6 items-center rounded-md px-2 text-[11px] text-neutral-400 transition-colors hover:bg-neutral-800 hover:text-neutral-100"
         >
           {keepLabel}
         </button>
@@ -564,10 +589,18 @@ function ConflictBanner({
   );
 }
 
+/// Every zone sits in the editor after model line `after` (0 = top of the
+/// file). `ordinal` breaks ties with Monaco's own zones on the same line —
+/// removed-line comments use a high one so they render below the deleted
+/// block they refer to.
 type ZoneDesc =
-  | { key: string; kind: "widget"; line: number; heightLines: number; comment: Comment }
-  | { key: string; kind: "composer"; line: number; heightLines: number }
-  | { key: string; kind: "thread"; line: number; heightLines: number; thread: ForgeThread };
+  | { key: string; kind: "widget"; after: number; ordinal?: number; heightLines: number; comment: Comment }
+  | { key: string; kind: "composer"; after: number; ordinal?: number; heightLines: number; target: CommentTarget }
+  | { key: string; kind: "thread"; after: number; ordinal?: number; heightLines: number; thread: ForgeThread };
+
+/// Tie-break for zones anchored to removed (base-side) lines; Monaco's
+/// deleted-code zones use the default 10000.
+const BASE_SIDE_ORDINAL = 20000;
 
 type ZoneEntry = {
   desc: ZoneDesc;
@@ -580,7 +613,7 @@ type ZoneEntry = {
 };
 
 const WIDGET_HEIGHT_LINES = 5;
-const COMPOSER_HEIGHT_LINES = 6;
+const COMPOSER_HEIGHT_LINES = 8;
 const THREAD_HEIGHT_LINES = 7;
 
 /// Renders review comments inline using the ZoneWidget pattern VSCode uses
@@ -598,10 +631,15 @@ export function CommentOverlay({
   editor,
   worktreeId,
   filePath,
+  diffEditor,
 }: {
   editor: MonacoEditor.IStandaloneCodeEditor;
   worktreeId: WorktreeId;
   filePath: string;
+  /// Set when `editor` is the modified side of an inline diff. Enables
+  /// comments on removed lines: they render under the deleted-code block and
+  /// can be created from a "+" that appears when hovering one.
+  diffEditor?: MonacoEditor.IStandaloneDiffEditor;
 }) {
   const worktrees = useWorktreesStore((s) => s.worktrees);
   const wt = worktrees.find((w) => w.id === worktreeId) ?? null;
@@ -613,19 +651,65 @@ export function CommentOverlay({
   const branch = wt?.branch ?? "";
 
   const allComments = useCommentsStore((s) => s.items);
-  const queue = useCommentsStore((s) => s.queue);
   const addComment = useCommentsStore((s) => s.add);
   const updateText = useCommentsStore((s) => s.updateText);
   const removeComment = useCommentsStore((s) => s.remove);
   const resolveComment = useCommentsStore((s) => s.resolve);
-  const toggleQueue = useCommentsStore((s) => s.toggleQueue);
+  const unresolveComment = useCommentsStore((s) => s.unresolve);
+  const toggleThread = useCommentsStore((s) => s.toggleThread);
+  const batchKey = reviewKey(workspaceRoot, branch);
+  const includedThreads = useCommentsStore(
+    (s) => s.includedThreads[batchKey],
+  );
 
   const activeAgentId = useUiStore(
     (s) => s.activeAgentByWorktree[worktreeId] ?? null,
   );
 
-  const [showResolved, setShowResolved] = useState(false);
-  const [composerLine, setComposerLine] = useState<number | null>(null);
+  const showResolved = useUiStore((s) => s.showResolvedComments);
+
+  // "Comment on file" lives in the pane header (so it never covers code);
+  // it reaches this overlay as a one-shot request, consumed here.
+  const fileCommentRequest = useUiStore((s) => s.fileCommentRequest);
+  useEffect(() => {
+    if (
+      !fileCommentRequest ||
+      fileCommentRequest.worktreeId !== worktreeId ||
+      fileCommentRequest.path !== filePath
+    ) {
+      return;
+    }
+    setComposer({ line: 0, endLine: null, side: "head" });
+    useUiStore.getState().clearFileCommentRequest();
+  }, [fileCommentRequest, worktreeId, filePath]);
+  const [composer, setComposer] = useState<CommentTarget | null>(null);
+
+  // Line mapping for base-side comments; rebuilt whenever the diff
+  // recomputes (the agent keeps editing the file).
+  const [mapper, setMapper] = useState<ReturnType<typeof baseLineMapper> | null>(null);
+  useEffect(() => {
+    if (!diffEditor) return;
+    const update = () => {
+      const changes = diffEditor.getLineChanges();
+      setMapper(changes ? baseLineMapper(changes) : null);
+    };
+    update();
+    const sub = diffEditor.onDidUpdateDiff(update);
+    return () => sub.dispose();
+  }, [diffEditor]);
+
+  /// Where a comment / composer target renders, or null when it can't be
+  /// shown in this editor (base-side comments outside a diff view).
+  const placement = useCallback(
+    (t: { line: number; endLine: number | null; side: CommentSide }) => {
+      if (t.line === 0) return { after: 0 };
+      const last = t.endLine ?? t.line;
+      if (t.side === "head") return { after: last };
+      if (!mapper) return null;
+      return { after: mapper.afterFor(last), ordinal: BASE_SIDE_ORDINAL };
+    },
+    [mapper],
+  );
   const [entries, setEntries] = useState<ZoneEntry[]>([]);
 
   const visible = useMemo(() => {
@@ -812,11 +896,140 @@ export function CommentOverlay({
 
       ev.preventDefault();
       ev.stopPropagation();
-      setComposerLine(line);
+      // A multi-line selection that covers the clicked line turns the
+      // comment into a range comment (drag down the line numbers, then
+      // click "+"). Otherwise it's a single-line comment.
+      setComposer(
+        rangeFromSelection(editor.getSelection(), line) ?? {
+          line,
+          endLine: null,
+          side: "head",
+        },
+      );
+    };
+    // Monaco selects the line on a gutter mousedown, which would clobber
+    // the selection a range comment is built from. Swallow mousedown on
+    // our "+" before Monaco's own listeners see it.
+    const guard = (ev: MouseEvent) => {
+      const target = ev.target as Element | null;
+      const editorDom = editor.getDomNode();
+      if (!editorDom || !target || !editorDom.contains(target as Node)) return;
+      if (!target.closest?.(".treehouse-comment-plus")) return;
+      ev.preventDefault();
+      ev.stopPropagation();
     };
     document.addEventListener("click", handle, true);
-    return () => document.removeEventListener("click", handle, true);
+    document.addEventListener("mousedown", guard, true);
+    return () => {
+      document.removeEventListener("click", handle, true);
+      document.removeEventListener("mousedown", guard, true);
+    };
   }, [editor]);
+
+  // Right-click → "Add Review Comment" on the selection (or cursor line).
+  useEffect(() => {
+    const action = editor.addAction({
+      id: "treehouse.addReviewComment",
+      label: "Add Review Comment",
+      contextMenuGroupId: "navigation",
+      contextMenuOrder: 0,
+      run: (ed) => {
+        const sel = ed.getSelection();
+        if (!sel) return;
+        setComposer(
+          rangeFromSelection(sel, sel.startLineNumber) ?? {
+            line: sel.positionLineNumber,
+            endLine: null,
+            side: "head",
+          },
+        );
+      },
+    });
+    return () => action.dispose();
+  }, [editor]);
+
+  // Tint the lines a range comment covers (and the composer's range while
+  // it's open) so it's clear what the comment is about.
+  useEffect(() => {
+    const ranges: { line: number; endLine: number }[] = [];
+    for (const c of visible) {
+      if (c.side === "head" && c.endLine !== null && c.resolvedAt === null) {
+        ranges.push({ line: c.line, endLine: c.endLine });
+      }
+    }
+    if (composer?.side === "head" && composer.endLine !== null) {
+      ranges.push({ line: composer.line, endLine: composer.endLine });
+    }
+    const ids = editor.deltaDecorations(
+      [],
+      ranges.map((r) => ({
+        range: new monaco.Range(r.line, 1, r.endLine, 1),
+        options: {
+          isWholeLine: true,
+          className: "treehouse-review-range",
+          linesDecorationsClassName: "treehouse-review-range-bar",
+        },
+      })),
+    );
+    return () => {
+      editor.deltaDecorations(ids, []);
+    };
+  }, [editor, visible, composer]);
+
+  // Hovering a removed line in an inline diff shows a "+" in the gutter
+  // for commenting on it. Monaco renders removed code as view zones, not
+  // model lines, so the glyph-margin "+" can't reach them; resolve the
+  // hovered row to a base line through the diff's line changes instead.
+  const [removedHover, setRemovedHover] = useState<{
+    top: number;
+    after: number;
+    baseLine: number;
+  } | null>(null);
+  const removedPlusRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!diffEditor || !mapper) return;
+    const lineHeight = editor.getOption(monaco.editor.EditorOption.lineHeight);
+    const move = editor.onMouseMove((e) => {
+      const t = e.target;
+      const zoneEl =
+        (t.type === monaco.editor.MouseTargetType.GUTTER_VIEW_ZONE ||
+          t.type === monaco.editor.MouseTargetType.CONTENT_VIEW_ZONE) &&
+        (t.element?.closest(
+          ".inline-deleted-margin-view-zone, .view-lines.line-delete",
+        ) as HTMLElement | null);
+      const editorDom = editor.getDomNode();
+      if (!zoneEl || !editorDom) {
+        setRemovedHover(null);
+        return;
+      }
+      const after = (t.detail as { afterLineNumber: number }).afterLineNumber;
+      const zoneTop = zoneEl.getBoundingClientRect().top;
+      const offset = Math.floor((e.event.browserEvent.clientY - zoneTop) / lineHeight);
+      const baseLine = mapper.baseLineAt(after, offset);
+      if (baseLine === null) {
+        setRemovedHover(null);
+        return;
+      }
+      const top = zoneTop + offset * lineHeight - editorDom.getBoundingClientRect().top;
+      setRemovedHover((prev) =>
+        prev && prev.top === top && prev.baseLine === baseLine
+          ? prev
+          : { top, after, baseLine },
+      );
+    });
+    const leave = editor.onMouseLeave((e) => {
+      const to = e.event.browserEvent.relatedTarget as Node | null;
+      if (to && removedPlusRef.current?.contains(to)) return;
+      setRemovedHover(null);
+    });
+    const scroll = editor.onDidScrollChange(() => setRemovedHover(null));
+    return () => {
+      move.dispose();
+      leave.dispose();
+      scroll.dispose();
+      setRemovedHover(null);
+    };
+  }, [editor, diffEditor, mapper]);
 
   // Live zones keyed by `desc.key`, reconciled in place rather than rebuilt.
   // A zone that persists keeps its DOM node, so the portal'd React subtree —
@@ -853,10 +1066,12 @@ export function CommentOverlay({
   useEffect(() => {
     const want: ZoneDesc[] = [];
     for (const c of visible) {
+      const at = placement(c);
+      if (!at) continue;
       want.push({
         key: `c:${c.id}`,
         kind: "widget",
-        line: c.line,
+        ...at,
         heightLines: WIDGET_HEIGHT_LINES,
         comment: c,
       });
@@ -870,19 +1085,21 @@ export function CommentOverlay({
       want.push({
         key: `t:${ft.thread.id}`,
         kind: "thread",
-        line: ft.line,
+        after: ft.line,
         // Initial estimate only — `ThreadWidget` measures its real content
         // height after mount and grows the zone to fit (no cap).
         heightLines: Math.max(THREAD_HEIGHT_LINES, 3 + noteLines),
         thread: ft.thread,
       });
     }
-    if (composerLine !== null) {
+    const composerAt = composer && placement(composer);
+    if (composer && composerAt) {
       want.push({
         key: "composer",
         kind: "composer",
-        line: composerLine,
+        ...composerAt,
         heightLines: COMPOSER_HEIGHT_LINES,
+        target: composer,
       });
     }
 
@@ -893,7 +1110,7 @@ export function CommentOverlay({
     // can't be changed in place).
     for (const [key, e] of live) {
       const d = wantByKey.get(key);
-      if (!d || d.line !== e.desc.line) {
+      if (!d || d.after !== e.desc.after || d.ordinal !== e.desc.ordinal) {
         editor.changeViewZones((acc) => acc.removeZone(e.viewZoneId));
         editor.removeOverlayWidget(e.widget);
         live.delete(key);
@@ -926,7 +1143,9 @@ export function CommentOverlay({
         domNode.style.width = `${initWidth}px`;
         domNode.style.top = "0px";
         domNode.style.height = `${desc.heightLines * 18}px`;
-        domNode.style.background = "#16191D";
+        // Recessed band on the chrome surface (bg-chrome / neutral-800
+        // hairlines) so review cards read as inserted, not as code.
+        domNode.style.background = "#0B0C0E";
         domNode.style.borderTop = "1px solid #22262B";
         domNode.style.borderBottom = "1px solid #22262B";
         domNode.style.boxSizing = "border-box";
@@ -942,7 +1161,8 @@ export function CommentOverlay({
 
         const spacer = document.createElement("div");
         const zone: MonacoEditor.IViewZone = {
-          afterLineNumber: desc.line,
+          afterLineNumber: desc.after,
+          ordinal: desc.ordinal,
           heightInLines: desc.heightLines,
           domNode: spacer,
           suppressMouseDown: true,
@@ -962,7 +1182,7 @@ export function CommentOverlay({
     });
 
     setEntries(next);
-  }, [editor, visible, composerLine, fileThreads, modelEpoch]);
+  }, [editor, visible, composer, placement, fileThreads, modelEpoch]);
 
   // Keep the overlay widgets' horizontal position/width in sync with the
   // editor's content area as the layout changes (resizes, wrapping toggle,
@@ -975,22 +1195,32 @@ export function CommentOverlay({
     }
   }, [entries, layout]);
 
+  const glyphLeft = layout ? editor.getLayoutInfo().glyphMarginLeft : 0;
+
   return (
     <>
-      <button
-        onClick={() => setShowResolved((v) => !v)}
-        className={cn(
-          "pointer-events-auto absolute right-3 top-2 z-20 rounded border border-neutral-800 bg-neutral-900/80 px-2 py-0.5 text-[11px] text-neutral-400 hover:bg-neutral-800",
-          showResolved && "text-neutral-200",
-        )}
-        title={
-          showResolved
-            ? "Hide resolved comments"
-            : "Show resolved comments in this file"
-        }
-      >
-        {showResolved ? "Hide resolved" : "Show resolved"}
-      </button>
+      {removedHover && (
+        <button
+          ref={removedPlusRef}
+          onClick={() => {
+            setComposer({ line: removedHover.baseLine, endLine: null, side: "base" });
+            setRemovedHover(null);
+          }}
+          onMouseLeave={(e) => {
+            if (!editor.getDomNode()?.contains(e.relatedTarget as Node)) {
+              setRemovedHover(null);
+            }
+          }}
+          title={`Comment on removed line ${removedHover.baseLine}`}
+          aria-label="Comment on removed line"
+          style={{ top: removedHover.top, left: glyphLeft + 2 }}
+          className="absolute z-20 flex h-[18px] w-[14px] items-center justify-center"
+        >
+          <span className="flex h-[14px] w-[14px] items-center justify-center rounded bg-blue-600 font-mono text-[12px] font-semibold leading-none text-white">
+            +
+          </span>
+        </button>
+      )}
       {entries.map((e) => {
         const desc = e.desc;
         if (desc.kind === "widget") {
@@ -998,11 +1228,11 @@ export function CommentOverlay({
           return createPortal(
             <CommentWidget
               comment={c}
-              queued={queue.has(c.id)}
+              status={commentStatus(c)}
               worktreeId={worktreeId}
               activeAgentId={activeAgentId}
-              onToggleQueue={() => toggleQueue(c.id)}
               onResolve={() => void resolveComment(c.id)}
+              onReopen={() => void unresolveComment(c.id)}
               onDelete={() => void removeComment(c.id)}
               onUpdateText={(text) => void updateText(c.id, text)}
               onSendTo={(agentId) => sendOne(c, agentId)}
@@ -1015,6 +1245,8 @@ export function CommentOverlay({
           return createPortal(
             <ThreadWidget
               thread={desc.thread}
+              included={includedThreads?.includes(desc.thread.id) ?? false}
+              onToggleInclude={() => toggleThread(batchKey, desc.thread.id)}
               onReply={(body) => onReply(desc.thread.id, body)}
               onResolve={(resolved) => onResolveThread(desc.thread.id, resolved)}
               onHeight={(px) => setZoneHeight(e, px)}
@@ -1025,23 +1257,25 @@ export function CommentOverlay({
         }
         return createPortal(
           <CommentComposer
+            label={targetLabel(desc.target)}
+            canSend={activeAgentId !== null}
             onSave={async (text) => {
-              setComposerLine(null);
+              setComposer(null);
               await addComment({
                 workspaceRoot,
                 branch,
                 filePath,
-                line: desc.line,
+                ...desc.target,
                 text,
               });
             }}
             onSaveAndSend={async (text) => {
-              setComposerLine(null);
+              setComposer(null);
               const c = await addComment({
                 workspaceRoot,
                 branch,
                 filePath,
-                line: desc.line,
+                ...desc.target,
                 text,
               });
               // No agent attached to this worktree → save still
@@ -1059,7 +1293,7 @@ export function CommentOverlay({
               }
               await sendOne(c, activeAgentId);
             }}
-            onCancel={() => setComposerLine(null)}
+            onCancel={() => setComposer(null)}
           />,
           e.domNode,
           desc.key,
@@ -1076,23 +1310,44 @@ async function sendOne(c: Comment, agentId: AgentSessionId | null) {
   }
   try {
     await pasteAndSubmit(agentId, formatCommentForAgent(c));
-    toastSuccess("Sent to agent", `${c.filePath}:${c.line}`);
-    void useCommentsStore.getState().resolve(c.id);
+    toastSuccess("Sent to agent", anchorLabel(c));
+    void useCommentsStore.getState().markSent([c.id]);
   } catch (e) {
     toastError("Couldn't send", asMessage(e));
   }
 }
+
+// Shared class recipes for the inline review cards (comment, composer,
+// MR thread) so they read as one family with the pane chrome: a raised
+// neutral-900 card, a 2px status rail on the leading edge, a 24px header
+// strip, and ghost buttons that match `iconButton`'s hover treatment.
+const reviewCard =
+  "relative overflow-hidden rounded-md border border-neutral-800 bg-neutral-900 text-xs shadow-sm";
+const reviewCardRail = "absolute inset-y-0 left-0 w-[2px]";
+const reviewCardHeader =
+  "flex h-6 items-center justify-between gap-2 border-b border-neutral-800 pl-3 pr-0.5 text-[11px] text-neutral-500";
+const reviewGhostButton =
+  "flex h-5 items-center gap-1 rounded px-1.5 text-[11px] text-neutral-400 transition-colors hover:bg-neutral-800 hover:text-neutral-100 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent";
+const reviewInput =
+  "rounded-md border border-neutral-800 bg-neutral-950 px-2 py-1 text-xs text-neutral-200 placeholder:text-neutral-600 transition-colors focus:border-blue-500/60 focus:outline-none focus:ring-1 focus:ring-blue-500/30";
+const reviewKbd =
+  "rounded border border-neutral-700 bg-neutral-950 px-1 font-sans text-[10px] leading-4 text-neutral-400";
 
 /// Read-only render of a teammate's inline MR review thread, anchored on the
 /// line they commented on, with a reply box. The same thread also appears in
 /// the Review tab. Measures its content and grows the zone to fit (no cap).
 function ThreadWidget({
   thread,
+  included,
+  onToggleInclude,
   onReply,
   onResolve,
   onHeight,
 }: {
   thread: ForgeThread;
+  /// Whether this thread is pulled into the next review batch.
+  included: boolean;
+  onToggleInclude: () => void;
   onReply: (body: string) => Promise<boolean>;
   onResolve: (resolved: boolean) => Promise<boolean>;
   onHeight: (px: number) => void;
@@ -1129,36 +1384,65 @@ function ThreadWidget({
   }
 
   return (
-    <div ref={ref} className="flex flex-col gap-1.5 text-xs">
-      <div className="flex items-center gap-2">
-        <span className="text-[10px] uppercase tracking-wider text-violet-300/80">
-          💬 MR thread
+    <div
+      ref={ref}
+      className={cn(reviewCard, thread.resolved && "opacity-70")}
+    >
+      <span aria-hidden className={cn(reviewCardRail, "bg-violet-400")} />
+      <div className={reviewCardHeader}>
+        <span className="flex min-w-0 items-center gap-1.5">
+          <GitPullRequest size={12} className="shrink-0 text-violet-400" />
+          <span className="font-medium text-neutral-300">MR thread</span>
+          <span className={countBadge("neutral")}>{thread.notes.length}</span>
+          {included && <span className={countBadge("accent")}>in review</span>}
         </span>
+        <span className="flex shrink-0 items-center gap-0.5">
+        <button
+          onClick={onToggleInclude}
+          title={
+            included
+              ? "Remove from the next review batch"
+              : "Include this thread in the next review sent to the agent"
+          }
+          className={cn(
+            reviewGhostButton,
+            included &&
+              "bg-blue-400/15 text-blue-300 hover:bg-blue-400/20 hover:text-blue-200",
+          )}
+        >
+          {included ? "In review" : "Add to review"}
+        </button>
         {thread.resolvable && (
           <button
             disabled={busy}
             onClick={() => void toggleResolved()}
             className={cn(
-              "ml-auto rounded border px-1.5 py-[1px] text-[10px] font-medium disabled:opacity-50",
+              reviewGhostButton,
               thread.resolved
-                ? "border-neutral-700 text-neutral-400 hover:bg-neutral-800"
-                : "border-emerald-700 bg-emerald-950/40 text-emerald-200 hover:bg-emerald-950/60",
+                ? "text-emerald-400"
+                : "hover:bg-emerald-400/10 hover:text-emerald-300",
             )}
           >
-            {thread.resolved ? "✓ Resolved" : "Resolve"}
+            <Check size={12} />
+            {thread.resolved ? "Resolved" : "Resolve"}
           </button>
         )}
+        </span>
       </div>
       {thread.notes.map((n) => (
         <div
           key={n.id}
-          className="rounded border border-neutral-800 bg-neutral-950/60 px-2 py-1"
+          className="border-b border-neutral-800/60 px-3 py-1.5"
         >
-          <div className="text-[10px] text-neutral-400">@{n.author}</div>
-          <div className="whitespace-pre-wrap text-neutral-200">{n.body}</div>
+          <div className="text-[11px] font-medium text-neutral-400">
+            @{n.author}
+          </div>
+          <div className="whitespace-pre-wrap leading-relaxed text-neutral-200">
+            {n.body}
+          </div>
         </div>
       ))}
-      <div className="flex items-center gap-1">
+      <div className="flex items-center gap-1.5 px-3 py-1.5">
         <input
           value={reply}
           onChange={(e) => setReply(e.target.value)}
@@ -1166,12 +1450,12 @@ function ThreadWidget({
             if (e.key === "Enter") void submit();
           }}
           placeholder="Reply…"
-          className="flex-1 rounded border border-neutral-800 bg-neutral-900 px-2 py-0.5 text-neutral-100 focus:border-neutral-600 focus:outline-none"
+          className={cn(reviewInput, "h-6 flex-1 py-0")}
         />
         <button
           disabled={busy || !reply.trim()}
           onClick={() => void submit()}
-          className="rounded border border-blue-700 bg-blue-950/40 px-2 py-0.5 text-[11px] font-medium text-blue-200 hover:bg-blue-950/60 disabled:opacity-40"
+          className="flex h-6 items-center rounded-md bg-blue-600 px-2.5 text-[11px] font-medium text-white transition-colors hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-blue-600"
         >
           {busy ? "…" : "Reply"}
         </button>
@@ -1182,28 +1466,28 @@ function ThreadWidget({
 
 function CommentWidget({
   comment,
-  queued,
+  status,
   worktreeId,
   activeAgentId,
-  onToggleQueue,
   onResolve,
+  onReopen,
   onDelete,
   onUpdateText,
   onSendTo,
 }: {
   comment: Comment;
-  queued: boolean;
+  status: CommentStatus;
   worktreeId: WorktreeId;
   activeAgentId: AgentSessionId | null;
-  onToggleQueue: () => void;
   onResolve: () => void;
+  onReopen: () => void;
   onDelete: () => void;
   onUpdateText: (text: string) => void;
   onSendTo: (agentId: AgentSessionId) => void | Promise<void>;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(comment.text);
-  const resolved = comment.resolvedAt !== null;
+  const resolved = status === "resolved";
 
   // Lazily fetched when the picker opens; cached in component state so
   // reopening the same widget's picker doesn't re-shell unless the user
@@ -1255,29 +1539,53 @@ function CommentWidget({
   }
 
   return (
-    <div
-      className={cn(
-        "rounded border bg-neutral-950 text-xs",
-        resolved ? "border-neutral-900 opacity-60" : "border-neutral-800",
-      )}
-    >
-      <div className="flex items-center justify-between gap-2 border-b border-neutral-900 px-2 py-1 text-[11px] text-neutral-500">
-        <span className="font-mono">
-          {comment.filePath}:{comment.line}
-          {resolved && (
-            <span className="ml-2 rounded bg-neutral-800 px-1.5 py-0.5 text-[11px] text-neutral-400">
-              resolved
+    <div className={cn(reviewCard, resolved && "opacity-60")}>
+      <span
+        aria-hidden
+        className={cn(
+          reviewCardRail,
+          status === "pending"
+            ? "bg-blue-400"
+            : status === "sent"
+              ? "bg-neutral-500"
+              : "bg-neutral-700",
+        )}
+      />
+      <div className={reviewCardHeader}>
+        <span className="flex min-w-0 items-center gap-1.5">
+          <MessageSquare size={12} className="shrink-0 text-neutral-500" />
+          {/* Keeps a few characters visible when a narrow pane squeezes the
+              header; badges and actions don't shrink. */}
+          <span className="min-w-[4.5rem] truncate font-mono" title={anchorLabel(comment)}>
+            {anchorLabel(comment)}
+          </span>
+          {comment.side === "base" && (
+            <span
+              className={cn(countBadge("danger"), "shrink-0")}
+              title="On lines removed from the diff base"
+            >
+              removed
             </span>
           )}
-          {queued && !resolved && (
-            <span className="ml-2 rounded bg-blue-900/50 px-1.5 py-0.5 text-[11px] text-blue-300">
-              queued
-            </span>
-          )}
+          <span
+            className={cn(
+              countBadge(status === "pending" ? "accent" : "neutral"),
+              "shrink-0",
+            )}
+            title={
+              status === "pending"
+                ? "Goes out with the next review from the Review tab"
+                : status === "sent"
+                  ? "Sent to an agent — resolve once it's addressed"
+                  : undefined
+            }
+          >
+            {status}
+          </span>
         </span>
-        <span className="flex items-center gap-1">
+        <span className="flex shrink-0 items-center gap-0.5">
           {!resolved && (
-            <span className="relative inline-flex">
+            <span className="relative mr-0.5 inline-flex h-5 overflow-hidden rounded-md border border-neutral-700">
               <button
                 onClick={() =>
                   effectiveTarget && void sendToTarget(effectiveTarget)
@@ -1285,20 +1593,25 @@ function CommentWidget({
                 disabled={!effectiveTarget}
                 title={
                   effectiveTarget
-                    ? "Send to selected agent"
+                    ? status === "sent"
+                      ? "Send this comment to the active agent again"
+                      : "Send just this comment to the active agent now"
                     : "No agents running in this worktree"
                 }
-                className="rounded-l border border-r-0 border-neutral-800 px-1.5 py-0.5 text-[11px] text-neutral-300 hover:border-emerald-800 hover:text-emerald-300 disabled:cursor-not-allowed disabled:opacity-40"
+                className="flex items-center px-1.5 text-[11px] font-medium text-blue-400 transition-colors hover:bg-blue-400/10 hover:text-blue-300 disabled:cursor-not-allowed disabled:text-neutral-500 disabled:opacity-60 disabled:hover:bg-transparent"
               >
-                Send
+                {status === "sent" ? "Resend" : "Send"}
               </button>
               <button
                 ref={chevronRef}
                 onClick={() => setPickerOpen((v) => !v)}
                 title="Pick agent to send to"
-                className="rounded-r border border-neutral-800 px-1 py-0.5 text-[11px] text-neutral-400 hover:border-emerald-800 hover:text-emerald-300"
+                className={cn(
+                  "flex items-center border-l border-neutral-700 px-1 text-neutral-500 transition-colors hover:bg-neutral-800 hover:text-neutral-200",
+                  pickerOpen && "bg-neutral-800 text-neutral-200",
+                )}
               >
-                ▾
+                <ChevronDown size={12} />
               </button>
               {pickerOpen && chevronRef.current && (
                 <SendTargetPopover
@@ -1314,22 +1627,8 @@ function CommentWidget({
           )}
           {!resolved && (
             <button
-              onClick={onToggleQueue}
-              className={cn(
-                "rounded border px-1.5 py-0.5 text-[11px]",
-                queued
-                  ? "border-blue-700 bg-blue-950/40 text-blue-200 hover:bg-blue-950/60"
-                  : "border-neutral-800 text-neutral-400 hover:border-blue-800 hover:text-blue-300",
-              )}
-              title={queued ? "Remove from queue" : "Add to batch"}
-            >
-              {queued ? "Queued" : "Queue"}
-            </button>
-          )}
-          {!resolved && (
-            <button
               onClick={() => (editing ? save() : setEditing(true))}
-              className="rounded border border-neutral-800 px-1.5 py-0.5 text-[11px] text-neutral-400 hover:text-neutral-200"
+              className={reviewGhostButton}
             >
               {editing ? "Save" : "Edit"}
             </button>
@@ -1337,21 +1636,35 @@ function CommentWidget({
           {!resolved && (
             <button
               onClick={onResolve}
-              className="rounded border border-neutral-800 px-1.5 py-0.5 text-[11px] text-neutral-400 hover:border-neutral-600 hover:text-neutral-200"
+              title="Resolve"
+              aria-label="Resolve"
+              className={cn(
+                reviewGhostButton,
+                "w-5 justify-center px-0 hover:bg-emerald-400/10 hover:text-emerald-300",
+              )}
             >
-              Resolve
+              <Check size={12} />
+            </button>
+          )}
+          {resolved && (
+            <button onClick={onReopen} className={reviewGhostButton}>
+              Reopen
             </button>
           )}
           <button
             onClick={onDelete}
-            className="text-[11px] text-neutral-500 hover:text-red-400"
+            className={cn(
+              reviewGhostButton,
+              "w-5 justify-center px-0 hover:bg-rose-400/10 hover:text-rose-400",
+            )}
             title="Delete"
+            aria-label="Delete"
           >
-            ✕
+            <X size={12} />
           </button>
         </span>
       </div>
-      <div className="px-2 py-1">
+      <div className="px-3 py-1.5">
         {editing ? (
           <textarea
             autoFocus
@@ -1367,10 +1680,10 @@ function CommentWidget({
               }
             }}
             rows={3}
-            className="w-full resize-none rounded border border-neutral-800 bg-neutral-950 px-2 py-1 font-mono text-xs text-neutral-200 focus:border-neutral-700 focus:outline-none"
+            className={cn(reviewInput, "w-full resize-none")}
           />
         ) : (
-          <div className="whitespace-pre-wrap text-neutral-200">
+          <div className="whitespace-pre-wrap leading-relaxed text-neutral-200">
             {comment.text}
           </div>
         )}
@@ -1434,9 +1747,9 @@ function SendTargetPopover({
     <div
       ref={ref}
       style={{ position: "fixed", top, left, width: POPOVER_WIDTH }}
-      className="z-50 rounded-lg border border-neutral-800 bg-neutral-900 shadow-2xl"
+      className="z-50 overflow-hidden rounded-md border border-neutral-700 bg-neutral-900 shadow-2xl"
     >
-      <div className="border-b border-neutral-800 px-3 py-2 text-[11px] uppercase tracking-wider text-neutral-500">
+      <div className="border-b border-neutral-800 px-3 py-1.5 text-[10.5px] font-medium uppercase tracking-[0.08em] text-neutral-500">
         Send to
       </div>
       <div className="max-h-64 overflow-y-auto p-1">
@@ -1453,8 +1766,8 @@ function SendTargetPopover({
                 <button
                   onClick={() => void onPick(a.id)}
                   className={cn(
-                    "flex w-full items-start gap-2 rounded px-2 py-1 text-left text-xs hover:bg-neutral-950",
-                    selectedAgentId === a.id && "bg-blue-950/40",
+                    "flex w-full items-start gap-2 rounded px-2 py-1 text-left text-xs transition-colors hover:bg-neutral-800",
+                    selectedAgentId === a.id && "bg-blue-400/[0.08]",
                   )}
                 >
                   <span className="min-w-0 flex-1">
@@ -1493,10 +1806,17 @@ function sendTargetLabel(a: AgentSession): string {
 }
 
 function CommentComposer({
+  label,
+  canSend,
   onSave,
   onSaveAndSend,
   onCancel,
 }: {
+  /// What the comment will attach to, e.g. "Lines 4–9" or "Whole file".
+  label: string;
+  /// Whether the worktree has an active agent. "Save & send" stays
+  /// clickable without one (it saves and toasts), but the tooltip says so.
+  canSend: boolean;
   onSave: (text: string) => void;
   /// Save the comment AND immediately fire it off to the active
   /// agent — bound to ⌘⇧↵. Falls back to plain save if the parent
@@ -1506,12 +1826,26 @@ function CommentComposer({
   onCancel: () => void;
 }) {
   const [text, setText] = useState("");
+  const empty = text.trim() === "";
+
+  function submit(send: boolean) {
+    const t = text.trim();
+    if (!t) return;
+    if (send) onSaveAndSend(t);
+    else onSave(t);
+  }
+
   return (
-    <div className="rounded border border-blue-800 bg-neutral-950">
-      <div className="border-b border-neutral-900 px-2 py-1 text-[11px] text-neutral-500">
-        New comment · ⌘↵ save · ⌘⇧↵ save & send · Esc cancel
+    <div className={cn(reviewCard, "border-blue-400/40")}>
+      <span aria-hidden className={cn(reviewCardRail, "bg-blue-400")} />
+      <div className={reviewCardHeader}>
+        <span className="flex items-center gap-1.5 font-medium text-neutral-300">
+          <MessageSquare size={12} className="text-blue-400" />
+          New comment
+          <span className="font-normal text-neutral-500">· {label}</span>
+        </span>
       </div>
-      <div className="px-2 py-1">
+      <div className="px-3 pt-1.5">
         <textarea
           autoFocus
           value={text}
@@ -1519,14 +1853,8 @@ function CommentComposer({
           onKeyDown={(e) => {
             if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
               e.preventDefault();
-              const t = text.trim();
-              if (!t) {
-                onCancel();
-              } else if (e.shiftKey) {
-                onSaveAndSend(t);
-              } else {
-                onSave(t);
-              }
+              if (empty) onCancel();
+              else submit(e.shiftKey);
             } else if (e.key === "Escape") {
               e.preventDefault();
               onCancel();
@@ -1534,8 +1862,37 @@ function CommentComposer({
           }}
           rows={3}
           placeholder="Leave a review comment for the agent…"
-          className="w-full resize-none rounded border border-neutral-800 bg-neutral-950 px-2 py-1 font-mono text-xs text-neutral-200 placeholder:text-neutral-600 focus:border-neutral-700 focus:outline-none"
+          className={cn(reviewInput, "w-full resize-none")}
         />
+      </div>
+      <div className="flex h-8 items-center justify-end gap-1 px-3 pb-0.5">
+        <button onClick={onCancel} className={reviewGhostButton}>
+          Cancel
+          <kbd className={reviewKbd}>Esc</kbd>
+        </button>
+        <button
+          onClick={() => submit(false)}
+          disabled={empty}
+          className={cn(reviewGhostButton, "border border-neutral-700")}
+        >
+          Save
+          <kbd className={reviewKbd}>⌘↵</kbd>
+        </button>
+        <button
+          onClick={() => submit(true)}
+          disabled={empty}
+          title={
+            canSend
+              ? "Save and send to the active agent"
+              : "No active agent in this worktree — saves only"
+          }
+          className="flex h-5 items-center gap-1.5 rounded bg-blue-600 px-2 text-[11px] font-medium text-white transition-colors hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-blue-600"
+        >
+          Save &amp; send
+          <kbd className="rounded border border-white/25 px-1 font-sans text-[10px] leading-4 text-white/80">
+            ⌘⇧↵
+          </kbd>
+        </button>
       </div>
     </div>
   );

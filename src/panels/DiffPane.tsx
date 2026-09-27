@@ -1,4 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  ChevronDown,
+  ChevronRight,
+  Eye,
+  EyeOff,
+  MessageSquarePlus,
+} from "lucide-react";
 import { DiffEditor, type DiffOnMount } from "@monaco-editor/react";
 import type { editor as MonacoEditor } from "monaco-editor";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
@@ -20,14 +27,14 @@ import type {
 } from "@/ipc/types";
 import { cn } from "@/lib/cn";
 import { effectiveBaseRef } from "@/lib/base-ref";
-import { countBadge, sectionStrip, sectionTab } from "@/lib/pane-chrome";
+import { countBadge, iconButton, sectionStrip, sectionTab } from "@/lib/pane-chrome";
 import { CommentOverlay, EditorPane } from "./EditorPane";
 import { useEditorViewStateStore } from "@/stores/editor-view-state";
 import { FileTree } from "./FileTree";
 import { useIsEditorDirty } from "@/stores/editor-dirty";
 import { MarkdownPreview, isMarkdownPath } from "./MarkdownPreview";
 import { inferLanguage } from "./editor-language";
-import { iconForFile, statusFilenameColor } from "./file-icons";
+import { explorerRow, iconForFile, statusFilenameColor } from "./file-icons";
 import { THEME_NAME } from "./monaco-theme";
 
 export function DiffPane() {
@@ -154,7 +161,7 @@ function DiffView({ worktreeId }: { worktreeId: WorktreeId }) {
 
   if (error) {
     return (
-      <div className="m-3 rounded border border-red-900/60 bg-red-950/40 px-3 py-2 text-xs text-red-300">
+      <div className="m-3 rounded-md border border-rose-400/20 bg-rose-400/[0.06] px-3 py-2 text-xs text-rose-300">
         {error}
       </div>
     );
@@ -303,6 +310,9 @@ function DiffView({ worktreeId }: { worktreeId: WorktreeId }) {
                   : null
               }
             />
+          )}
+          {selectedFile && view !== "preview" && (
+            <ReviewControls worktreeId={worktreeId} path={selectedFile} />
           )}
           <LspProgressIndicator worktreeId={worktreeId} />
           <FocusToggle />
@@ -580,25 +590,33 @@ function ChangeGroupSection({
   const open = !collapsed && !empty;
 
   return (
-    <section className="border-b border-neutral-900">
-      <div className="flex items-center justify-between gap-2 px-2 py-1 text-[11px]">
+    <section className="border-b border-neutral-800/60">
+      <div className="flex h-7 items-center justify-between gap-2 pl-2 pr-2 text-[11px]">
         <button
           onClick={() => toggle(group)}
           disabled={empty}
           className={cn(
-            "flex shrink-0 items-center gap-1 uppercase tracking-wider",
+            "flex shrink-0 items-center gap-1.5 text-[10.5px] font-medium uppercase tracking-[0.08em] transition-colors",
             empty
               ? "cursor-default text-neutral-600"
               : "text-neutral-400 hover:text-neutral-200",
           )}
         >
-          <span className="w-2.5 text-[9px] text-neutral-600">
-            {open ? "▾" : "▸"}
+          <span className="flex w-3 justify-center text-neutral-600">
+            {open ? (
+              <ChevronDown size={12} strokeWidth={2} />
+            ) : (
+              <ChevronRight size={12} strokeWidth={2} />
+            )}
           </span>
           <span>{label}</span>
-          <span className="normal-case tracking-normal text-neutral-600">
-            {diff == null ? "…" : empty ? "clean" : files.length}
-          </span>
+          {diff == null || empty ? (
+            <span className="normal-case tracking-normal text-neutral-600">
+              {diff == null ? "…" : "clean"}
+            </span>
+          ) : (
+            <span className={countBadge("neutral")}>{files.length}</span>
+          )}
         </button>
         <div className="flex min-w-0 items-center">{anchor}</div>
       </div>
@@ -613,10 +631,8 @@ function ChangeGroupSection({
                 <button
                   onClick={() => onSelect(f.path)}
                   className={cn(
-                    "flex w-full items-center justify-between gap-2 py-1 pl-6 pr-3 text-left text-xs transition-colors",
-                    isSelected
-                      ? "bg-[#3994BC26] text-neutral-100"
-                      : "hover:bg-white/[0.04]",
+                    "relative flex h-[22px] w-full items-center justify-between gap-2 pl-[26px] pr-2 text-left text-[12px] transition-colors",
+                    explorerRow(isSelected),
                   )}
                   title={f.path}
                 >
@@ -631,7 +647,7 @@ function ChangeGroupSection({
                       {f.path}
                     </span>
                   </span>
-                  <span className="shrink-0 font-mono text-[11px]">
+                  <span className="shrink-0 font-mono text-[10.5px] tabular-nums">
                     <span className="text-emerald-400">+{f.insertions}</span>{" "}
                     <span className="text-rose-400">-{f.deletions}</span>
                   </span>
@@ -642,6 +658,42 @@ function ChangeGroupSection({
         </ul>
       )}
     </section>
+  );
+}
+
+/// Header controls for inline review comments on the open file. They live
+/// in the pane chrome rather than floating over the editor so they never
+/// cover code.
+function ReviewControls({
+  worktreeId,
+  path,
+}: {
+  worktreeId: WorktreeId;
+  path: string;
+}) {
+  const showResolved = useUiStore((s) => s.showResolvedComments);
+  const toggleShowResolved = useUiStore((s) => s.toggleShowResolvedComments);
+  const requestFileComment = useUiStore((s) => s.requestFileComment);
+  return (
+    <div className="flex shrink-0 items-center gap-0.5">
+      <button
+        onClick={() => requestFileComment(worktreeId, path)}
+        title="Comment on this whole file"
+        aria-label="Comment on file"
+        className={iconButton}
+      >
+        <MessageSquarePlus size={14} />
+      </button>
+      <button
+        onClick={toggleShowResolved}
+        title={showResolved ? "Hide resolved comments" : "Show resolved comments"}
+        aria-label={showResolved ? "Hide resolved" : "Show resolved"}
+        aria-pressed={showResolved}
+        className={cn(iconButton, showResolved && "bg-neutral-800 text-neutral-100")}
+      >
+        {showResolved ? <EyeOff size={14} /> : <Eye size={14} />}
+      </button>
+    </div>
   );
 }
 
@@ -711,21 +763,24 @@ function DiffEditorView({
   const [error, setError] = useState<string | null>(null);
   const [modifiedEditor, setModifiedEditor] =
     useState<MonacoEditor.IStandaloneCodeEditor | null>(null);
+  const [diffEditor, setDiffEditor] =
+    useState<MonacoEditor.IStandaloneDiffEditor | null>(null);
 
   const language = useMemo(() => inferLanguage(file.path), [file.path]);
 
   const onMount: DiffOnMount = (diffEditor) => {
-    // Anchor review comments to the modified (right-hand / new) side only —
-    // suppressing the gutter "+" on the original side so users can't pin
-    // comments to deleted lines they can't act on. Also hide the original
-    // line-number column: in inline diff mode it renders inside the
-    // modified gutter and would push the review "+" to the right of the
-    // line number, inverting the order vs the File view.
+    // Review comments live on the modified editor. The original editor
+    // gets no glyph "+" of its own; removed lines are commented on through
+    // the hover "+" CommentOverlay draws over Monaco's deleted-code zones.
+    // Also hide the original line-number column: in inline diff mode it
+    // renders inside the modified gutter and would push the review "+" to
+    // the right of the line number, inverting the order vs the File view.
     diffEditor.getOriginalEditor().updateOptions({
       glyphMargin: false,
       lineNumbers: "off",
     });
     setModifiedEditor(diffEditor.getModifiedEditor());
+    setDiffEditor(diffEditor);
   };
 
   // Restore Monaco view state on the modified-side editor for a
@@ -799,14 +854,14 @@ function DiffEditorView({
 
   if (file.binary) {
     return (
-      <div className="m-3 rounded border border-neutral-800 bg-neutral-900/60 p-4 text-center text-xs text-neutral-500">
+      <div className="m-3 rounded-md border border-neutral-800 bg-neutral-900 p-4 text-center text-xs text-neutral-500">
         Binary file — no diff preview
       </div>
     );
   }
   if (error) {
     return (
-      <div className="m-3 rounded border border-red-900/60 bg-red-950/40 px-3 py-2 text-xs text-red-300">
+      <div className="m-3 rounded-md border border-rose-400/20 bg-rose-400/[0.06] px-3 py-2 text-xs text-rose-300">
         {error}
       </div>
     );
@@ -865,6 +920,7 @@ function DiffEditorView({
           editor={modifiedEditor}
           worktreeId={worktreeId}
           filePath={file.path}
+          diffEditor={diffEditor ?? undefined}
         />
       )}
     </div>

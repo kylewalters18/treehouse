@@ -9,8 +9,10 @@ import { listTree } from "@/ipc/client";
 import type { FileStatus, TreeEntry, WorktreeId } from "@/ipc/types";
 import { cn } from "@/lib/cn";
 import {
+  explorerRow,
   iconForFile,
   statusFilenameColor,
+  statusLetter,
   type FileIconComponent,
 } from "./file-icons";
 
@@ -166,7 +168,7 @@ export function FileTree({
 
   if (error) {
     return (
-      <div className="m-2 rounded border border-red-900/60 bg-red-950/40 px-2 py-1 text-[11px] text-red-300">
+      <div className="m-2 rounded-md border border-rose-400/20 bg-rose-400/[0.06] px-2 py-1.5 text-[11px] text-rose-300">
         {error}
       </div>
     );
@@ -175,7 +177,7 @@ export function FileTree({
   const rootEntries = children.get("") ?? [];
   if (rootEntries.length === 0) {
     return (
-      <div className="px-3 py-2 text-[11px] text-neutral-600">Loading…</div>
+      <div className="px-3 py-2 text-[11px] text-neutral-500">Loading…</div>
     );
   }
 
@@ -240,7 +242,14 @@ function TreeNode({
       ? FolderOpen
       : Folder
     : fileIcon!.Icon;
-  const iconColor = entry.isDir ? "#7dd3fc" : fileIcon!.color;
+  // Folders stay neutral (neutral-500, 400 when open) so the only color
+  // in the tree is file-type marks and git status.
+  const iconColor = entry.isDir
+    ? isExpanded
+      ? "#9AA1AA"
+      : "#7D858F"
+    : fileIcon!.color;
+  const letter = status && !entry.isDir ? statusLetter(status.kind) : null;
   const Chevron = entry.isDir ? (isExpanded ? ChevronDown : ChevronRight) : null;
 
   const nameClass =
@@ -249,8 +258,8 @@ function TreeNode({
       : status && !entry.isDir
         ? statusFilenameColor(status.kind)
         : entry.isDir
-          ? "text-neutral-200"
-          : "text-neutral-400";
+          ? "text-neutral-300"
+          : "text-neutral-400 group-hover:text-neutral-200";
 
   return (
     <li>
@@ -258,12 +267,10 @@ function TreeNode({
         data-path={entry.path}
         onClick={() => (entry.isDir ? onToggle(entry.path) : onSelect(entry.path))}
         className={cn(
-          "relative flex w-full items-center gap-1 py-0.5 pr-2 text-left text-[11px] transition-colors",
-          isSelected
-            ? "bg-[#3994BC26] text-neutral-100"
-            : "hover:bg-white/[0.04]",
+          "group relative flex h-[22px] w-full items-center gap-1.5 pr-2 text-left text-[12px] transition-colors",
+          explorerRow(isSelected),
         )}
-        style={{ paddingLeft: `${4 + depth * 12}px` }}
+        style={{ paddingLeft: `${8 + depth * 12}px` }}
         title={entry.ignored ? `${entry.path} (ignored)` : entry.path}
       >
         {/* Indent guides — one faint vertical line per ancestor depth,
@@ -274,20 +281,30 @@ function TreeNode({
             key={i}
             aria-hidden
             className="pointer-events-none absolute bottom-0 top-0 w-px bg-neutral-800"
-            style={{ left: `${4 + i * 12 + 5}px` }}
+            style={{ left: `${8 + i * 12 + 6}px` }}
           />
         ))}
-        <span className="flex w-3 shrink-0 items-center justify-center text-neutral-500">
-          {Chevron ? <Chevron size={11} strokeWidth={2.5} /> : null}
+        <span className="flex w-3 shrink-0 items-center justify-center text-neutral-600 group-hover:text-neutral-400">
+          {Chevron ? <Chevron size={12} strokeWidth={2} /> : null}
         </span>
         <Icon
           size={13}
           color={iconColor}
           className={cn("shrink-0", entry.ignored && "opacity-50")}
         />
-        <span className={cn("truncate font-mono", nameClass)}>
+        <span className={cn("min-w-0 flex-1 truncate", nameClass)}>
           {entry.name}
         </span>
+        {letter && (
+          <span
+            className={cn(
+              "shrink-0 font-mono text-[10px] font-medium",
+              statusFilenameColor(status!.kind).replace("line-through", ""),
+            )}
+          >
+            {letter}
+          </span>
+        )}
       </button>
       {isExpanded && dirContents.length > 0 && (
         <ul>
@@ -308,8 +325,8 @@ function TreeNode({
       )}
       {isExpanded && dirContents.length === 0 && (
         <div
-          className="px-2 py-0.5 text-[11px] italic text-neutral-700"
-          style={{ paddingLeft: `${24 + depth * 12}px` }}
+          className="flex h-[22px] items-center text-[11px] italic text-neutral-600"
+          style={{ paddingLeft: `${38 + depth * 12}px` }}
         >
           empty
         </div>

@@ -1,5 +1,29 @@
 import { useEffect, useMemo, useState } from "react";
-import type { ForgeThread } from "@/ipc/types";
+import {
+  Check,
+  ChevronDown,
+  ChevronRight,
+  GitBranch,
+  GitPullRequest,
+  MessageSquare,
+  RotateCcw,
+  X,
+} from "lucide-react";
+import type {
+  AgentSession,
+  AgentSessionId,
+  Comment,
+  ForgeThread,
+} from "@/ipc/types";
+import { listAgentsForWorktree } from "@/ipc/client";
+import {
+  anchorLabel,
+  commentStatus,
+  formatReviewForAgent,
+  isFileLevel,
+  reviewKey,
+  useCommentsStore,
+} from "@/stores/comments";
 import { useForgeStore, forgeBranchKey } from "@/stores/forge";
 import { useUiStore } from "@/stores/ui";
 import { useWorktreesStore } from "@/stores/worktrees";
@@ -10,11 +34,19 @@ import { formatNoteForAgent, formatThreadForAgent } from "@/lib/forge-prompt";
 import { toastError, toastInfo, toastSuccess } from "@/stores/toasts";
 import { asMessage } from "@/lib/errors";
 import { cn } from "@/lib/cn";
+import { countBadge } from "@/lib/pane-chrome";
 
-/// Bottom-pane "Review" tab: all MR discussion in one place — inline review
-/// threads (click the file:line to jump to it in the editor) and general
-/// (non-line) comments. Threads are collapsible cards; the inline anchor and
-/// a preview keep the list scannable when collapsed.
+/// Bottom-pane "Review" tab: the worktree's review in one place.
+///
+/// Local first — your inline comments are always here, forge or not:
+/// - **Pending**: every unsent comment, plus any MR threads you pulled in,
+///   with an optional summary. One Send hands the whole batch to an agent
+///   as a single prompt (or posts the comments to the MR as a review).
+/// - **Sent**: handed to an agent, waiting on the fix. Resolve once done.
+/// - **Resolved**: collapsed history.
+///
+/// When the branch has an MR, its threads and conversation follow as extra
+/// sections; without one those sections simply don't render.
 export function ReviewPanel() {
   const selectedWorktreeId = useUiStore((s) => s.selectedWorktreeId);
   const activeAgentId = useUiStore((s) =>
@@ -26,36 +58,57 @@ export function ReviewPanel() {
   const selected = worktrees.find((w) => w.id === selectedWorktreeId) ?? null;
   const workspace = workspaceForWorktree(selected?.workspaceId);
 
+  const wsId = workspace?.id ?? null;
+  const root = workspace?.root ?? "";
+  const branch = selected?.branch ?? null;
+  const key = reviewKey(root, branch ?? "");
+
+  // --- Local comments ---
+  const items = useCommentsStore((s) => s.items);
+  const includedIds = useCommentsStore((s) => s.includedThreads[key]);
+  const summary = useCommentsStore((s) => s.summaries[key] ?? "");
+  const setSummary = useCommentsStore((s) => s.setSummary);
+  const toggleThread = useCommentsStore((s) => s.toggleThread);
+  const clearBatch = useCommentsStore((s) => s.clearBatch);
+  const markSent = useCommentsStore((s) => s.markSent);
+  const markPending = useCommentsStore((s) => s.markPending);
+  const resolveComment = useCommentsStore((s) => s.resolve);
+  const resolveMany = useCommentsStore((s) => s.resolveMany);
+  const unresolveComment = useCommentsStore((s) => s.unresolve);
+  const removeComment = useCommentsStore((s) => s.remove);
+
+  const { pending, sent, resolved } = useMemo(() => {
+    const mine = items
+      .filter((c) => c.workspaceRoot === root && c.branch === branch)
+      .sort((a, b) =>
+        a.filePath === b.filePath
+          ? a.line - b.line
+          : a.filePath.localeCompare(b.filePath),
+      );
+    return {
+      pending: mine.filter((c) => commentStatus(c) === "pending"),
+      sent: mine.filter((c) => commentStatus(c) === "sent"),
+      resolved: mine.filter((c) => commentStatus(c) === "resolved"),
+    };
+  }, [items, root, branch]);
+
+  // --- Forge (optional) ---
   const findMr = useForgeStore((s) => s.findMr);
   const loadThreads = useForgeStore((s) => s.loadThreads);
   const replyThread = useForgeStore((s) => s.replyThread);
   const resolveThread = useForgeStore((s) => s.resolveThread);
   const postMrComment = useForgeStore((s) => s.postMrComment);
+  const postReviewComments = useForgeStore((s) => s.postReviewComments);
   const mr = useForgeStore((s) =>
-    workspace && selected
-      ? s.mrByBranch[forgeBranchKey(workspace.id, selected.branch)]
-      : undefined,
+    wsId && branch ? s.mrByBranch[forgeBranchKey(wsId, branch)] : undefined,
   );
   const threads = useForgeStore((s) =>
-    workspace && mr ? s.threadsByMr[`${workspace.id}::mr::${mr.number}`] : undefined,
+    wsId && mr ? s.threadsByMr[`${wsId}::mr::${mr.number}`] : undefined,
   );
 
-  const selectFile = useDiffsStore((s) => s.selectFile);
-  const setView = useDiffsStore((s) => s.setView);
-  const setPendingReveal = useDiffsStore((s) => s.setPendingReveal);
-
-  const [newComment, setNewComment] = useState("");
-  const [posting, setPosting] = useState(false);
-  const [resolvingAll, setResolvingAll] = useState(false);
-
-  const wsId = workspace?.id ?? null;
-  const branch = selected?.branch ?? null;
-
-  const unresolved = useMemo(
-    () => (threads ?? []).filter((t) => t.resolvable && !t.resolved),
-    [threads],
-  );
-
+  // `findMr` leaves the store untouched when the forge is unreachable, so
+  // `mr` can stay `undefined` forever. Nothing local waits on it — MR
+  // sections just render once (if) an MR shows up.
   useEffect(() => {
     if (wsId && branch && mr === undefined) void findMr(wsId, branch);
   }, [wsId, branch, mr, findMr]);
@@ -63,7 +116,7 @@ export function ReviewPanel() {
     if (wsId && mr) void loadThreads(wsId, mr.number);
   }, [wsId, mr, loadThreads]);
 
-  const { inline, general } = useMemo(() => {
+  const { inline, general, includedThreads } = useMemo(() => {
     const inline: { thread: ForgeThread; path: string; line: number }[] = [];
     const general: ForgeThread[] = [];
     for (const t of threads ?? []) {
@@ -76,12 +129,71 @@ export function ReviewPanel() {
         general.push(t);
       }
     }
-    return { inline, general };
-  }, [threads]);
+    const ids = new Set(includedIds ?? []);
+    const includedThreads = (threads ?? []).filter((t) => ids.has(t.id));
+    return { inline, general, includedThreads };
+  }, [threads, includedIds]);
 
-  if (!selected) return <Empty>Select a worktree to see its MR review.</Empty>;
-  if (mr === undefined) return <Empty>Looking up MR…</Empty>;
-  if (mr === null) return <Empty>No MR for {selected.branch}.</Empty>;
+  const unresolvedThreads = useMemo(
+    () => (threads ?? []).filter((t) => t.resolvable && !t.resolved),
+    [threads],
+  );
+
+  // --- Send target ---
+  const [agents, setAgents] = useState<AgentSession[]>([]);
+  const [targetId, setTargetId] = useState<AgentSessionId | null>(null);
+  const batchSize = pending.length + includedThreads.length;
+  useEffect(() => {
+    if (!selectedWorktreeId) return;
+    let cancelled = false;
+    listAgentsForWorktree(selectedWorktreeId)
+      .then((list) => {
+        if (cancelled) return;
+        const sendable = list.filter(
+          (a) => a.status.kind === "running" || a.status.kind === "starting",
+        );
+        setAgents(sendable);
+        setTargetId((prev) => {
+          if (prev && sendable.some((a) => a.id === prev)) return prev;
+          if (activeAgentId && sendable.some((a) => a.id === activeAgentId)) {
+            return activeAgentId;
+          }
+          return sendable[0]?.id ?? null;
+        });
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setAgents([]);
+        setTargetId(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // Re-list when the batch changes size so an agent launched since the
+    // tab opened shows up before you hit Send.
+  }, [selectedWorktreeId, activeAgentId, batchSize]);
+
+  const labels = useUiStore((s) => s.agentLabelsBySessionId);
+  const [showPreview, setShowPreview] = useState(false);
+  const [showResolved, setShowResolved] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [newComment, setNewComment] = useState("");
+  const [posting, setPosting] = useState(false);
+  const [resolvingAll, setResolvingAll] = useState(false);
+
+  const selectFile = useDiffsStore((s) => s.selectFile);
+  const setView = useDiffsStore((s) => s.setView);
+  const setPendingReveal = useDiffsStore((s) => s.setPendingReveal);
+
+  if (!selected || !workspace || !branch) {
+    return <Empty>Select a worktree to see its review.</Empty>;
+  }
+
+  const prompt = formatReviewForAgent(
+    summary,
+    pending,
+    includedThreads.map(formatThreadForAgent),
+  );
 
   function jump(path: string, line: number) {
     if (!selectedWorktreeId) return;
@@ -90,19 +202,82 @@ export function ReviewPanel() {
     setPendingReveal(selectedWorktreeId, { path, line, column: 1 });
   }
 
-  function reply(discussionId: string, body: string) {
-    if (!wsId || !mr) return Promise.resolve(false);
-    return replyThread(wsId, mr.number, discussionId, body);
+  /// Jump to a local comment. Removed-line comments only exist in the diff,
+  /// so they open the Diff view; everything else reveals in the File view.
+  function jumpToComment(c: Comment) {
+    if (!selectedWorktreeId) return;
+    if (c.side === "base") {
+      setView(selectedWorktreeId, "diff");
+      selectFile(selectedWorktreeId, c.filePath);
+      return;
+    }
+    jump(c.filePath, Math.max(1, c.line));
   }
 
-  function resolve(discussionId: string, resolved: boolean) {
-    if (!wsId || !mr) return Promise.resolve(false);
-    return resolveThread(wsId, mr.number, discussionId, resolved);
+  async function sendReview() {
+    if (!targetId) {
+      toastInfo("No running agent in this worktree");
+      return;
+    }
+    setBusy(true);
+    try {
+      await pasteAndSubmit(targetId, prompt);
+      await markSent(pending.map((c) => c.id));
+      clearBatch(key);
+      toastSuccess(
+        "Review sent",
+        `${batchSize} item${batchSize === 1 ? "" : "s"} — resolve them once the agent is done.`,
+      );
+    } catch (e) {
+      toastError("Couldn't send review", asMessage(e));
+    } finally {
+      setBusy(false);
+    }
   }
 
-  /// Send a formatted thread/comment to the worktree's agent (prefers the
-  /// active tab). `label` names the unit for the toast. Mirrors the
-  /// Send-queue's agent path — no MR write, just hands the agent the text.
+  /// Post the pending comments as an inline MR review (+ the summary as a
+  /// general comment). They then live on the MR as threads, so the local
+  /// copies are resolved rather than left as duplicates. Pulled-in MR
+  /// threads stay in the batch — they're already on the MR.
+  async function postToMr() {
+    if (!wsId || !mr || pending.length === 0) return;
+    setBusy(true);
+    // Line comments go up as inline threads, anchored on a range's last
+    // line with the range spelled out in the body; whole-file comments go
+    // up as general MR comments naming the file.
+    const inlineComments = pending.filter((c) => !isFileLevel(c));
+    const fileComments = pending.filter(isFileLevel);
+    let ok =
+      inlineComments.length === 0 ||
+      (await postReviewComments(
+        wsId,
+        mr.number,
+        inlineComments.map((c) => ({
+          filePath: c.filePath,
+          line: c.endLine ?? c.line,
+          removed: c.side === "base",
+          body:
+            c.endLine !== null && c.endLine !== c.line
+              ? `Lines ${c.line}–${c.endLine}:\n\n${c.text}`
+              : c.text,
+        })),
+      ));
+    for (const c of fileComments) {
+      if (!ok) break;
+      ok = await postMrComment(wsId, mr.number, `**${c.filePath}**\n\n${c.text}`);
+    }
+    if (ok) {
+      if (summary.trim()) await postMrComment(wsId, mr.number, summary.trim());
+      await resolveMany(pending.map((c) => c.id));
+      setSummary(key, "");
+      toastSuccess(
+        `Posted ${pending.length} comment${pending.length === 1 ? "" : "s"} to !${mr.number}`,
+      );
+    }
+    setBusy(false);
+  }
+
+  /// One-off send of a single MR thread / note, outside the batch.
   async function sendToAgent(text: string, label: string) {
     if (!selectedWorktreeId) return;
     try {
@@ -118,11 +293,21 @@ export function ReviewPanel() {
     }
   }
 
-  async function resolveAll() {
+  function reply(discussionId: string, body: string) {
+    if (!wsId || !mr) return Promise.resolve(false);
+    return replyThread(wsId, mr.number, discussionId, body);
+  }
+
+  function resolveMrThread(discussionId: string, resolved: boolean) {
+    if (!wsId || !mr) return Promise.resolve(false);
+    return resolveThread(wsId, mr.number, discussionId, resolved);
+  }
+
+  async function resolveAllThreads() {
     if (!wsId || !mr) return;
     setResolvingAll(true);
-    // Snapshot up front — each resolve reloads threads, mutating `unresolved`.
-    for (const t of [...unresolved]) {
+    // Snapshot up front — each resolve reloads threads.
+    for (const t of [...unresolvedThreads]) {
       await resolveThread(wsId, mr.number, t.id, true);
     }
     setResolvingAll(false);
@@ -138,108 +323,449 @@ export function ReviewPanel() {
     if (ok) setNewComment("");
   }
 
+  const included = new Set(includedIds ?? []);
+  const threadProps = (thread: ForgeThread) => ({
+    thread,
+    included: included.has(thread.id),
+    onToggleInclude: () => toggleThread(key, thread.id),
+    onReply: (body: string) => reply(thread.id, body),
+    onResolve: (r: boolean) => resolveMrThread(thread.id, r),
+    onSendToAgent: sendToAgent,
+  });
+
   return (
     <div className="flex h-full flex-col bg-neutral-950 text-xs">
-      {/* MR context header */}
-      <div className="flex shrink-0 items-center gap-2 border-b border-neutral-800 px-3 py-1.5">
-        <span className="font-mono text-[11px] text-neutral-500">!{mr.number}</span>
-        <span className="min-w-0 flex-1 truncate text-neutral-200">{mr.title}</span>
-        {unresolved.length > 0 && (
-          <button
-            disabled={resolvingAll}
-            onClick={() => void resolveAll()}
-            title="Resolve every open review thread"
-            className="shrink-0 rounded border border-emerald-700 bg-emerald-950/40 px-2 py-0.5 text-[11px] font-medium text-emerald-200 hover:bg-emerald-950/60 disabled:opacity-50"
-          >
-            {resolvingAll ? "Resolving…" : `Resolve all (${unresolved.length})`}
-          </button>
+      {/* Context strip: the MR when there is one, else the local branch. */}
+      <div className="flex h-8 shrink-0 items-center gap-2 border-b border-neutral-800 px-3">
+        {mr ? (
+          <>
+            <GitPullRequest size={13} className="shrink-0 text-violet-400" />
+            <span className="font-mono text-[11px] text-neutral-500">!{mr.number}</span>
+            <span className="min-w-0 flex-1 truncate text-neutral-200">{mr.title}</span>
+            <StateBadge state={mr.state} />
+          </>
+        ) : (
+          <>
+            <GitBranch size={13} className="shrink-0 text-neutral-500" />
+            <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-neutral-300">
+              {branch}
+            </span>
+          </>
         )}
-        <StateBadge state={mr.state} />
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-3 py-2">
-        <SectionHeader label="Inline comments" count={inline.length} />
-        {inline.length === 0 ? (
-          <Muted>No inline review comments.</Muted>
+        {/* --- Pending batch --- */}
+        <SectionHeader label="Pending" count={batchSize} />
+        {batchSize === 0 ? (
+          <Muted>
+            No pending comments. Click <span className="text-neutral-400">+</span>{" "}
+            in the editor gutter to start a review.
+          </Muted>
         ) : (
           <div className="flex flex-col gap-1.5">
-            {inline.map(({ thread, path, line }) => (
-              <ThreadCard
-                key={thread.id}
-                thread={thread}
-                anchor={
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      jump(path, line);
-                    }}
-                    className="font-mono text-[11px] text-blue-300 hover:underline"
-                    title="Jump to this line in the editor"
+            {pending.map((c) => (
+              <CommentRow
+                key={c.id}
+                comment={c}
+                rail="bg-blue-400"
+                onJump={() => jumpToComment(c)}
+                actions={
+                  <RowIconButton
+                    title="Delete comment"
+                    onClick={() => void removeComment(c.id)}
+                    danger
                   >
-                    {path}:{line}
-                  </button>
+                    <X size={12} />
+                  </RowIconButton>
                 }
-                onReply={(body) => reply(thread.id, body)}
-                onResolve={(resolved) => resolve(thread.id, resolved)}
-                onSendToAgent={sendToAgent}
               />
             ))}
+            {includedThreads.map((t) => (
+              <IncludedThreadRow
+                key={t.id}
+                thread={t}
+                onJump={jump}
+                onRemove={() => toggleThread(key, t.id)}
+              />
+            ))}
+
+            <textarea
+              value={summary}
+              onChange={(e) => setSummary(key, e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !busy) {
+                  e.preventDefault();
+                  void sendReview();
+                }
+              }}
+              rows={2}
+              placeholder="Summary for the agent (optional) — e.g. “focus on error handling; naming nits are minor”"
+              className="mt-1 w-full resize-none rounded-md border border-neutral-800 bg-neutral-900 px-2 py-1.5 text-neutral-100 placeholder:text-neutral-600 transition-colors focus:border-blue-500/60 focus:outline-none focus:ring-1 focus:ring-blue-500/30"
+            />
+            <div className="flex items-center gap-1.5">
+              <button
+                onClick={() => setShowPreview((v) => !v)}
+                className="flex h-6 items-center gap-1 rounded-md px-1.5 text-[11px] text-neutral-500 transition-colors hover:bg-neutral-800 hover:text-neutral-200"
+              >
+                {showPreview ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                Preview prompt
+              </button>
+              <span className="flex-1" />
+              {mr && pending.length > 0 && (
+                <button
+                  disabled={busy}
+                  onClick={() => void postToMr()}
+                  title="Post the pending comments to the MR as an inline review"
+                  className="flex h-6 items-center rounded-md border border-neutral-700 px-2 text-[11px] text-neutral-300 transition-colors hover:bg-neutral-800 hover:text-neutral-100 disabled:opacity-40"
+                >
+                  Post to !{mr.number}
+                </button>
+              )}
+              {agents.length > 1 && (
+                <select
+                  value={targetId ?? ""}
+                  onChange={(e) => setTargetId(e.target.value as AgentSessionId)}
+                  title="Agent to send the review to"
+                  className="h-6 max-w-[14rem] rounded-md border border-neutral-700 bg-neutral-900 px-1.5 text-[11px] text-neutral-200 focus:border-blue-500/60 focus:outline-none"
+                >
+                  {agents.map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {labels[a.id] ?? backendLabel(a)}
+                      {a.id === activeAgentId ? " (active tab)" : ""}
+                    </option>
+                  ))}
+                </select>
+              )}
+              <button
+                disabled={busy || !targetId}
+                onClick={() => void sendReview()}
+                title={
+                  targetId
+                    ? "Send the whole review to the agent as one prompt (⌘↵ in the summary)"
+                    : "No running agent in this worktree"
+                }
+                className="flex h-6 items-center gap-1.5 rounded-md bg-blue-600 px-2.5 text-[11px] font-medium text-white transition-colors hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-blue-600"
+              >
+                Send to agent
+                <span className="rounded-full bg-white/20 px-1.5 font-mono text-[10px] leading-4 tabular-nums">
+                  {batchSize}
+                </span>
+              </button>
+            </div>
+            {showPreview && (
+              <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded-md border border-neutral-800 bg-neutral-900 px-3 py-2 font-mono text-[11px] text-neutral-300">
+                {prompt}
+              </pre>
+            )}
           </div>
         )}
 
-        <SectionHeader label="Conversation" count={general.length} className="mt-4" />
-        {general.length === 0 ? (
-          <Muted>No general comments.</Muted>
-        ) : (
-          <div className="flex flex-col gap-1.5">
-            {general.map((thread) => (
-              <ThreadCard
-                key={thread.id}
-                thread={thread}
-                onReply={(body) => reply(thread.id, body)}
-                onResolve={(resolved) => resolve(thread.id, resolved)}
-                onSendToAgent={sendToAgent}
-              />
-            ))}
-          </div>
+        {/* --- Sent, awaiting the agent --- */}
+        {sent.length > 0 && (
+          <>
+            <SectionHeader
+              label="Sent"
+              count={sent.length}
+              className="mt-4"
+              action={
+                <button
+                  onClick={() => void resolveMany(sent.map((c) => c.id))}
+                  className="flex h-5 items-center gap-1 rounded px-1.5 text-[11px] text-neutral-400 transition-colors hover:bg-emerald-400/10 hover:text-emerald-300"
+                >
+                  <Check size={12} />
+                  Resolve all
+                </button>
+              }
+            />
+            <div className="flex flex-col gap-1.5">
+              {sent.map((c) => (
+                <CommentRow
+                  key={c.id}
+                  comment={c}
+                  rail="bg-neutral-500"
+                  onJump={() => jumpToComment(c)}
+                  actions={
+                    <>
+                      <RowIconButton
+                        title="Move back to pending (goes out with the next review)"
+                        onClick={() => void markPending(c.id)}
+                      >
+                        <RotateCcw size={12} />
+                      </RowIconButton>
+                      <button
+                        onClick={() => void resolveComment(c.id)}
+                        className="flex h-5 items-center gap-1 rounded px-1.5 text-[11px] text-neutral-400 transition-colors hover:bg-emerald-400/10 hover:text-emerald-300"
+                      >
+                        <Check size={12} />
+                        Resolve
+                      </button>
+                    </>
+                  }
+                />
+              ))}
+            </div>
+          </>
         )}
 
-        <div className="mt-2 flex items-start gap-1.5">
-          <textarea
-            value={newComment}
-            onChange={(e) => setNewComment(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void onPost();
-            }}
-            placeholder="Comment on the MR… (⌘↵ to post)"
-            rows={2}
-            className="flex-1 resize-none rounded-md border border-neutral-800 bg-neutral-900 px-2 py-1.5 text-neutral-100 placeholder:text-neutral-600 focus:border-neutral-600 focus:outline-none"
-          />
-          <button
-            disabled={posting || !newComment.trim()}
-            onClick={() => void onPost()}
-            className="rounded-md border border-blue-700 bg-blue-950/40 px-3 py-1.5 font-medium text-blue-200 hover:bg-blue-950/60 disabled:opacity-40"
-          >
-            Post
-          </button>
-        </div>
+        {/* --- Resolved history (collapsed) --- */}
+        {resolved.length > 0 && (
+          <>
+            <button
+              onClick={() => setShowResolved((v) => !v)}
+              className="mt-4 mb-1.5 flex items-center gap-1.5 text-[10.5px] font-medium uppercase tracking-[0.08em] text-neutral-500 transition-colors hover:text-neutral-300"
+            >
+              {showResolved ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+              Resolved
+              <span className={countBadge("neutral")}>{resolved.length}</span>
+            </button>
+            {showResolved && (
+              <div className="flex flex-col gap-1.5 opacity-70">
+                {resolved.map((c) => (
+                  <CommentRow
+                    key={c.id}
+                    comment={c}
+                    rail="bg-neutral-700"
+                    onJump={() => jumpToComment(c)}
+                    actions={
+                      <>
+                        <button
+                          onClick={() => void unresolveComment(c.id)}
+                          className="flex h-5 items-center rounded px-1.5 text-[11px] text-neutral-400 transition-colors hover:bg-neutral-800 hover:text-neutral-100"
+                        >
+                          Reopen
+                        </button>
+                        <RowIconButton
+                          title="Delete comment"
+                          onClick={() => void removeComment(c.id)}
+                          danger
+                        >
+                          <X size={12} />
+                        </RowIconButton>
+                      </>
+                    }
+                  />
+                ))}
+              </div>
+            )}
+          </>
+        )}
+
+        {/* --- MR (only when the branch has one) --- */}
+        {mr && (
+          <>
+            <SectionHeader
+              label="MR threads"
+              count={inline.length}
+              className="mt-5"
+              action={
+                unresolvedThreads.length > 0 && (
+                  <button
+                    disabled={resolvingAll}
+                    onClick={() => void resolveAllThreads()}
+                    title="Resolve every open review thread on the MR"
+                    className="flex h-5 items-center gap-1 rounded px-1.5 text-[11px] text-neutral-400 transition-colors hover:bg-emerald-400/10 hover:text-emerald-300 disabled:opacity-50"
+                  >
+                    <Check size={12} />
+                    {resolvingAll ? "Resolving…" : `Resolve all (${unresolvedThreads.length})`}
+                  </button>
+                )
+              }
+            />
+            {inline.length === 0 ? (
+              <Muted>No inline review threads.</Muted>
+            ) : (
+              <div className="flex flex-col gap-1.5">
+                {inline.map(({ thread, path, line }) => (
+                  <ThreadCard
+                    key={thread.id}
+                    {...threadProps(thread)}
+                    anchor={
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          jump(path, line);
+                        }}
+                        className="font-mono text-[11px] text-blue-400 hover:underline"
+                        title="Jump to this line in the editor"
+                      >
+                        {path}:{line}
+                      </button>
+                    }
+                  />
+                ))}
+              </div>
+            )}
+
+            <SectionHeader label="MR conversation" count={general.length} className="mt-4" />
+            {general.length === 0 ? (
+              <Muted>No general comments.</Muted>
+            ) : (
+              <div className="flex flex-col gap-1.5">
+                {general.map((thread) => (
+                  <ThreadCard key={thread.id} {...threadProps(thread)} />
+                ))}
+              </div>
+            )}
+
+            <div className="mt-2 flex items-start gap-1.5">
+              <textarea
+                value={newComment}
+                onChange={(e) => setNewComment(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void onPost();
+                }}
+                placeholder="Comment on the MR… (⌘↵ to post)"
+                rows={2}
+                className="flex-1 resize-none rounded-md border border-neutral-800 bg-neutral-900 px-2 py-1.5 text-neutral-100 placeholder:text-neutral-600 transition-colors focus:border-blue-500/60 focus:outline-none focus:ring-1 focus:ring-blue-500/30"
+              />
+              <button
+                disabled={posting || !newComment.trim()}
+                onClick={() => void onPost()}
+                className="flex h-7 items-center rounded-md border border-neutral-700 px-3 text-[11px] font-medium text-neutral-200 transition-colors hover:bg-neutral-800 disabled:opacity-40"
+              >
+                Post
+              </button>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );
 }
 
-/// Collapsible thread card. Header shows author, note count, optional inline
+/// One local comment: a status rail, the `path:line` anchor (click to jump),
+/// the text, and row-specific actions on the right.
+function CommentRow({
+  comment,
+  rail,
+  onJump,
+  actions,
+}: {
+  comment: Comment;
+  rail: string;
+  onJump: () => void;
+  actions: React.ReactNode;
+}) {
+  return (
+    <div className="relative overflow-hidden rounded-md border border-neutral-800 bg-neutral-900">
+      <span aria-hidden className={cn("absolute inset-y-0 left-0 w-[2px]", rail)} />
+      <div className="flex items-start gap-2 py-1.5 pl-3 pr-1.5">
+        <div className="min-w-0 flex-1">
+          <div className="flex min-w-0 items-center gap-1.5">
+            <button
+              onClick={onJump}
+              className="flex min-w-0 items-center gap-1.5 font-mono text-[11px] text-blue-400 hover:underline"
+              title="Jump to this comment in the editor"
+            >
+              <MessageSquare size={11} className="shrink-0 text-neutral-500" />
+              <span className="truncate">{anchorLabel(comment)}</span>
+            </button>
+            {comment.side === "base" && (
+              <span
+                className={countBadge("danger")}
+                title="On lines removed from the diff base — opens in the Diff view"
+              >
+                removed
+              </span>
+            )}
+          </div>
+          <div className="mt-0.5 whitespace-pre-wrap leading-relaxed text-neutral-200">
+            {comment.text}
+          </div>
+        </div>
+        <div className="flex shrink-0 items-center gap-0.5">{actions}</div>
+      </div>
+    </div>
+  );
+}
+
+/// An MR thread pulled into the pending batch — compact, with a remove.
+function IncludedThreadRow({
+  thread,
+  onJump,
+  onRemove,
+}: {
+  thread: ForgeThread;
+  onJump: (path: string, line: number) => void;
+  onRemove: () => void;
+}) {
+  const first = thread.notes[0];
+  const anchor = thread.notes.find(
+    (n) => n.position?.newPath != null && n.position?.newLine != null,
+  )?.position;
+  const preview = (first?.body ?? "").replace(/\s+/g, " ").trim();
+  return (
+    <div className="relative overflow-hidden rounded-md border border-neutral-800 bg-neutral-900">
+      <span aria-hidden className="absolute inset-y-0 left-0 w-[2px] bg-violet-400" />
+      <div className="flex items-center gap-2 py-1.5 pl-3 pr-1.5">
+        <GitPullRequest size={11} className="shrink-0 text-violet-400" />
+        <span className="shrink-0 text-[11px] font-medium text-neutral-300">
+          @{first?.author ?? "unknown"}
+        </span>
+        {anchor?.newPath != null && anchor.newLine != null && (
+          <button
+            onClick={() => onJump(anchor.newPath!, anchor.newLine!)}
+            className="shrink-0 font-mono text-[11px] text-blue-400 hover:underline"
+          >
+            {anchor.newPath}:{anchor.newLine}
+          </button>
+        )}
+        <span className="min-w-0 flex-1 truncate text-neutral-500">{preview}</span>
+        <span className={countBadge("neutral")}>{thread.notes.length}</span>
+        <RowIconButton title="Remove from this review" onClick={onRemove}>
+          <X size={12} />
+        </RowIconButton>
+      </div>
+    </div>
+  );
+}
+
+function RowIconButton({
+  title,
+  onClick,
+  danger,
+  children,
+}: {
+  title: string;
+  onClick: () => void;
+  danger?: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      title={title}
+      aria-label={title}
+      className={cn(
+        "flex h-5 w-5 items-center justify-center rounded text-neutral-500 transition-colors",
+        danger
+          ? "hover:bg-rose-400/10 hover:text-rose-400"
+          : "hover:bg-neutral-800 hover:text-neutral-100",
+      )}
+    >
+      {children}
+    </button>
+  );
+}
+
+/// Collapsible MR thread card. Header shows author, note count, optional inline
 /// anchor, and a one-line preview when collapsed; expands to the full notes +
 /// a reply box. Defaults collapsed so the list stays scannable.
 function ThreadCard({
   thread,
   anchor,
+  included,
+  onToggleInclude,
   onReply,
   onResolve,
   onSendToAgent,
 }: {
   thread: ForgeThread;
   anchor?: React.ReactNode;
+  /// Whether the thread is pulled into the pending review batch.
+  included: boolean;
+  onToggleInclude: () => void;
   onReply: (body: string) => Promise<boolean>;
   onResolve: (resolved: boolean) => Promise<boolean>;
   onSendToAgent: (text: string, label: string) => void;
@@ -247,11 +773,6 @@ function ThreadCard({
   const [open, setOpen] = useState(false);
   const [reply, setReply] = useState("");
   const [busy, setBusy] = useState(false);
-
-  function sendThread(e: React.MouseEvent) {
-    e.stopPropagation();
-    onSendToAgent(formatThreadForAgent(thread), "thread");
-  }
 
   const first = thread.notes[0];
   const author = first?.author ?? "unknown";
@@ -279,21 +800,17 @@ function ThreadCard({
   return (
     <div
       className={cn(
-        "overflow-hidden rounded-md border bg-neutral-900/40",
+        "overflow-hidden rounded-md border bg-neutral-900",
         thread.resolved ? "border-neutral-800/60 opacity-60" : "border-neutral-800",
+        included && "border-blue-400/40",
       )}
     >
       <div
         onClick={() => setOpen((v) => !v)}
-        className="flex w-full cursor-pointer items-center gap-2 px-2 py-1.5 text-left hover:bg-neutral-900/70"
+        className="flex w-full cursor-pointer items-center gap-2 px-2 py-1.5 text-left transition-colors hover:bg-neutral-800/40"
       >
-        <span
-          className={cn(
-            "shrink-0 text-[9px] text-neutral-500 transition-transform",
-            !open && "-rotate-90",
-          )}
-        >
-          ▼
+        <span className="shrink-0 text-neutral-500">
+          {open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
         </span>
         <Avatar name={author} />
         <span className="shrink-0 font-medium text-neutral-300">@{author}</span>
@@ -301,16 +818,36 @@ function ThreadCard({
         {!open && (
           <span className="min-w-0 flex-1 truncate text-neutral-500">{preview}</span>
         )}
-        <span className="ml-auto flex shrink-0 items-center gap-1.5">
-          <span className="rounded-full bg-neutral-800 px-1.5 py-[1px] text-[10px] text-neutral-400">
-            {thread.notes.length}
-          </span>
+        <span className="ml-auto flex shrink-0 items-center gap-1">
+          <span className={countBadge("neutral")}>{thread.notes.length}</span>
           <button
-            onClick={sendThread}
-            title="Send this whole thread to the agent"
-            className="rounded border border-violet-700 bg-violet-950/40 px-1.5 py-[1px] text-[10px] font-medium text-violet-200 hover:bg-violet-950/60"
+            onClick={(e) => {
+              e.stopPropagation();
+              onToggleInclude();
+            }}
+            title={
+              included
+                ? "Remove from the pending review"
+                : "Include this thread in the next review sent to the agent"
+            }
+            className={cn(
+              "flex h-5 items-center rounded px-1.5 text-[11px] transition-colors",
+              included
+                ? "bg-blue-400/15 text-blue-300 hover:bg-blue-400/20"
+                : "text-neutral-400 hover:bg-neutral-800 hover:text-neutral-100",
+            )}
           >
-            → Agent
+            {included ? "In review" : "Add to review"}
+          </button>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onSendToAgent(formatThreadForAgent(thread), "thread");
+            }}
+            title="Send just this thread to the agent now"
+            className="flex h-5 items-center rounded px-1.5 text-[11px] text-neutral-400 transition-colors hover:bg-neutral-800 hover:text-neutral-100"
+          >
+            Send now
           </button>
           {thread.resolvable && (
             <button
@@ -318,13 +855,14 @@ function ThreadCard({
               disabled={busy}
               title={thread.resolved ? "Reopen thread" : "Resolve thread"}
               className={cn(
-                "rounded border px-1.5 py-[1px] text-[10px] font-medium disabled:opacity-50",
+                "flex h-5 items-center gap-1 rounded px-1.5 text-[11px] transition-colors disabled:opacity-50",
                 thread.resolved
-                  ? "border-neutral-700 text-neutral-400 hover:bg-neutral-800"
-                  : "border-emerald-700 bg-emerald-950/40 text-emerald-200 hover:bg-emerald-950/60",
+                  ? "text-emerald-400 hover:bg-neutral-800"
+                  : "text-neutral-400 hover:bg-emerald-400/10 hover:text-emerald-300",
               )}
             >
-              {thread.resolved ? "✓ Resolved" : "Resolve"}
+              <Check size={12} />
+              {thread.resolved ? "Resolved" : "Resolve"}
             </button>
           )}
         </span>
@@ -337,16 +875,16 @@ function ThreadCard({
               <Avatar name={n.author} />
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-1.5">
-                  <span className="text-[10px] text-neutral-500">@{n.author}</span>
+                  <span className="text-[11px] font-medium text-neutral-400">@{n.author}</span>
                   <button
                     onClick={() => onSendToAgent(formatNoteForAgent(n), "comment")}
-                    title="Send just this comment to the agent"
-                    className="rounded border border-violet-800/70 px-1.5 py-[1px] text-[10px] font-medium text-violet-300 opacity-0 transition-opacity hover:bg-violet-950/50 group-hover:opacity-100"
+                    title="Send just this comment to the agent now"
+                    className="flex h-4 items-center rounded px-1 text-[10px] text-neutral-500 opacity-0 transition hover:bg-neutral-800 hover:text-neutral-200 group-hover:opacity-100"
                   >
-                    → Agent
+                    Send now
                   </button>
                 </div>
-                <div className="whitespace-pre-wrap text-neutral-200">{n.body}</div>
+                <div className="whitespace-pre-wrap leading-relaxed text-neutral-200">{n.body}</div>
               </div>
             </div>
           ))}
@@ -358,12 +896,12 @@ function ThreadCard({
                 if (e.key === "Enter") void submit();
               }}
               placeholder="Reply…"
-              className="flex-1 rounded-md border border-neutral-800 bg-neutral-900 px-2 py-1 text-neutral-100 placeholder:text-neutral-600 focus:border-neutral-600 focus:outline-none"
+              className="h-6 flex-1 rounded-md border border-neutral-800 bg-neutral-950 px-2 text-neutral-100 placeholder:text-neutral-600 transition-colors focus:border-blue-500/60 focus:outline-none focus:ring-1 focus:ring-blue-500/30"
             />
             <button
               disabled={busy || !reply.trim()}
               onClick={() => void submit()}
-              className="rounded-md border border-blue-700 bg-blue-950/40 px-2.5 py-1 text-[11px] font-medium text-blue-200 hover:bg-blue-950/60 disabled:opacity-40"
+              className="flex h-6 items-center rounded-md bg-blue-600 px-2.5 text-[11px] font-medium text-white transition-colors hover:bg-blue-500 disabled:opacity-40 disabled:hover:bg-blue-600"
             >
               {busy ? "…" : "Reply"}
             </button>
@@ -372,6 +910,18 @@ function ThreadCard({
       )}
     </div>
   );
+}
+
+/// Display label for an agent in the send-target picker.
+function backendLabel(a: AgentSession): string {
+  switch (a.backend) {
+    case "claudeCode":
+      return "Claude Code";
+    case "codex":
+      return "Codex";
+    case "kiro":
+      return "Kiro";
+  }
 }
 
 /// Deterministic colored initial circle for an author handle.
@@ -403,12 +953,12 @@ function StateBadge({ state }: { state: string }) {
   return (
     <span
       className={cn(
-        "shrink-0 rounded px-1.5 py-[1px] text-[10px]",
+        "shrink-0 rounded-full px-1.5 text-[10px] leading-4",
         state === "merged"
-          ? "bg-purple-950/50 text-purple-300"
+          ? "bg-violet-400/15 text-violet-300"
           : state === "closed"
-            ? "bg-rose-950/50 text-rose-300"
-            : "bg-emerald-950/50 text-emerald-300",
+            ? "bg-rose-400/15 text-rose-300"
+            : "bg-emerald-400/15 text-emerald-300",
       )}
     >
       {state}
@@ -420,19 +970,22 @@ function SectionHeader({
   label,
   count,
   className,
+  action,
 }: {
   label: string;
   count: number;
   className?: string;
+  action?: React.ReactNode;
 }) {
   return (
     <div className={cn("mb-1.5 flex items-center gap-1.5", className)}>
-      <span className="text-[11px] font-medium uppercase tracking-wider text-neutral-500">
+      <span className="text-[10.5px] font-medium uppercase tracking-[0.08em] text-neutral-500">
         {label}
       </span>
-      <span className="rounded-full bg-neutral-800 px-1.5 py-[1px] text-[10px] text-neutral-400">
+      <span className={countBadge(label === "Pending" && count > 0 ? "accent" : "neutral")}>
         {count}
       </span>
+      {action && <span className="ml-auto">{action}</span>}
     </div>
   );
 }

@@ -17,7 +17,6 @@ import { DiffPane } from "@/panels/DiffPane";
 import { BottomPane } from "@/panels/BottomPane";
 import { AgentPane } from "@/panels/AgentPane";
 import { SettingsMenu } from "@/components/SettingsMenu";
-import { SendQueueButton } from "@/components/SendQueueButton";
 import { FileFinder } from "@/components/FileFinder";
 import { CommandPalette } from "@/components/CommandPalette";
 import { SystemFileViewer } from "@/components/SystemFileViewer";
@@ -263,7 +262,6 @@ export function Workspace() {
         >
           <AgentBoardPill />
           <ScratchPill />
-          <SendQueueButton />
           <SettingsMenu />
           <button
             onClick={() => {

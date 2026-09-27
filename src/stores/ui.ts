@@ -71,6 +71,12 @@ type UiState = {
   /// Needed when the target worktree is already selected: AgentTabs
   /// only reads `activeAgentByWorktree` when it mounts.
   agentFocusRequest: { agentId: AgentSessionId; nonce: number } | null;
+  /// Show resolved review comments inline in the editor / diff. Toggled
+  /// from the file header; read by CommentOverlay.
+  showResolvedComments: boolean;
+  /// One-shot request from the file header for the mounted CommentOverlay
+  /// on `path` to open a whole-file comment composer.
+  fileCommentRequest: { worktreeId: WorktreeId; path: string; nonce: number } | null;
   selectWorktree: (id: WorktreeId | null) => void;
   toggleFocusMode: () => void;
   setFocusMode: (on: boolean) => void;
@@ -107,6 +113,9 @@ type UiState = {
   markAgentSeen: (agentId: AgentSessionId) => void;
   /// Select `worktreeId` and make `agentId` its active agent tab.
   focusAgent: (worktreeId: WorktreeId, agentId: AgentSessionId) => void;
+  toggleShowResolvedComments: () => void;
+  requestFileComment: (worktreeId: WorktreeId, path: string) => void;
+  clearFileCommentRequest: () => void;
   reset: () => void;
 };
 
@@ -130,6 +139,8 @@ export const useUiStore = create<UiState>((set, get) => ({
   scratchOpen: false,
   agentSeenAt: {},
   agentFocusRequest: null,
+  showResolvedComments: false,
+  fileCommentRequest: null,
   selectWorktree(id) {
     set({ selectedWorktreeId: id });
   },
@@ -266,6 +277,21 @@ export const useUiStore = create<UiState>((set, get) => ({
       selectedWorktreeId: worktreeId,
     }));
   },
+  toggleShowResolvedComments() {
+    set((s) => ({ showResolvedComments: !s.showResolvedComments }));
+  },
+  requestFileComment(worktreeId, path) {
+    set((s) => ({
+      fileCommentRequest: {
+        worktreeId,
+        path,
+        nonce: (s.fileCommentRequest?.nonce ?? 0) + 1,
+      },
+    }));
+  },
+  clearFileCommentRequest() {
+    set({ fileCommentRequest: null });
+  },
   reset() {
     set({
       selectedWorktreeId: null,
@@ -286,6 +312,8 @@ export const useUiStore = create<UiState>((set, get) => ({
       agentBoardLayout: "board",
       agentSeenAt: {},
       agentFocusRequest: null,
+      showResolvedComments: false,
+      fileCommentRequest: null,
     });
   },
 }));
