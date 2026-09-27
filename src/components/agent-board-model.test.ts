@@ -102,18 +102,18 @@ describe("fallbackLabels", () => {
 });
 
 describe("summaryOf", () => {
-  it("working shows the current tool, falling back to the task", () => {
+  it("working shows the current tool, never the task", () => {
     expect(summaryOf(ov("a", { activity: "working", task: "t", currentTool: "Bash: ls" }))).toBe("Bash: ls");
-    expect(summaryOf(ov("a", { activity: "working", task: "t" }))).toBe("t");
+    expect(summaryOf(ov("a", { activity: "working", task: "t" }))).toBeNull();
   });
 
-  it("blocked on permission shows the task; on input shows the message", () => {
+  it("blocked on permission has no summary; on input shows the message", () => {
     const perm = ov("a", {
       activity: "needsAttention",
       task: "fix it",
       pending: { kind: "permission", toolName: "Bash", detail: "ls" },
     });
-    expect(summaryOf(perm)).toBe("fix it");
+    expect(summaryOf(perm)).toBeNull();
     const input = ov("a", {
       activity: "needsAttention",
       pending: { kind: "input", message: "Pick one" },
@@ -124,6 +124,7 @@ describe("summaryOf", () => {
 
   it("idle shows the final message", () => {
     expect(summaryOf(ov("a", { activity: "idle", lastMessage: "Done", task: "t" }))).toBe("Done");
+    expect(summaryOf(ov("a", { activity: "idle", task: "t" }))).toBeNull();
   });
 });
 

@@ -93,20 +93,21 @@ export function fallbackLabels(
   return out;
 }
 
-/// The card's summary line for its current state. A permission prompt
-/// renders separately, so a blocked card's summary is the task it was on.
+/// The card's summary line for its current state. The last prompt
+/// (`o.task`) has its own line on the card, so it's never repeated here,
+/// and a permission prompt renders separately.
 export function summaryOf(o: AgentOverview): string | null {
   switch (o.activity) {
     case "needsAttention":
-      if (o.pending?.kind === "permission") return o.task;
+      if (o.pending?.kind === "permission") return null;
       if (o.pending?.kind === "input" && o.pending.message) {
         return o.pending.message;
       }
       return o.lastMessage ?? "Waiting for your reply";
     case "working":
-      return o.currentTool ?? o.task;
+      return o.currentTool;
     case "idle":
-      return o.lastMessage ?? o.task;
+      return o.lastMessage;
     default:
       if (o.session.status.kind === "exited") return "Exited";
       if (o.session.status.kind === "crashed") return o.session.status.message;

@@ -581,6 +581,15 @@ function AgentCard({
         </span>
       </div>
 
+      {o.task && (
+        <div className="flex min-w-0 gap-1.5 text-neutral-400" title={o.task}>
+          <span className="shrink-0 font-mono text-neutral-600">›</span>
+          <span className={cn("min-w-0 break-words", dense ? "truncate" : "line-clamp-2")}>
+            {o.task}
+          </span>
+        </div>
+      )}
+
       {summary && (
         <div
           className={cn(
