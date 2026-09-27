@@ -95,6 +95,24 @@ impl HookSession {
         }
     }
 
+    /// State for an agent launched with `--resume`, seeded from history so
+    /// its board card shows the conversation's last prompt and reply before
+    /// Claude fires any hook. The next `UserPromptSubmit` overwrites both.
+    pub fn resumed(
+        claude_session_id: String,
+        task: Option<String>,
+        last_message: Option<String>,
+        now_ms: u64,
+        now: Instant,
+    ) -> Self {
+        Self {
+            task,
+            last_message,
+            claude_session_id: Some(claude_session_id),
+            ..Self::new(now_ms, now)
+        }
+    }
+
     fn set_activity(&mut self, act: AgentActivity, now_ms: u64, now: Instant) {
         if self.activity != act {
             self.activity = act;

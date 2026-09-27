@@ -149,6 +149,7 @@ impl AgentRegistry {
                 m.resumed_from.as_deref(),
                 cid,
                 hook.first_prompt.as_deref(),
+                hook.task.as_deref(),
                 hook.last_message.as_deref(),
                 now_millis(),
             );
@@ -644,6 +645,20 @@ pub fn launch(
         .map_err(|e| AppError::Unknown(format!("spawn agent reader: {e}")))?;
 
     if matches!(backend, AgentBackendKind::ClaudeCode) {
+        if let Some(cid) = &resume {
+            // Seed only: if a hook already landed, it's newer than history.
+            if let Some((task, last_message)) = registry.history.last_turn(cid) {
+                registry.hook_sessions.entry(session_id).or_insert_with(|| {
+                    HookSession::resumed(
+                        cid.clone(),
+                        task,
+                        last_message,
+                        now_millis(),
+                        Instant::now(),
+                    )
+                });
+            }
+        }
         registry.history_meta.insert(
             session_id,
             HistoryMeta {

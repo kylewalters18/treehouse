@@ -32,6 +32,10 @@ struct Record {
     claude_session_id: String,
     worktree_path: PathBuf,
     title: Option<String>,
+    /// First line of the most recent prompt, so a resumed agent's board
+    /// card can show what it was last asked. Absent in older files.
+    #[serde(default)]
+    last_prompt: Option<String>,
     last_message: Option<String>,
     started_at: u64,
     last_active_at: u64,
@@ -83,12 +87,14 @@ impl AgentHistory {
     /// the id the agent was launched with `--resume`; if Claude reports a
     /// different id, the old record is carried over to the new one so the
     /// conversation doesn't show up twice.
+    #[allow(clippy::too_many_arguments)]
     pub fn observe(
         &self,
         worktree_path: &Path,
         resumed_from: Option<&str>,
         claude_session_id: &str,
         first_prompt: Option<&str>,
+        last_prompt: Option<&str>,
         last_message: Option<&str>,
         now_ms: u64,
     ) {
@@ -100,6 +106,7 @@ impl AgentHistory {
             resumed_from,
             claude_session_id,
             first_prompt,
+            last_prompt,
             last_message,
             now_ms,
         );
@@ -127,6 +134,16 @@ impl AgentHistory {
             .collect();
         out.sort_by(|a, b| b.last_active_at.cmp(&a.last_active_at));
         out
+    }
+
+    /// `(last_prompt, last_message)` of one conversation, to seed the board
+    /// card of an agent resuming it.
+    pub fn last_turn(&self, claude_session_id: &str) -> Option<(Option<String>, Option<String>)> {
+        self.records
+            .lock()
+            .iter()
+            .find(|r| r.claude_session_id == claude_session_id)
+            .map(|r| (r.last_prompt.clone(), r.last_message.clone()))
     }
 
     /// Forget one conversation. Claude's own transcript is left alone.
@@ -169,12 +186,14 @@ impl AgentHistory {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn upsert(
     records: &mut Vec<Record>,
     worktree_path: &Path,
     resumed_from: Option<&str>,
     claude_session_id: &str,
     first_prompt: Option<&str>,
+    last_prompt: Option<&str>,
     last_message: Option<&str>,
     now_ms: u64,
 ) {
@@ -192,6 +211,7 @@ fn upsert(
                 claude_session_id: claude_session_id.to_string(),
                 worktree_path: worktree_path.to_path_buf(),
                 title: None,
+                last_prompt: None,
                 last_message: None,
                 started_at: now_ms,
                 last_active_at: now_ms,
@@ -203,6 +223,9 @@ fn upsert(
     rec.worktree_path = worktree_path.to_path_buf();
     if rec.title.is_none() {
         rec.title = first_prompt.map(str::to_string);
+    }
+    if let Some(p) = last_prompt {
+        rec.last_prompt = Some(p.to_string());
     }
     if let Some(m) = last_message {
         rec.last_message = Some(m.to_string());
@@ -245,10 +268,11 @@ mod tests {
     #[test]
     fn first_prompt_sticks_and_last_message_updates() {
         let mut r = Vec::new();
-        upsert(&mut r, &wt(), None, "s1", Some("fix the bug"), None, 1);
-        upsert(&mut r, &wt(), None, "s1", Some("now add tests"), Some("done"), 2);
+        upsert(&mut r, &wt(), None, "s1", Some("fix the bug"), Some("fix the bug"), None, 1);
+        upsert(&mut r, &wt(), None, "s1", Some("now add tests"), Some("now add tests"), Some("done"), 2);
         assert_eq!(r.len(), 1);
         assert_eq!(r[0].title.as_deref(), Some("fix the bug"));
+        assert_eq!(r[0].last_prompt.as_deref(), Some("now add tests"));
         assert_eq!(r[0].last_message.as_deref(), Some("done"));
         assert_eq!((r[0].started_at, r[0].last_active_at), (1, 2));
     }
@@ -256,8 +280,8 @@ mod tests {
     #[test]
     fn resume_with_new_id_rekeys_the_record() {
         let mut r = Vec::new();
-        upsert(&mut r, &wt(), None, "s1", Some("fix the bug"), Some("ok"), 1);
-        upsert(&mut r, &wt(), Some("s1"), "s2", Some("keep going"), None, 5);
+        upsert(&mut r, &wt(), None, "s1", Some("fix the bug"), Some("fix the bug"), Some("ok"), 1);
+        upsert(&mut r, &wt(), Some("s1"), "s2", Some("keep going"), Some("keep going"), None, 5);
         assert_eq!(r.len(), 1);
         assert_eq!(r[0].claude_session_id, "s2");
         assert_eq!(r[0].title.as_deref(), Some("fix the bug"));
@@ -268,14 +292,21 @@ mod tests {
     fn keeps_newest_per_worktree() {
         let mut r = Vec::new();
         let other = PathBuf::from("/r__worktrees/b");
-        upsert(&mut r, &other, None, "other", None, None, 0);
+        upsert(&mut r, &other, None, "other", None, None, None, 0);
         for i in 0..(PER_WORKTREE_MAX as u64 + 3) {
-            upsert(&mut r, &wt(), None, &format!("s{i}"), None, None, i + 1);
+            upsert(&mut r, &wt(), None, &format!("s{i}"), None, None, None, i + 1);
         }
         let ids: Vec<_> = r.iter().filter(|x| x.worktree_path == wt()).collect();
         assert_eq!(ids.len(), PER_WORKTREE_MAX);
         assert!(!r.iter().any(|x| x.claude_session_id == "s0"));
         assert!(r.iter().any(|x| x.claude_session_id == "other"));
+    }
+
+    #[test]
+    fn loads_records_written_before_last_prompt() {
+        let json = r#"{"items":[{"claudeSessionId":"s1","worktreePath":"/r__worktrees/a","title":"t","lastMessage":null,"startedAt":1,"lastActiveAt":1}]}"#;
+        let file: HistoryFile = serde_json::from_str(json).unwrap();
+        assert_eq!(file.items[0].last_prompt, None);
     }
 
     #[test]
@@ -292,9 +323,13 @@ mod tests {
         let path = dir.path().join(HISTORY_FILE);
         let h = AgentHistory::default();
         h.load(path.clone());
-        h.observe(&wt(), None, "s1", Some("hello"), None, 10);
+        h.observe(&wt(), None, "s1", Some("hello"), Some("hello"), Some("hi"), 10);
         let h2 = AgentHistory::default();
         h2.load(path);
+        assert_eq!(
+            h2.last_turn("s1"),
+            Some((Some("hello".into()), Some("hi".into())))
+        );
         let list = h2.list_for(&wt());
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].title.as_deref(), Some("hello"));
