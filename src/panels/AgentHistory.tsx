@@ -106,7 +106,7 @@ export function AgentHistoryMenu({
   return (
     <div
       ref={ref}
-      className="absolute right-1 top-7 z-20 w-96 max-w-[calc(100%-0.5rem)] overflow-hidden rounded-md border border-neutral-700 bg-neutral-900 shadow-2xl"
+      className="absolute right-1 top-[30px] z-20 w-96 max-w-[calc(100%-0.5rem)] overflow-hidden rounded-md border border-neutral-700 bg-neutral-900 shadow-2xl"
     >
       <div className="flex items-baseline justify-between gap-2 px-2.5 pb-1 pt-1.5 text-[11px] text-neutral-500">
         <span className="font-semibold text-neutral-300">Recent sessions</span>

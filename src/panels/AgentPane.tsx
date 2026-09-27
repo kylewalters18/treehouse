@@ -3,24 +3,39 @@ import "xterm/css/xterm.css";
 
 import { useSettingsStore } from "@/stores/settings";
 import { useUiStore } from "@/stores/ui";
+import { useWorkspaceStore } from "@/stores/workspace";
 import { useWorktreesStore } from "@/stores/worktrees";
 import {
   forgetAgentSession,
   killAgent,
   listAgentHistory,
+  listAgentProfiles,
   listAgentsForWorktree,
+  saveAgentProfile,
 } from "@/ipc/client";
 import type {
   AgentBackendKind,
   AgentHistoryEntry,
+  AgentProfile,
   AgentSessionId,
   WorktreeId,
 } from "@/ipc/types";
 import { useToastsStore } from "@/stores/toasts";
 import { cn } from "@/lib/cn";
+import { asMessage } from "@/lib/errors";
 import { instanceStrip, instanceTab, instanceTabClose } from "@/lib/pane-chrome";
-import { Plus, X } from "lucide-react";
-import { splitCommand } from "@/lib/shell-words";
+import { ChevronDown, Plus, X } from "lucide-react";
+import {
+  buildLaunchProfiles,
+  commandArgv,
+  getLastProfileKey,
+  resolveDefaultProfile,
+  setLastProfileKey,
+  tabLabelBase,
+  type LaunchProfile,
+} from "@/lib/agent-profiles";
+import { AgentLaunchMenu } from "@/components/AgentLaunchMenu";
+import { BackendIcon } from "@/components/BackendIcon";
 import { fitAndPin } from "./xterm-fit";
 import {
   createAgentLeafState,
@@ -33,22 +48,13 @@ import {
 } from "./agent-leaf-state";
 import { AgentHistoryList, AgentHistoryMenu, HistoryIcon } from "./AgentHistory";
 
-const BACKENDS: { label: string; value: AgentBackendKind }[] = [
-  { label: "Claude Code", value: "claudeCode" },
-  { label: "Codex", value: "codex" },
-  { label: "Kiro", value: "kiro" },
-];
-
-const BACKEND_LABELS: Record<AgentBackendKind, string> = {
-  claudeCode: "Claude",
-  codex: "Codex",
-  kiro: "Kiro",
-};
-
 export function AgentPane() {
   const worktreeId = useUiStore((s) => s.selectedWorktreeId);
   const worktree = useWorktreesStore((s) =>
     s.worktrees.find((w) => w.id === worktreeId),
+  );
+  const workspaceRoot = useWorkspaceStore(
+    (s) => s.workspaces.find((w) => w.id === worktree?.workspaceId)?.root,
   );
 
   if (!worktreeId || !worktree) {
@@ -63,6 +69,7 @@ export function AgentPane() {
       key={worktreeId}
       worktreeId={worktreeId}
       worktreeName={worktree.branch}
+      workspaceRoot={workspaceRoot ?? ""}
     />
   );
 }
@@ -89,21 +96,15 @@ function takeCloseToast(): boolean {
   return true;
 }
 
-/// Pull the sub-agent name back out of an argv so adopted sessions get
-/// the same `Claude 1 (foo)` label as freshly-launched ones, instead of
-/// just `Claude 1`. Returns the bracketed suffix or "" if no `--agent`.
-function argvAgentSuffix(argv: string[]): string {
-  const i = argv.indexOf("--agent");
-  if (i < 0 || i + 1 >= argv.length) return "";
-  return ` (${argv[i + 1]})`;
-}
-
 function AgentTabs({
   worktreeId,
   worktreeName,
+  workspaceRoot,
 }: {
   worktreeId: WorktreeId;
   worktreeName: string;
+  /// Repo root — scopes launch profiles and the last-used profile.
+  workspaceRoot: string;
 }) {
   const [tabs, setTabs] = useState<Tab[]>([]);
   const [history, setHistory] = useState<AgentHistoryEntry[]>([]);
@@ -139,31 +140,27 @@ function AgentTabs({
   const leafStates = useMemo(() => getAgentLeafStates(worktreeId), [worktreeId]);
   const defaultBackend = useSettingsStore((s) => s.settings.defaultAgentBackend);
   const agentCommands = useSettingsStore((s) => s.settings.agentCommands);
-  const [backend, setBackend] = useState<AgentBackendKind>(defaultBackend);
-  // The full CLI command to launch, editable per-launch. Seeded from the
-  // per-backend default configured in Settings; reset to that backend's
-  // default whenever the backend dropdown changes.
-  const [command, setCommand] = useState<string>(
-    () => agentCommands[defaultBackend],
+  // `[[agent.profile]]` entries visible from this repo, re-read whenever
+  // the launch menu opens so hand edits to treehouse.toml show up.
+  const [configuredProfiles, setConfiguredProfiles] = useState<AgentProfile[]>([]);
+  const profiles = useMemo(
+    () => buildLaunchProfiles(configuredProfiles, agentCommands),
+    [configuredProfiles, agentCommands],
   );
-  // If settings load after this component mounted, and the user hasn't
-  // touched the controls yet, pick up the persisted default backend +
-  // its command. Guarded by a ref so we only do this once per mount —
-  // subsequent Settings edits shouldn't stomp an in-flight edit.
-  const pickedUpDefault = useRef(false);
-  useEffect(() => {
-    if (pickedUpDefault.current) return;
-    pickedUpDefault.current = true;
-    setBackend(defaultBackend);
-    setCommand(agentCommands[defaultBackend]);
-  }, [defaultBackend, agentCommands]);
-
-  // Switching backend swaps the command field to that backend's configured
-  // default. A `function` (not a value) keeps the two state writes atomic.
-  function selectBackend(next: AgentBackendKind) {
-    setBackend(next);
-    setCommand(agentCommands[next]);
-  }
+  // Read by async paths (adoption, the ⌘⇧A nonce) that can run before
+  // the state above commits. Adoption writes it directly for that reason.
+  const profilesRef = useRef<LaunchProfile[]>(profiles);
+  profilesRef.current = profiles;
+  const [lastProfileKey, setLastKey] = useState(() =>
+    getLastProfileKey(workspaceRoot),
+  );
+  const defaultProfile = resolveDefaultProfile(profiles, lastProfileKey, defaultBackend);
+  const [launchMenuOpen, setLaunchMenuOpen] = useState(false);
+  const refreshProfiles = useCallback(async () => {
+    const list = await listAgentProfiles(workspaceRoot).catch(() => null);
+    if (list && mounted.current) setConfiguredProfiles(list);
+    return list;
+  }, [workspaceRoot]);
   const [initLoading, setInitLoading] = useState(true);
   const sessionIds = useRef<Map<string, AgentSessionId>>(new Map());
   const setActiveAgent = useUiStore((s) => s.setActiveAgent);
@@ -212,11 +209,12 @@ function AgentTabs({
     const id = activeId ? sessionIds.current.get(activeId) ?? null : null;
     setActiveAgent(worktreeId, id);
   }, [activeId, worktreeId, setActiveAgent]);
-  const counters = useRef<Record<AgentBackendKind, number>>({
-    claudeCode: 0,
-    codex: 0,
-    kiro: 0,
-  });
+  // Per-label-base tab counters ("Claude 2", "Reviewer 1").
+  const counters = useRef<Record<string, number>>({});
+  function nextLabel(base: string): string {
+    counters.current[base] = (counters.current[base] ?? 0) + 1;
+    return `${base} ${counters.current[base]}`;
+  }
 
   // On worktree switch: discover already-running agents and adopt them as
   // attach-mode tabs so the user doesn't lose live sessions. Tabs are
@@ -233,8 +231,17 @@ function AgentTabs({
         const storedOrder = initialPersisted.current.order;
         const storedActive = initialPersisted.current.active;
 
-        const existing = await listAgentsForWorktree(worktreeId);
+        const [existing, configured] = await Promise.all([
+          listAgentsForWorktree(worktreeId),
+          refreshProfiles(),
+        ]);
         if (cancelled) return;
+        // Labels below (and a pending default launch) need the profile
+        // list now, not after the state update commits.
+        profilesRef.current = buildLaunchProfiles(
+          configured ?? [],
+          useSettingsStore.getState().settings.agentCommands,
+        );
         // Drop pool entries whose agent died while we were elsewhere,
         // plus any pre-session orphans from an in-flight launch whose
         // AgentTabs got unmounted before onSession could rekey.
@@ -249,9 +256,9 @@ function AgentTabs({
         // the moved tab to "Claude 1" — labels must follow the agent.
         const labelBySession = new Map<string, string>();
         for (const s of existing) {
-          counters.current[s.backend] =
-            (counters.current[s.backend] ?? 0) + 1;
-          const label = `${BACKEND_LABELS[s.backend]} ${counters.current[s.backend]}${argvAgentSuffix(s.argv)}`;
+          const label = nextLabel(
+            tabLabelBase(s.backend, s.argv, profilesRef.current),
+          );
           labelBySession.set(s.id, label);
           setAgentLabel(s.id, label);
         }
@@ -361,21 +368,59 @@ function AgentTabs({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tabs]);
 
-  function onLaunch() {
-    counters.current[backend] = (counters.current[backend] ?? 0) + 1;
-    // Empty field → undefined argv, which the Rust side resolves to the
-    // backend's built-in default command. Otherwise the typed command wins.
-    const parsed = splitCommand(command);
-    const argv = parsed.length > 0 ? parsed : undefined;
-    const labelSuffix = argv ? argvAgentSuffix(argv) : "";
+  /// Open a new agent tab. `profileKey` (null for an Edit & launch
+  /// one-off) becomes this repo's last-used profile.
+  function launch(
+    backend: AgentBackendKind,
+    command: string,
+    profileKey: string | null,
+  ) {
+    setLaunchMenuOpen(false);
+    // Empty command → undefined argv, which the Rust side resolves to the
+    // backend's built-in default command.
+    const argv = commandArgv(command);
     const next: Tab = {
       localId: crypto.randomUUID(),
       mode: { kind: "launch", backend, argv },
       backend,
-      label: `${BACKEND_LABELS[backend]} ${counters.current[backend]}${labelSuffix}`,
+      label: nextLabel(tabLabelBase(backend, argv, profilesRef.current)),
     };
     setTabs((prev) => [...prev, next]);
     setActiveId(next.localId);
+    if (profileKey) {
+      setLastProfileKey(workspaceRoot, profileKey);
+      setLastKey(profileKey);
+    }
+  }
+
+  /// `+`, ⌘⇧A, and "Start default agent": the repo's last-used profile.
+  function onLaunch() {
+    const p = resolveDefaultProfile(
+      profilesRef.current,
+      getLastProfileKey(workspaceRoot),
+      useSettingsStore.getState().settings.defaultAgentBackend,
+    );
+    launch(p.backend, p.command, p.key);
+  }
+
+  async function saveProfile(
+    name: string,
+    backend: AgentBackendKind,
+    command: string,
+  ): Promise<boolean> {
+    try {
+      await saveAgentProfile({ workspace: workspaceRoot, name, backend, command });
+    } catch (e) {
+      useToastsStore.getState().push({
+        kind: "error",
+        title: "Couldn't save profile",
+        body: asMessage(e),
+      });
+      return false;
+    }
+    const list = await refreshProfiles();
+    if (list) profilesRef.current = buildLaunchProfiles(list, agentCommands);
+    return true;
   }
 
   /// Reopen a saved conversation in a new tab, or switch to the tab that
@@ -391,9 +436,7 @@ function AgentTabs({
         return;
       }
     }
-    counters.current.claudeCode = (counters.current.claudeCode ?? 0) + 1;
-    const parsed = splitCommand(agentCommands.claudeCode);
-    const argv = parsed.length > 0 ? parsed : undefined;
+    const argv = commandArgv(agentCommands.claudeCode);
     const next: Tab = {
       localId: crypto.randomUUID(),
       mode: {
@@ -403,7 +446,7 @@ function AgentTabs({
         resume: entry.claudeSessionId,
       },
       backend: "claudeCode",
-      label: `${BACKEND_LABELS.claudeCode} ${counters.current.claudeCode}${argv ? argvAgentSuffix(argv) : ""}`,
+      label: nextLabel(tabLabelBase("claudeCode", argv, profilesRef.current)),
       resumed: true,
     };
     setTabs((prev) => [...prev, next]);
@@ -546,60 +589,110 @@ function AgentTabs({
 
   return (
     <div className="relative flex h-full flex-col border-l border-neutral-800 bg-neutral-950">
-      <div className="flex h-[34px] shrink-0 items-center gap-1.5 border-b border-neutral-800 bg-chrome px-2">
-        <select
-          value={backend}
-          onChange={(e) => selectBackend(e.target.value as AgentBackendKind)}
-          className="h-6 shrink-0 rounded-md border border-neutral-800 bg-neutral-900 px-1.5 text-[11px] text-neutral-300 focus:border-blue-500 focus:outline-none"
-        >
-          {BACKENDS.map((b) => (
-            <option key={b.value} value={b.value}>
-              {b.label}
-            </option>
-          ))}
-        </select>
-        <input
-          value={command}
-          onChange={(e) => setCommand(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") {
-              e.preventDefault();
-              onLaunch();
-            }
-          }}
-          title="Full launch command — edit freely; quote args with spaces"
-          placeholder={agentCommands[backend] || "command…"}
-          spellCheck={false}
-          autoCapitalize="off"
-          autoCorrect="off"
-          className="h-6 min-w-0 flex-1 rounded-md border border-neutral-800 bg-neutral-900 px-2 font-mono text-[11px] text-neutral-200 placeholder:text-neutral-600 focus:border-blue-500 focus:outline-none"
-        />
-        <button
-          onClick={onLaunch}
-          title="Launch new agent"
-          className="flex h-6 shrink-0 items-center gap-1 rounded-md bg-blue-600 px-2 text-[11px] font-medium text-white hover:bg-blue-500"
-        >
-          <Plus size={12} />
-          Launch
-        </button>
-        <button
-          data-agent-history-toggle
-          onClick={() => {
-            if (!historyOpen) void refreshHistory();
-            setHistoryOpen((o) => !o);
-          }}
-          title="Recent Claude Code sessions in this worktree"
-          aria-expanded={historyOpen}
-          className={cn(
-            "flex h-6 shrink-0 items-center gap-1 rounded-md border border-neutral-800 px-1.5 text-[11px]",
-            historyOpen
-              ? "bg-neutral-800 text-neutral-100"
-              : "text-neutral-400 hover:bg-neutral-800 hover:text-neutral-100",
-          )}
-        >
-          <HistoryIcon />
-          <span className="tabular-nums text-neutral-500">{history.length}</span>
-        </button>
+      <div className={instanceStrip}>
+        {tabs.map((tab) => (
+          <div
+            key={tab.localId}
+            onClick={() => setActiveId(tab.localId)}
+            role="tab"
+            aria-selected={tab.localId === activeId}
+            draggable
+            onDragStart={(e) => onTabDragStart(e, tab.localId)}
+            onDragOver={(e) => onTabDragOver(e, tab.localId)}
+            onDragLeave={() => {
+              if (dragOverLocalId === tab.localId) setDragOverLocalId(null);
+            }}
+            onDrop={(e) => onTabDrop(e, tab.localId)}
+            onDragEnd={onTabDragEnd}
+            className={cn(
+              instanceTab(tab.localId === activeId),
+              // Drop-target indicator: blue inset left edge on the tab
+              // being hovered, but suppress on the dragged tab itself
+              // to avoid confusing self-drop feedback.
+              dragOverLocalId === tab.localId &&
+                dragLocalId !== tab.localId &&
+                "shadow-[inset_2px_0_0_theme(colors.blue.400)]",
+              dragLocalId === tab.localId && "opacity-50",
+            )}
+          >
+            <BackendIcon backend={tab.backend} />
+            <span className="font-mono">{tab.label}</span>
+            {tab.resumed && (
+              <span className="text-neutral-500" title="Resumed conversation">
+                ↺
+              </span>
+            )}
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                closeTab(tab.localId);
+              }}
+              className={instanceTabClose(tab.localId === activeId)}
+              title={
+                tab.backend === "claudeCode"
+                  ? "Close (resume later from history)"
+                  : "Kill agent"
+              }
+            >
+              <X size={11} />
+            </button>
+          </div>
+        ))}
+        <div className="sticky right-0 ml-auto flex shrink-0 items-center gap-1 bg-chrome px-1.5">
+          <button
+            data-agent-history-toggle
+            onClick={() => {
+              if (!historyOpen) void refreshHistory();
+              setHistoryOpen((o) => !o);
+            }}
+            title="Recent Claude Code sessions in this worktree"
+            aria-expanded={historyOpen}
+            className={cn(
+              "flex h-6 items-center gap-1 rounded-md px-1.5 text-[11px]",
+              historyOpen
+                ? "bg-neutral-800 text-neutral-100"
+                : "text-neutral-500 hover:bg-neutral-800 hover:text-neutral-200",
+            )}
+          >
+            <HistoryIcon />
+            {history.length > 0 && (
+              <span className="tabular-nums">{history.length}</span>
+            )}
+          </button>
+          <div
+            data-agent-launch-toggle
+            className={cn(
+              "flex h-6 items-stretch overflow-hidden rounded-md border",
+              launchMenuOpen ? "border-neutral-600" : "border-neutral-800",
+            )}
+          >
+            <button
+              onClick={onLaunch}
+              title={`Launch ${defaultProfile.name} (⌘⇧A)`}
+              className="flex items-center gap-1 px-1.5 text-neutral-300 hover:bg-neutral-800 hover:text-neutral-100"
+            >
+              <Plus size={13} />
+              <BackendIcon backend={defaultProfile.backend} size={11} />
+            </button>
+            <button
+              onClick={() => {
+                if (!launchMenuOpen) void refreshProfiles();
+                setHistoryOpen(false);
+                setLaunchMenuOpen((o) => !o);
+              }}
+              title="Choose a launch profile"
+              aria-expanded={launchMenuOpen}
+              className={cn(
+                "flex items-center border-l border-neutral-800 px-0.5",
+                launchMenuOpen
+                  ? "bg-neutral-800 text-neutral-100"
+                  : "text-neutral-500 hover:bg-neutral-800 hover:text-neutral-200",
+              )}
+            >
+              <ChevronDown size={12} />
+            </button>
+          </div>
+        </div>
       </div>
       {historyOpen && (
         <AgentHistoryMenu
@@ -610,56 +703,15 @@ function AgentTabs({
           onClose={() => setHistoryOpen(false)}
         />
       )}
-      {hasTabs && (
-        <div className={instanceStrip}>
-          {tabs.map((tab) => (
-            <div
-              key={tab.localId}
-              onClick={() => setActiveId(tab.localId)}
-              role="tab"
-              aria-selected={tab.localId === activeId}
-              draggable
-              onDragStart={(e) => onTabDragStart(e, tab.localId)}
-              onDragOver={(e) => onTabDragOver(e, tab.localId)}
-              onDragLeave={() => {
-                if (dragOverLocalId === tab.localId) setDragOverLocalId(null);
-              }}
-              onDrop={(e) => onTabDrop(e, tab.localId)}
-              onDragEnd={onTabDragEnd}
-              className={cn(
-                instanceTab(tab.localId === activeId),
-                // Drop-target indicator: blue inset left edge on the tab
-                // being hovered, but suppress on the dragged tab itself
-                // to avoid confusing self-drop feedback.
-                dragOverLocalId === tab.localId &&
-                  dragLocalId !== tab.localId &&
-                  "shadow-[inset_2px_0_0_theme(colors.blue.400)]",
-                dragLocalId === tab.localId && "opacity-50",
-              )}
-            >
-              <span className="font-mono">{tab.label}</span>
-              {tab.resumed && (
-                <span className="text-neutral-500" title="Resumed conversation">
-                  ↺
-                </span>
-              )}
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  closeTab(tab.localId);
-                }}
-                className={instanceTabClose(tab.localId === activeId)}
-                title={
-                  tab.backend === "claudeCode"
-                    ? "Close (resume later from history)"
-                    : "Kill agent"
-                }
-              >
-                <X size={11} />
-              </button>
-            </div>
-          ))}
-        </div>
+      {launchMenuOpen && (
+        <AgentLaunchMenu
+          profiles={profiles}
+          defaultKey={defaultProfile.key}
+          workspaceName={workspaceRoot.split("/").pop() || workspaceRoot}
+          onLaunch={launch}
+          onSaveProfile={saveProfile}
+          onClose={() => setLaunchMenuOpen(false)}
+        />
       )}
 
       <div className="relative flex-1">
@@ -688,9 +740,25 @@ function AgentTabs({
             )}
             {initLoading
               ? "Checking for running agents…"
-              : history.length > 0
-                ? "or pick a backend and click + Launch"
-                : "Pick a backend and click + Launch"}
+              : (
+                <span>
+                  {history.length > 0 ? "or press " : "Press "}
+                  <kbd className="rounded border border-neutral-700 px-1 text-neutral-400">⌘⇧A</kbd>
+                  {" to launch "}
+                  <span className="text-neutral-400">{defaultProfile.name}</span>
+                  {" · "}
+                  <button
+                    data-agent-launch-toggle
+                    onClick={() => {
+                      void refreshProfiles();
+                      setLaunchMenuOpen(true);
+                    }}
+                    className="text-blue-400 hover:text-blue-300"
+                  >
+                    other profiles
+                  </button>
+                </span>
+              )}
           </div>
         )}
         {tabs.map((tab) => {

@@ -72,7 +72,7 @@ function buildCommands(deps: {
     category: "Settings",
     title: "Edit",
     description:
-      "Open treehouse.toml (LSP overrides, custom languages, worktree hooks, agent status patterns) in an in-app editor — Cmd+S saves",
+      "Open treehouse.toml (LSP overrides, custom languages, worktree hooks, agent profiles + status patterns) in an in-app editor — Cmd+S saves",
     run: () => {
       useUiStore.getState().openSystemFileViewer("treehouseConfig");
     },

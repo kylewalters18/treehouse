@@ -4,6 +4,7 @@ import type {
   AgentActivity,
   AgentBackendKind,
   AgentOverview,
+  AgentProfile,
   AgentEvent,
   AgentSession,
   AgentHistoryEntry,
@@ -530,6 +531,18 @@ export function lspOverridesSet(
   overrides: LspOverride[],
 ): Promise<LspOverride[]> {
   return invoke<LspOverride[]>("lsp_overrides_set", { overrides });
+}
+
+/// Agent launch profiles visible from a repo root: its own
+/// `[[agent.profile]]` entries first, then global ones.
+export function listAgentProfiles(workspaceRoot: string): Promise<AgentProfile[]> {
+  return invoke<AgentProfile[]>("agent_profiles_list", { workspaceRoot });
+}
+
+/// Insert or replace a launch profile in `treehouse.toml`, matched by
+/// `(workspace, name)`.
+export function saveAgentProfile(profile: AgentProfile): Promise<void> {
+  return invoke<void>("agent_profile_save", { profile });
 }
 
 /// User-level worktree lifecycle hooks (`[[worktree.on_create]]` /

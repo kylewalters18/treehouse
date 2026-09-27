@@ -49,6 +49,14 @@
 //! command = "bash"
 //! args = ["-lc", "docker rm -f $(...)"]
 //!
+//! # Named agent launch profiles for the `+ ▾` menu. `workspace`
+//! # scopes a profile to one repo; omit it for a global profile.
+//! [[agent.profile]]
+//! workspace = "/Users/kyle/Code/repo"
+//! name = "Reviewer"
+//! backend = "claudeCode"
+//! command = "claude --agent reviewer"
+//!
 //! # Agent status patterns — substrings scanned on PTY output.
 //! [agent.status]
 //! attention = ["[y/N]", "Press enter", "requires approval"]
@@ -63,6 +71,7 @@ use tauri::{AppHandle, Manager};
 use ts_rs::TS;
 
 use crate::agent::patterns::{AgentPatterns, BackendPatterns};
+use crate::agent::AgentBackendKind;
 use crate::lsp::overrides::LspOverride;
 use crate::lsp::LspConfig;
 use crate::util::errors::{AppError, AppResult};
@@ -111,6 +120,12 @@ const SEED_HEADER: &str = "\
 #       name = \"Stop devcontainer\"
 #       command = \"bash\"
 #       args = [\"-lc\", \"docker rm -f ...\"]
+#
+#   [[agent.profile]]
+#       workspace = \"/abs/path/to/repo\"   # omit for all repos
+#       name = \"Reviewer\"
+#       backend = \"claudeCode\"            # or \"codex\" / \"kiro\"
+#       command = \"claude --agent reviewer\"
 #
 #   [agent.status]
 #       attention = [\"[y/N]\", \"Press enter\", \"requires approval\"]
@@ -177,6 +192,72 @@ pub struct WorktreeHookEntry {
 pub struct AgentSection {
     #[serde(default)]
     pub status: AgentPatterns,
+    /// Named launch profiles (`[[agent.profile]]`) for the agent pane's
+    /// launch menu.
+    #[serde(default, rename = "profile", skip_serializing_if = "Vec::is_empty")]
+    pub profiles: Vec<AgentProfile>,
+}
+
+/// A named agent launch: backend + the full command line, exactly as the
+/// user would type it (split with shell-word rules on the renderer).
+/// `workspace` scopes it to one repo root; `None` makes it global.
+/// Identity is `(workspace, name)`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct AgentProfile {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub workspace: Option<String>,
+    pub name: String,
+    pub backend: AgentBackendKind,
+    pub command: String,
+}
+
+/// Profiles visible from `workspace_root`: that repo's own first, then
+/// global ones, each in file order.
+pub fn profiles_for(profiles: &[AgentProfile], workspace_root: &str) -> Vec<AgentProfile> {
+    let root = workspace_root.trim_end_matches('/');
+    let (mut repo, global): (Vec<_>, Vec<_>) = profiles
+        .iter()
+        .filter(|p| match &p.workspace {
+            Some(w) => w.trim_end_matches('/') == root,
+            None => true,
+        })
+        .cloned()
+        .partition(|p| p.workspace.is_some());
+    repo.extend(global);
+    repo
+}
+
+/// Insert or replace one `[[agent.profile]]`, matched by
+/// `(workspace, name)`. Comment-preserving.
+pub async fn upsert_agent_profile(app: &AppHandle, profile: &AgentProfile) -> AppResult<()> {
+    write_edited(app, |doc| upsert_agent_profile_in(doc, profile)).await
+}
+
+/// Pure core of [`upsert_agent_profile`].
+fn upsert_agent_profile_in(
+    doc: &mut toml_edit::DocumentMut,
+    profile: &AgentProfile,
+) -> Result<(), String> {
+    let serialized = toml_edit::ser::to_document(profile).map_err(|e| e.to_string())?;
+    let mut entry = toml_edit::Table::new();
+    for (k, v) in serialized.as_table().iter() {
+        entry.insert(k, v.clone());
+    }
+    let norm = |w: Option<&str>| w.map(|w| w.trim_end_matches('/').to_string());
+    let want = norm(profile.workspace.as_deref());
+    let arr = ensure_array_of_tables(doc, "agent", "profile");
+    let existing = arr.iter().position(|t| {
+        t.get("name").and_then(|v| v.as_str()) == Some(profile.name.as_str())
+            && norm(t.get("workspace").and_then(|v| v.as_str())) == want
+    });
+    match existing {
+        Some(i) => *arr.get_mut(i).unwrap() = entry,
+        None => arr.push(entry),
+    }
+    Ok(())
 }
 
 pub fn config_path(app: &AppHandle) -> AppResult<PathBuf> {
@@ -782,6 +863,47 @@ struct LegacyLanguages {
 mod tests {
     use super::*;
     use crate::lsp::LspConfig;
+
+    fn profile(workspace: Option<&str>, name: &str, command: &str) -> AgentProfile {
+        AgentProfile {
+            workspace: workspace.map(Into::into),
+            name: name.into(),
+            backend: AgentBackendKind::ClaudeCode,
+            command: command.into(),
+        }
+    }
+
+    #[test]
+    fn profiles_for_puts_repo_first_and_hides_other_repos() {
+        let all = vec![
+            profile(None, "Global", "claude"),
+            profile(Some("/r/other"), "Other", "claude"),
+            profile(Some("/r/repo/"), "Mine", "claude --agent x"),
+        ];
+        let names: Vec<_> = profiles_for(&all, "/r/repo")
+            .into_iter()
+            .map(|p| p.name)
+            .collect();
+        assert_eq!(names, ["Mine", "Global"]);
+    }
+
+    #[test]
+    fn upsert_profile_replaces_by_workspace_and_name() {
+        let mut doc = "# keep me\n[agent.status.claudeCode]\nidle = [\"x\"]\n"
+            .parse::<toml_edit::DocumentMut>()
+            .unwrap();
+        upsert_agent_profile_in(&mut doc, &profile(Some("/r"), "Rev", "claude --agent a")).unwrap();
+        upsert_agent_profile_in(&mut doc, &profile(None, "Rev", "claude")).unwrap();
+        upsert_agent_profile_in(&mut doc, &profile(Some("/r/"), "Rev", "claude --agent b")).unwrap();
+        let out = doc.to_string();
+        assert!(out.contains("# keep me"));
+        assert!(out.contains("[[agent.profile]]"));
+        let parsed: TreehouseConfig = toml::from_str(&out).unwrap();
+        assert_eq!(parsed.agent.profiles.len(), 2);
+        assert_eq!(parsed.agent.profiles[0].command, "claude --agent b");
+        assert_eq!(parsed.agent.profiles[1].workspace, None);
+        assert_eq!(parsed.agent.status.claude_code.idle, ["x"]);
+    }
 
     fn cfg(id: &str, command: &str) -> LspConfig {
         LspConfig {

@@ -1324,6 +1324,37 @@ pub async fn lsp_overrides_set(
     Ok(crate::user_config::load(&app).await?.lsp.overrides)
 }
 
+/// Agent launch profiles visible from a repo: its own `[[agent.profile]]`
+/// entries first, then global ones. Read fresh each call so hand edits to
+/// `treehouse.toml` show up the next time the launch menu opens.
+#[tauri::command]
+pub async fn agent_profiles_list(
+    workspace_root: String,
+    app: AppHandle,
+) -> AppResult<Vec<crate::user_config::AgentProfile>> {
+    let cfg = crate::user_config::load(&app).await?;
+    Ok(crate::user_config::profiles_for(&cfg.agent.profiles, &workspace_root))
+}
+
+/// Insert or replace one launch profile, matched by `(workspace, name)`.
+#[tauri::command]
+pub async fn agent_profile_save(
+    profile: crate::user_config::AgentProfile,
+    app: AppHandle,
+) -> AppResult<()> {
+    let profile = crate::user_config::AgentProfile {
+        name: profile.name.trim().to_string(),
+        command: profile.command.trim().to_string(),
+        ..profile
+    };
+    if profile.name.is_empty() || profile.command.is_empty() {
+        return Err(AppError::Unknown(
+            "a profile needs a name and a command".into(),
+        ));
+    }
+    crate::user_config::upsert_agent_profile(&app, &profile).await
+}
+
 /// The two worktree hook arrays from `treehouse.toml`, in IPC
 /// (camelCase) shape.
 #[derive(Debug, serde::Serialize, serde::Deserialize, ts_rs::TS)]

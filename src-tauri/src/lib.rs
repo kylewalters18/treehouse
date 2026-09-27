@@ -149,6 +149,8 @@ pub fn run() {
             ipc::commands::lsp_customized_ids,
             ipc::commands::lsp_overrides_get,
             ipc::commands::lsp_overrides_set,
+            ipc::commands::agent_profiles_list,
+            ipc::commands::agent_profile_save,
             ipc::commands::worktree_hooks_get,
             ipc::commands::worktree_hooks_set,
             ipc::commands::agent_patterns_get,
