@@ -36,9 +36,21 @@ struct Record {
     /// card can show what it was last asked. Absent in older files.
     #[serde(default)]
     last_prompt: Option<String>,
+    /// Claude Code's generated title for the conversation.
+    #[serde(default)]
+    ai_title: Option<String>,
     last_message: Option<String>,
     started_at: u64,
     last_active_at: u64,
+}
+
+/// The text of a conversation's latest turn, as the hooks last saw it.
+/// Also what a resumed agent's board card is seeded with.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct LastTurn {
+    pub ai_title: Option<String>,
+    pub prompt: Option<String>,
+    pub message: Option<String>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -86,16 +98,14 @@ impl AgentHistory {
     /// Fold one turn of a conversation into the history. `resumed_from` is
     /// the id the agent was launched with `--resume`; if Claude reports a
     /// different id, the old record is carried over to the new one so the
-    /// conversation doesn't show up twice.
-    #[allow(clippy::too_many_arguments)]
+    /// conversation doesn't show up twice. `first_prompt` names a new record.
     pub fn observe(
         &self,
         worktree_path: &Path,
         resumed_from: Option<&str>,
         claude_session_id: &str,
         first_prompt: Option<&str>,
-        last_prompt: Option<&str>,
-        last_message: Option<&str>,
+        turn: &LastTurn,
         now_ms: u64,
     ) {
         let mut records = self.records.lock();
@@ -106,8 +116,7 @@ impl AgentHistory {
             resumed_from,
             claude_session_id,
             first_prompt,
-            last_prompt,
-            last_message,
+            turn,
             now_ms,
         );
         if *records != before {
@@ -136,14 +145,18 @@ impl AgentHistory {
         out
     }
 
-    /// `(last_prompt, last_message)` of one conversation, to seed the board
-    /// card of an agent resuming it.
-    pub fn last_turn(&self, claude_session_id: &str) -> Option<(Option<String>, Option<String>)> {
+    /// The latest turn of one conversation, to seed the board card of an
+    /// agent resuming it.
+    pub fn last_turn(&self, claude_session_id: &str) -> Option<LastTurn> {
         self.records
             .lock()
             .iter()
             .find(|r| r.claude_session_id == claude_session_id)
-            .map(|r| (r.last_prompt.clone(), r.last_message.clone()))
+            .map(|r| LastTurn {
+                ai_title: r.ai_title.clone(),
+                prompt: r.last_prompt.clone(),
+                message: r.last_message.clone(),
+            })
     }
 
     /// Forget one conversation. Claude's own transcript is left alone.
@@ -186,15 +199,13 @@ impl AgentHistory {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn upsert(
     records: &mut Vec<Record>,
     worktree_path: &Path,
     resumed_from: Option<&str>,
     claude_session_id: &str,
     first_prompt: Option<&str>,
-    last_prompt: Option<&str>,
-    last_message: Option<&str>,
+    turn: &LastTurn,
     now_ms: u64,
 ) {
     let idx = records
@@ -212,6 +223,7 @@ fn upsert(
                 worktree_path: worktree_path.to_path_buf(),
                 title: None,
                 last_prompt: None,
+                ai_title: None,
                 last_message: None,
                 started_at: now_ms,
                 last_active_at: now_ms,
@@ -224,11 +236,14 @@ fn upsert(
     if rec.title.is_none() {
         rec.title = first_prompt.map(str::to_string);
     }
-    if let Some(p) = last_prompt {
-        rec.last_prompt = Some(p.to_string());
+    if let Some(t) = &turn.ai_title {
+        rec.ai_title = Some(t.clone());
     }
-    if let Some(m) = last_message {
-        rec.last_message = Some(m.to_string());
+    if let Some(p) = &turn.prompt {
+        rec.last_prompt = Some(p.clone());
+    }
+    if let Some(m) = &turn.message {
+        rec.last_message = Some(m.clone());
     }
     rec.last_active_at = now_ms;
 
@@ -265,11 +280,19 @@ mod tests {
         PathBuf::from("/r__worktrees/a")
     }
 
+    fn turn(prompt: Option<&str>, message: Option<&str>) -> LastTurn {
+        LastTurn {
+            ai_title: None,
+            prompt: prompt.map(str::to_string),
+            message: message.map(str::to_string),
+        }
+    }
+
     #[test]
     fn first_prompt_sticks_and_last_message_updates() {
         let mut r = Vec::new();
-        upsert(&mut r, &wt(), None, "s1", Some("fix the bug"), Some("fix the bug"), None, 1);
-        upsert(&mut r, &wt(), None, "s1", Some("now add tests"), Some("now add tests"), Some("done"), 2);
+        upsert(&mut r, &wt(), None, "s1", Some("fix the bug"), &turn(Some("fix the bug"), None), 1);
+        upsert(&mut r, &wt(), None, "s1", Some("now add tests"), &turn(Some("now add tests"), Some("done")), 2);
         assert_eq!(r.len(), 1);
         assert_eq!(r[0].title.as_deref(), Some("fix the bug"));
         assert_eq!(r[0].last_prompt.as_deref(), Some("now add tests"));
@@ -280,8 +303,8 @@ mod tests {
     #[test]
     fn resume_with_new_id_rekeys_the_record() {
         let mut r = Vec::new();
-        upsert(&mut r, &wt(), None, "s1", Some("fix the bug"), Some("fix the bug"), Some("ok"), 1);
-        upsert(&mut r, &wt(), Some("s1"), "s2", Some("keep going"), Some("keep going"), None, 5);
+        upsert(&mut r, &wt(), None, "s1", Some("fix the bug"), &turn(Some("fix the bug"), Some("ok")), 1);
+        upsert(&mut r, &wt(), Some("s1"), "s2", Some("keep going"), &turn(Some("keep going"), None), 5);
         assert_eq!(r.len(), 1);
         assert_eq!(r[0].claude_session_id, "s2");
         assert_eq!(r[0].title.as_deref(), Some("fix the bug"));
@@ -292,9 +315,9 @@ mod tests {
     fn keeps_newest_per_worktree() {
         let mut r = Vec::new();
         let other = PathBuf::from("/r__worktrees/b");
-        upsert(&mut r, &other, None, "other", None, None, None, 0);
+        upsert(&mut r, &other, None, "other", None, &LastTurn::default(), 0);
         for i in 0..(PER_WORKTREE_MAX as u64 + 3) {
-            upsert(&mut r, &wt(), None, &format!("s{i}"), None, None, None, i + 1);
+            upsert(&mut r, &wt(), None, &format!("s{i}"), None, &LastTurn::default(), i + 1);
         }
         let ids: Vec<_> = r.iter().filter(|x| x.worktree_path == wt()).collect();
         assert_eq!(ids.len(), PER_WORKTREE_MAX);
@@ -303,10 +326,10 @@ mod tests {
     }
 
     #[test]
-    fn loads_records_written_before_last_prompt() {
+    fn loads_records_written_before_last_prompt_and_title() {
         let json = r#"{"items":[{"claudeSessionId":"s1","worktreePath":"/r__worktrees/a","title":"t","lastMessage":null,"startedAt":1,"lastActiveAt":1}]}"#;
         let file: HistoryFile = serde_json::from_str(json).unwrap();
-        assert_eq!(file.items[0].last_prompt, None);
+        assert_eq!((&file.items[0].last_prompt, &file.items[0].ai_title), (&None, &None));
     }
 
     #[test]
@@ -323,13 +346,14 @@ mod tests {
         let path = dir.path().join(HISTORY_FILE);
         let h = AgentHistory::default();
         h.load(path.clone());
-        h.observe(&wt(), None, "s1", Some("hello"), Some("hello"), Some("hi"), 10);
+        let t = LastTurn {
+            ai_title: Some("Greeting".into()),
+            ..turn(Some("hello"), Some("hi"))
+        };
+        h.observe(&wt(), None, "s1", Some("hello"), &t, 10);
         let h2 = AgentHistory::default();
         h2.load(path);
-        assert_eq!(
-            h2.last_turn("s1"),
-            Some((Some("hello".into()), Some("hi".into())))
-        );
+        assert_eq!(h2.last_turn("s1"), Some(t));
         let list = h2.list_for(&wt());
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].title.as_deref(), Some("hello"));

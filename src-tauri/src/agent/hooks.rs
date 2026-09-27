@@ -78,6 +78,13 @@ pub struct HookSession {
     pub claude_session_id: Option<String>,
     /// First prompt this process saw. Unlike `task`, never overwritten.
     pub first_prompt: Option<String>,
+    /// Claude Code's own short title for the conversation, read from the
+    /// transcript. See `scan_ai_title`.
+    pub ai_title: Option<String>,
+    /// `transcript_path` from the payloads, and how far into it
+    /// `scan_ai_title` has read.
+    pub transcript: Option<PathBuf>,
+    pub transcript_scanned: u64,
 }
 
 impl HookSession {
@@ -92,6 +99,9 @@ impl HookSession {
             pending: None,
             claude_session_id: None,
             first_prompt: None,
+            ai_title: None,
+            transcript: None,
+            transcript_scanned: 0,
         }
     }
 
@@ -100,14 +110,14 @@ impl HookSession {
     /// Claude fires any hook. The next `UserPromptSubmit` overwrites both.
     pub fn resumed(
         claude_session_id: String,
-        task: Option<String>,
-        last_message: Option<String>,
+        turn: super::history::LastTurn,
         now_ms: u64,
         now: Instant,
     ) -> Self {
         Self {
-            task,
-            last_message,
+            task: turn.prompt,
+            last_message: turn.message,
+            ai_title: turn.ai_title,
             claude_session_id: Some(claude_session_id),
             ..Self::new(now_ms, now)
         }
@@ -135,6 +145,14 @@ pub fn apply_event(
 ) {
     if let Some(id) = payload.get("session_id").and_then(Value::as_str) {
         s.claude_session_id = Some(id.to_string());
+    }
+    if let Some(t) = payload.get("transcript_path").and_then(Value::as_str) {
+        let t = PathBuf::from(t);
+        if s.transcript.as_ref() != Some(&t) {
+            // A resume can start a new transcript file; rescan from the top.
+            s.transcript = Some(t);
+            s.transcript_scanned = 0;
+        }
     }
     match event {
         "UserPromptSubmit" => {
@@ -201,6 +219,49 @@ pub fn apply_event(
         }
         _ => {}
     }
+}
+
+/// Claude Code appends `{"type":"ai-title","aiTitle":"…"}` lines to its
+/// transcript, repeated as the conversation goes on; the newest wins.
+/// This is an undocumented internal format, so anything unexpected just
+/// yields no title. Reads only complete lines past `from`, and returns the
+/// newest title seen there (if any) and the offset to resume from next time.
+pub fn scan_ai_title(path: &Path, from: u64) -> (Option<String>, u64) {
+    use std::io::{BufRead, BufReader, Seek, SeekFrom};
+    let Ok(mut f) = std::fs::File::open(path) else { return (None, from) };
+    if f.metadata().map(|m| m.len() < from).unwrap_or(true) {
+        return (None, from);
+    }
+    if f.seek(SeekFrom::Start(from)).is_err() {
+        return (None, from);
+    }
+    let mut reader = BufReader::new(f);
+    let (mut title, mut offset) = (None, from);
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        match reader.read_until(b'\n', &mut line) {
+            // A line without its newline is still being written; stop
+            // before it so the next scan reads it whole.
+            Ok(n) if n > 0 && line.ends_with(b"\n") => offset += n as u64,
+            _ => break,
+        }
+        if !bytes_contain(&line, b"\"ai-title\"") {
+            continue;
+        }
+        let Ok(v) = serde_json::from_slice::<Value>(&line) else { continue };
+        if v.get("type").and_then(Value::as_str) != Some("ai-title") {
+            continue;
+        }
+        if let Some(t) = v.get("aiTitle").and_then(Value::as_str).and_then(|t| first_line(t, TASK_MAX)) {
+            title = Some(t);
+        }
+    }
+    (title, offset)
+}
+
+fn bytes_contain(hay: &[u8], needle: &[u8]) -> bool {
+    hay.windows(needle.len()).any(|w| w == needle)
 }
 
 /// `(tool_name, detail)` from a PreToolUse / PermissionRequest payload.
@@ -410,8 +471,21 @@ pub fn start_watcher(
                     .entry(id)
                     .or_insert_with(|| HookSession::new(now_ms, now));
                 apply_event(&mut entry, &event, &payload, now_ms, now);
-                let snapshot = entry.clone();
+                let transcript = entry.transcript.clone().map(|t| (t, entry.transcript_scanned));
                 drop(entry);
+                // Transcript I/O stays outside the map lock the board polls.
+                if let Some((path, from)) = transcript {
+                    let (title, offset) = scan_ai_title(&path, from);
+                    if let Some(mut e) = sessions.get_mut(&id) {
+                        if e.transcript.as_ref() == Some(&path) {
+                            e.transcript_scanned = e.transcript_scanned.max(offset);
+                            if title.is_some() {
+                                e.ai_title = title;
+                            }
+                        }
+                    }
+                }
+                let Some(snapshot) = sessions.get(&id).map(|e| e.clone()) else { continue };
                 on_event(id, &event, &snapshot);
             }
         },
@@ -436,6 +510,39 @@ mod tests {
 
     fn apply(s: &mut HookSession, event: &str, payload: Value, at: u64) {
         apply_event(s, event, &payload, at, Instant::now());
+    }
+
+    #[test]
+    fn scan_ai_title_reads_newest_complete_title_incrementally() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.jsonl");
+        let line = |t: &str| format!("{}\n", json!({ "type": "ai-title", "aiTitle": t }));
+        let user = format!("{}\n", json!({ "type": "user", "message": "ai-title in a prompt" }));
+        std::fs::write(&path, format!("{user}{}{}", line("Old"), line("Fix login"))).unwrap();
+        let (title, off) = scan_ai_title(&path, 0);
+        assert_eq!(title.as_deref(), Some("Fix login"));
+        assert_eq!(off, std::fs::metadata(&path).unwrap().len());
+
+        // Nothing new: no title, offset unchanged.
+        assert_eq!(scan_ai_title(&path, off), (None, off));
+
+        // A half-written line is left for the next scan.
+        let partial = r#"{"type":"ai-title","aiTitle":"Ne"#;
+        std::fs::write(&path, format!("{user}{}{}{partial}", line("Old"), line("Fix login"))).unwrap();
+        assert_eq!(scan_ai_title(&path, off), (None, off));
+
+        assert_eq!(scan_ai_title(&dir.path().join("missing"), 0), (None, 0));
+    }
+
+    #[test]
+    fn transcript_path_change_restarts_the_scan() {
+        let mut s = fresh();
+        apply(&mut s, "UserPromptSubmit", json!({ "transcript_path": "/a.jsonl" }), 1);
+        s.transcript_scanned = 500;
+        apply(&mut s, "Stop", json!({ "transcript_path": "/a.jsonl" }), 2);
+        assert_eq!(s.transcript_scanned, 500);
+        apply(&mut s, "UserPromptSubmit", json!({ "transcript_path": "/b.jsonl" }), 3);
+        assert_eq!((s.transcript.as_deref(), s.transcript_scanned), (Some(Path::new("/b.jsonl")), 0));
     }
 
     #[test]

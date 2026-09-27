@@ -38,6 +38,7 @@ function overviews() {
       session: session(BLOCKED, FEATURE.id, 100),
       activity: "needsAttention",
       changedAt: now - 42_000,
+      title: "Rate limiting for the public API",
       task: "Add a Redis-backed rate limiter",
       currentTool: null,
       lastMessage: null,
@@ -53,6 +54,7 @@ function overviews() {
       session: session(DONE, DOCS.id, 200),
       activity: "idle",
       changedAt: now - 6 * 60_000,
+      title: null,
       task: "Refresh the README",
       currentTool: null,
       lastMessage: "Rewrote the install section and fixed three dead links.",
@@ -64,6 +66,7 @@ function overviews() {
       session: session(BUSY, FEATURE.id, 300),
       activity: "working",
       changedAt: now - 3_000,
+      title: null,
       task: "Instrument db calls",
       currentTool: "Edit: src/db/pool.rs",
       lastMessage: null,
@@ -110,6 +113,9 @@ test("⌘K opens the board with agents sorted by what needs you", async ({
   await expect(board).toBeVisible();
   await expect(board.getByText("Needs you")).toBeVisible();
   await expect(board.getByText("docker compose up -d redis")).toBeVisible();
+  // Claude's conversation title heads the card, with the last prompt under it.
+  await expect(board.getByText("Rate limiting for the public API")).toBeVisible();
+  await expect(board.getByText("Add a Redis-backed rate limiter")).toBeVisible();
   await expect(
     board.getByText("Rewrote the install section and fixed three dead links."),
   ).toBeVisible();

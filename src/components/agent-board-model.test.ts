@@ -33,6 +33,7 @@ function ov(
     },
     activity: "idle",
     changedAt: 1000,
+    title: null,
     task: null,
     currentTool: null,
     lastMessage: null,

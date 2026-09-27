@@ -149,8 +149,11 @@ impl AgentRegistry {
                 m.resumed_from.as_deref(),
                 cid,
                 hook.first_prompt.as_deref(),
-                hook.task.as_deref(),
-                hook.last_message.as_deref(),
+                &history::LastTurn {
+                    ai_title: hook.ai_title.clone(),
+                    prompt: hook.task.clone(),
+                    message: hook.last_message.clone(),
+                },
                 now_millis(),
             );
         })?;
@@ -319,6 +322,7 @@ impl AgentRegistry {
                     AgentOverview {
                         activity,
                         changed_at: hook.changed_at,
+                        title: hook.ai_title,
                         task: hook.task,
                         current_tool: hook.current_tool,
                         last_message: hook.last_message,
@@ -343,6 +347,7 @@ impl AgentRegistry {
                     AgentOverview {
                         activity,
                         changed_at,
+                        title: None,
                         task: None,
                         current_tool: None,
                         last_message: None,
@@ -647,15 +652,9 @@ pub fn launch(
     if matches!(backend, AgentBackendKind::ClaudeCode) {
         if let Some(cid) = &resume {
             // Seed only: if a hook already landed, it's newer than history.
-            if let Some((task, last_message)) = registry.history.last_turn(cid) {
+            if let Some(turn) = registry.history.last_turn(cid) {
                 registry.hook_sessions.entry(session_id).or_insert_with(|| {
-                    HookSession::resumed(
-                        cid.clone(),
-                        task,
-                        last_message,
-                        now_millis(),
-                        Instant::now(),
-                    )
+                    HookSession::resumed(cid.clone(), turn, now_millis(), Instant::now())
                 });
             }
         }

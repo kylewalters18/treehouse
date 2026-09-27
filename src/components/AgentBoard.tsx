@@ -581,6 +581,12 @@ function AgentCard({
         </span>
       </div>
 
+      {o.title && (
+        <div className="truncate font-medium text-neutral-200" title={o.title}>
+          {o.title}
+        </div>
+      )}
+
       {o.task && (
         <div className="flex min-w-0 gap-1.5 text-neutral-400" title={o.task}>
           <span className="shrink-0 font-mono text-neutral-600">›</span>

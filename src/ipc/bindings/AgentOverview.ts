@@ -15,6 +15,10 @@ export type AgentOverview = { session: AgentSession, activity: AgentActivity,
  */
 changedAt: number, 
 /**
+ * Claude Code's own short title for the conversation.
+ */
+title: string | null, 
+/**
  * First line of the most recent prompt sent to the agent.
  */
 task: string | null, 

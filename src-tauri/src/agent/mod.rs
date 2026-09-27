@@ -125,6 +125,8 @@ pub struct AgentOverview {
     /// current state, not the last byte of output.
     #[ts(type = "number")]
     pub changed_at: u64,
+    /// Claude Code's own short title for the conversation.
+    pub title: Option<String>,
     /// First line of the most recent prompt sent to the agent.
     pub task: Option<String>,
     /// Most recent tool call, e.g. `Bash: cargo test`.
