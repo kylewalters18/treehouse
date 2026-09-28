@@ -316,6 +316,9 @@ const KEYBINDING_GROUPS: { group: string; items: Binding[] }[] = [
       { combos: [["⌘", "J"]], label: "Scratch agent" },
       { combos: [["⌘", "["]], label: "Navigate back (cursor history)" },
       { combos: [["⌘", "]"]], label: "Navigate forward (cursor history)" },
+      { combos: [["⌘", "="]], label: "Zoom in" },
+      { combos: [["⌘", "-"]], label: "Zoom out" },
+      { combos: [["⌘", "0"]], label: "Reset zoom" },
     ],
   },
   {
