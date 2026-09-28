@@ -8,8 +8,10 @@ import type {
   Terminal,
 } from "xterm";
 import { openExternalUrl } from "@/ipc/client";
+import { isLocalUrl, normalizeBrowserUrl } from "@/lib/browser-url";
 import type { WorktreeId } from "@/ipc/types";
 import { useDiffsStore } from "@/stores/diffs";
+import { useUiStore } from "@/stores/ui";
 import { useWorktreesStore } from "@/stores/worktrees";
 
 /// xterm link provider for filesystem paths in terminal/agent output.
@@ -146,7 +148,7 @@ export function combinedLinksForLine(
   where: Where,
   worktreeId: WorktreeId | null,
 ): ILink[] {
-  const urls = urlLinksForLine(text, where);
+  const urls = urlLinksForLine(text, where, worktreeId);
   // No worktree (the scratch agent) → nowhere to resolve paths against.
   if (!worktreeId) return urls;
   // Compare in (row, col) order so overlap works for ranges that span
@@ -278,7 +280,11 @@ const URL_REGEX = /https?:\/\/[^\s)>"']+/g;
 /// the link.
 const TRAILING_PUNCT = /[.,;:!?]+$/;
 
-export function urlLinksForLine(text: string, where: Where): ILink[] {
+export function urlLinksForLine(
+  text: string,
+  where: Where,
+  worktreeId: WorktreeId | null = null,
+): ILink[] {
   const toRange = toMapper(where);
   const links: ILink[] = [];
   for (const match of text.matchAll(URL_REGEX)) {
@@ -294,6 +300,15 @@ export function urlLinksForLine(text: string, where: Where): ILink[] {
       decorations: { pointerCursor: true, underline: true },
       activate(event, text) {
         if (!event.metaKey && !event.ctrlKey) return;
+        // Local dev-server URLs open in the worktree's Browser tab;
+        // ⌘⇧-click still sends them to the default browser.
+        const local = worktreeId && !event.shiftKey && isLocalUrl(text)
+          ? normalizeBrowserUrl(text)
+          : null;
+        if (worktreeId && local) {
+          useUiStore.getState().openInBrowser(worktreeId, local);
+          return;
+        }
         void openExternalUrl(text).catch((e) => {
           console.warn("[term-links] open external failed", text, e);
         });

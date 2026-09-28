@@ -85,6 +85,44 @@ pub async fn list_recent_workspaces(app: AppHandle) -> AppResult<Vec<RecentWorks
     storage::list_recent(&app).await
 }
 
+/// Show a worktree's preview browser at `bounds` (creating it at `url`
+/// if needed) and hide the rest. See `browser`.
+#[tauri::command]
+pub async fn browser_show(
+    app: tauri::AppHandle,
+    worktree_id: WorktreeId,
+    url: String,
+    bounds: crate::browser::BrowserBounds,
+) -> AppResult<()> {
+    crate::browser::show(&app, worktree_id, &url, bounds)
+}
+
+#[tauri::command]
+pub async fn browser_hide(app: tauri::AppHandle) -> AppResult<()> {
+    crate::browser::hide_all(&app);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn browser_navigate(
+    app: tauri::AppHandle,
+    worktree_id: WorktreeId,
+    url: String,
+) -> AppResult<()> {
+    crate::browser::navigate(&app, worktree_id, &url)
+}
+
+#[tauri::command]
+pub async fn browser_reload(app: tauri::AppHandle, worktree_id: WorktreeId) -> AppResult<()> {
+    crate::browser::reload(&app, worktree_id)
+}
+
+#[tauri::command]
+pub async fn browser_close(app: tauri::AppHandle, worktree_id: WorktreeId) -> AppResult<()> {
+    crate::browser::close(&app, worktree_id);
+    Ok(())
+}
+
 /// Open `url` in the host's default handler. Restricted to http/https
 /// — anything else is rejected as a defensive measure, since the
 /// frontend regex already filters but a renderer compromise would

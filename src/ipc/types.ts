@@ -10,6 +10,8 @@ export type { AgentSessionId } from "./bindings/AgentSessionId";
 export type { TerminalId } from "./bindings/TerminalId";
 export type { AppErrorKind } from "./bindings/AppErrorKind";
 export type { AppErrorPayload } from "./bindings/AppErrorPayload";
+export type { BrowserBounds } from "./bindings/BrowserBounds";
+export type { BrowserNavigated } from "./bindings/BrowserNavigated";
 
 export type { FileContent } from "./bindings/FileContent";
 export type { TreeEntry } from "./bindings/TreeEntry";

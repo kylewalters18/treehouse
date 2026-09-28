@@ -11,6 +11,8 @@ import type {
   AgentSessionId,
   AppFileContent,
   BackendAgent,
+  BrowserBounds,
+  BrowserNavigated,
   Comment,
   CreateWorktreeResult,
   DiffMode,
@@ -105,6 +107,39 @@ export function onWorkspacesRestored(
 /// user-visible error.
 export function openExternalUrl(url: string): Promise<void> {
   return invoke<void>("open_external_url", { url });
+}
+
+/// Preview browser (bottom-pane Browser tab): one native child webview
+/// per worktree, laid over the tab's placeholder. See `browser` in Rust.
+export function browserShow(
+  worktreeId: WorktreeId,
+  url: string,
+  bounds: BrowserBounds,
+): Promise<void> {
+  return invoke<void>("browser_show", { worktreeId, url, bounds });
+}
+
+export function browserHide(): Promise<void> {
+  return invoke<void>("browser_hide");
+}
+
+export function browserNavigate(worktreeId: WorktreeId, url: string): Promise<void> {
+  return invoke<void>("browser_navigate", { worktreeId, url });
+}
+
+export function browserReload(worktreeId: WorktreeId): Promise<void> {
+  return invoke<void>("browser_reload", { worktreeId });
+}
+
+export function browserClose(worktreeId: WorktreeId): Promise<void> {
+  return invoke<void>("browser_close", { worktreeId });
+}
+
+/// Fires after every page load in any preview, with its current URL.
+export function onBrowserNavigated(
+  handler: (payload: BrowserNavigated) => void,
+): Promise<UnlistenFn> {
+  return listen<BrowserNavigated>("browser://navigated", (ev) => handler(ev.payload));
 }
 
 export function getSettings(): Promise<Settings> {

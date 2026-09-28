@@ -1,5 +1,5 @@
-/// VS Code-style bottom panel: terminal and Problems share the
-/// same vertical slot, switched via a tab strip at the top.
+/// VS Code-style bottom panel: terminal, browser, Problems, etc. share
+/// the same vertical slot, switched via a tab strip at the top.
 ///
 /// Both views stay mounted at all times — flipping to Problems
 /// hides the terminal via CSS rather than unmounting it, so xterm
@@ -11,7 +11,9 @@
 
 import { useEffect } from "react";
 import { ProblemsList, useProblemsCount } from "@/components/ProblemsList";
+import { Maximize2, Minimize2 } from "lucide-react";
 import { TerminalPane } from "@/panels/TerminalPane";
+import { BrowserPanel } from "@/panels/BrowserPanel";
 import { CIPanel } from "@/panels/CIPanel";
 import { ReviewPanel } from "@/panels/ReviewPanel";
 import { useForgeStore, forgeBranchKey } from "@/stores/forge";
@@ -21,7 +23,7 @@ import { useWorktreesStore } from "@/stores/worktrees";
 import { workspaceForWorktree } from "@/stores/workspace";
 import { latestJobsPerName } from "@/lib/forge-jobs";
 import { cn } from "@/lib/cn";
-import { countBadge, sectionStrip, sectionTab } from "@/lib/pane-chrome";
+import { countBadge, iconButton, sectionStrip, sectionTab } from "@/lib/pane-chrome";
 
 /// Counts for the Review / CI tab badges. Derived reactively from the forge
 /// store, so an action elsewhere (resolving a thread in the Review tab,
@@ -106,6 +108,8 @@ function usePendingReviewCount(): number {
 export function BottomPane() {
   const tab = useUiStore((s) => s.bottomPaneTab);
   const setTab = useUiStore((s) => s.setBottomPaneTab);
+  const maximized = useUiStore((s) => s.bottomPaneMaximized);
+  const toggleMaximized = useUiStore((s) => s.toggleBottomPaneMaximized);
   const problemsCount = useProblemsCount();
   const { unresolved, failedJobs } = useForgeBadges();
   const pendingReview = usePendingReviewCount();
@@ -119,6 +123,9 @@ export function BottomPane() {
           onClick={() => setTab("terminal")}
         >
           Terminal
+        </TabButton>
+        <TabButton active={tab === "browser"} onClick={() => setTab("browser")}>
+          Browser
         </TabButton>
         <TabButton
           active={tab === "problems"}
@@ -143,6 +150,14 @@ export function BottomPane() {
             </TabBadge>
           )}
         </TabButton>
+        <button
+          onClick={toggleMaximized}
+          className={cn(iconButton, "ml-auto self-center")}
+          title={maximized ? "Restore panel" : "Maximize panel"}
+          aria-label={maximized ? "Restore panel" : "Maximize panel"}
+        >
+          {maximized ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
+        </button>
       </div>
       {/* Both views stay mounted; the inactive one is `display:
           none` so xterm sessions, scrollback, agent state, etc.
@@ -151,6 +166,10 @@ export function BottomPane() {
           back to visible. */}
       <div className={cn("flex-1 min-h-0", tab !== "terminal" && "hidden")}>
         <TerminalPane />
+      </div>
+      {/* Browser stays mounted too, so the previewed app keeps its state. */}
+      <div className={cn("flex-1 min-h-0", tab !== "browser" && "hidden")}>
+        <BrowserPanel />
       </div>
       <div className={cn("flex-1 min-h-0", tab !== "problems" && "hidden")}>
         <ProblemsList />

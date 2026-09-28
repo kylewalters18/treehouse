@@ -70,6 +70,25 @@ export function Workspace() {
     workspaces[0] ??
     null;
   const toggleProblemsTab = useUiStore((s) => s.toggleProblemsTab);
+  // Bottom-pane maximize = collapse the diff above it. Store → Panel here;
+  // Panel → store via onCollapse/onExpand so dragging the handle to the
+  // top edge reads as maximized too.
+  const bottomMaximized = useUiStore((s) => s.bottomPaneMaximized);
+  const diffPanelRef = useRef<ImperativePanelHandle>(null);
+  const setBottomMaximized = (on: boolean) => {
+    if (useUiStore.getState().bottomPaneMaximized !== on) {
+      useUiStore.getState().toggleBottomPaneMaximized();
+    }
+  };
+  useEffect(() => {
+    const id = requestAnimationFrame(() => {
+      const panel = diffPanelRef.current;
+      if (!panel) return;
+      if (bottomMaximized && !panel.isCollapsed()) panel.collapse();
+      if (!bottomMaximized && panel.isCollapsed()) panel.expand();
+    });
+    return () => cancelAnimationFrame(id);
+  }, [bottomMaximized, focusMode]);
   // Cmd+P "Go to file" picker. Open state lives here so the
   // shortcut works regardless of which pane has focus.
   const [fileFinderOpen, setFileFinderOpen] = useState(false);
@@ -362,7 +381,14 @@ export function Workspace() {
             <PanelResizeHandle className="w-px bg-neutral-800 hover:bg-neutral-700" />
             <Panel id="center" order={2} defaultSize={48}>
               <PanelGroup direction="vertical" autoSaveId="center-normal">
-                <Panel defaultSize={60}>
+                <Panel
+                  ref={diffPanelRef}
+                  defaultSize={60}
+                  collapsible
+                  collapsedSize={0}
+                  onCollapse={() => setBottomMaximized(true)}
+                  onExpand={() => setBottomMaximized(false)}
+                >
                   <DiffPane />
                 </Panel>
                 <PanelResizeHandle className="h-px bg-neutral-800 hover:bg-neutral-700" />

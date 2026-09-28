@@ -1,7 +1,16 @@
 import { create } from "zustand";
+import * as ipc from "@/ipc/client";
 import type { AppFileKind } from "@/ipc/client";
 import type { AgentSessionId, WorkspaceId, WorktreeId } from "@/ipc/types";
 import type { ChangeGroup } from "./diffs";
+
+/// Devices the Browser tab can emulate: viewport size in CSS px.
+export const BROWSER_DEVICES = {
+  "iphone-16-pro": { label: "iPhone 16 Pro", width: 402, height: 874 },
+} as const;
+export type BrowserDeviceId = keyof typeof BROWSER_DEVICES;
+
+export type BottomPaneTab = "terminal" | "browser" | "problems" | "review" | "ci";
 
 type UiState = {
   selectedWorktreeId: WorktreeId | null;
@@ -35,7 +44,17 @@ type UiState = {
   /// VS Code-style — both views share the same panel space; the
   /// terminal stays mounted (with its sessions alive) when the
   /// user flips to Problems and back.
-  bottomPaneTab: "terminal" | "problems" | "review" | "ci";
+  bottomPaneTab: BottomPaneTab;
+  /// Bottom pane takes over the whole center column (diff collapsed).
+  /// Mostly for the Browser tab, where the default split is too small
+  /// to judge a UI, but it applies to every tab.
+  bottomPaneMaximized: boolean;
+  /// URL the Browser tab shows per worktree. In-memory only — worktree
+  /// IDs aren't stable across restarts.
+  browserUrlByWorktree: Record<WorktreeId, string>;
+  /// Browser-tab viewport: fill the pane, or emulate a device's screen
+  /// size (see `BROWSER_DEVICES`). App-wide, not per worktree.
+  browserDevice: BrowserDeviceId | null;
   /// Which list the DiffPane sidebar shows: the changed-files list or
   /// the full worktree file tree. One at a time, not stacked.
   diffSidebarTab: "changes" | "files";
@@ -95,7 +114,18 @@ type UiState = {
   ) => void;
   openSystemFileViewer: (kind: AppFileKind) => void;
   closeSystemFileViewer: () => void;
-  setBottomPaneTab: (tab: "terminal" | "problems" | "review" | "ci") => void;
+  setBottomPaneTab: (tab: BottomPaneTab) => void;
+  toggleBottomPaneMaximized: () => void;
+  /// Record the URL a preview is on (after in-page navigation). Doesn't
+  /// navigate — see `navigateBrowser`.
+  setBrowserUrl: (worktreeId: WorktreeId, url: string) => void;
+  /// Point `worktreeId`'s preview at `url`.
+  navigateBrowser: (worktreeId: WorktreeId, url: string) => void;
+  /// `navigateBrowser`, then switch the bottom pane to the Browser tab.
+  openInBrowser: (worktreeId: WorktreeId, url: string) => void;
+  setBrowserDevice: (device: BrowserDeviceId | null) => void;
+  /// Drop a worktree's preview (the worktree is gone).
+  closeBrowser: (worktreeId: WorktreeId) => void;
   setDiffSidebarTab: (tab: "changes" | "files") => void;
   toggleChangeGroup: (group: ChangeGroup) => void;
   toggleProblemsTab: () => void;
@@ -129,6 +159,9 @@ export const useUiStore = create<UiState>((set, get) => ({
   agentTabOrderByWorktree: {},
   systemFileViewer: null,
   bottomPaneTab: "terminal",
+  bottomPaneMaximized: false,
+  browserUrlByWorktree: {},
+  browserDevice: null,
   diffSidebarTab: "files",
   collapsedChangeGroups: { branch: false, uncommitted: false },
   agentLaunchNonce: 0,
@@ -198,6 +231,36 @@ export const useUiStore = create<UiState>((set, get) => ({
   },
   setBottomPaneTab(tab) {
     set({ bottomPaneTab: tab });
+  },
+  toggleBottomPaneMaximized() {
+    set((s) => ({ bottomPaneMaximized: !s.bottomPaneMaximized }));
+  },
+  setBrowserUrl(worktreeId, url) {
+    set((s) => ({
+      browserUrlByWorktree: { ...s.browserUrlByWorktree, [worktreeId]: url },
+    }));
+  },
+  navigateBrowser(worktreeId, url) {
+    get().setBrowserUrl(worktreeId, url);
+    // No-op if the webview doesn't exist yet; BrowserPanel creates it at
+    // the stored URL when it's next shown.
+    void ipc.browserNavigate(worktreeId, url).catch((e) => {
+      console.warn("[browser] navigate failed", url, e);
+    });
+  },
+  openInBrowser(worktreeId, url) {
+    get().navigateBrowser(worktreeId, url);
+    set({ bottomPaneTab: "browser" });
+  },
+  setBrowserDevice(device) {
+    set({ browserDevice: device });
+  },
+  closeBrowser(worktreeId) {
+    set((s) => {
+      const { [worktreeId]: _, ...rest } = s.browserUrlByWorktree;
+      return { browserUrlByWorktree: rest };
+    });
+    void ipc.browserClose(worktreeId).catch(() => {});
   },
   setDiffSidebarTab(tab) {
     set({ diffSidebarTab: tab });
@@ -303,6 +366,9 @@ export const useUiStore = create<UiState>((set, get) => ({
       agentTabOrderByWorktree: {},
       systemFileViewer: null,
       bottomPaneTab: "terminal",
+      bottomPaneMaximized: false,
+      browserUrlByWorktree: {},
+      browserDevice: null,
       diffSidebarTab: "files",
       collapsedChangeGroups: { branch: false, uncommitted: false },
       agentLaunchNonce: 0,
