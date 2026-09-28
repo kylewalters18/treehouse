@@ -95,8 +95,8 @@ export function fallbackLabels(
 
 /// The card's summary line for its current state. The last prompt
 /// (`o.task`) has its own line on the card, so it's never repeated here,
-/// and a permission prompt renders separately. The agent's last reply is
-/// deliberately left off: title + prompt say enough at a glance.
+/// and a permission prompt renders separately. The agent's last reply and
+/// current tool are deliberately left off: title + prompt say enough.
 export function summaryOf(o: AgentOverview): string | null {
   switch (o.activity) {
     case "needsAttention":
@@ -105,8 +105,6 @@ export function summaryOf(o: AgentOverview): string | null {
         return o.pending.message;
       }
       return "Waiting for your reply";
-    case "working":
-      return o.currentTool;
     default:
       if (o.session.status.kind === "exited") return "Exited";
       if (o.session.status.kind === "crashed") return o.session.status.message;

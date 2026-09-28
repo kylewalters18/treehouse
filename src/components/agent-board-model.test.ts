@@ -103,9 +103,8 @@ describe("fallbackLabels", () => {
 });
 
 describe("summaryOf", () => {
-  it("working shows the current tool, never the task", () => {
-    expect(summaryOf(ov("a", { activity: "working", task: "t", currentTool: "Bash: ls" }))).toBe("Bash: ls");
-    expect(summaryOf(ov("a", { activity: "working", task: "t" }))).toBeNull();
+  it("working never shows the current tool", () => {
+    expect(summaryOf(ov("a", { activity: "working", task: "t", currentTool: "Bash: ls" }))).toBeNull();
   });
 
   it("blocked on permission has no summary; on input shows the message", () => {
