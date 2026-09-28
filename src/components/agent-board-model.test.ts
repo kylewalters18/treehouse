@@ -120,12 +120,13 @@ describe("summaryOf", () => {
       pending: { kind: "input", message: "Pick one" },
     });
     expect(summaryOf(input)).toBe("Pick one");
-    expect(summaryOf(ov("a", { activity: "needsAttention" }))).toBe("Waiting for your reply");
+    expect(summaryOf(ov("a", { activity: "needsAttention", lastMessage: "Done" }))).toBe(
+      "Waiting for your reply",
+    );
   });
 
-  it("idle shows the final message", () => {
-    expect(summaryOf(ov("a", { activity: "idle", lastMessage: "Done", task: "t" }))).toBe("Done");
-    expect(summaryOf(ov("a", { activity: "idle", task: "t" }))).toBeNull();
+  it("idle never shows the agent's last reply", () => {
+    expect(summaryOf(ov("a", { activity: "idle", lastMessage: "Done", task: "t" }))).toBeNull();
   });
 });
 
