@@ -217,7 +217,8 @@ pub fn stop(app: &AppHandle, id: &WorktreeId) {
 /// watchers for newly-adopted worktrees, and fan out `worktrees-changed`
 /// so the sidebar refreshes. `NonRecursive`: file churn *inside* a worktree
 /// is handled by that worktree's own watcher — here we only care about the
-/// top-level dirs themselves. Safe to call twice for the same id — the
+/// top-level dirs themselves. Also starts the git-dir ref watcher (see
+/// `start_git_dir`) under the same handle. Safe to call twice for the same id — the
 /// second call replaces the first. Best-effort: a watch-setup failure logs
 /// and returns Ok so it never blocks `open_workspace`.
 pub fn start_workspace(
@@ -313,14 +314,122 @@ pub fn start_workspace(
         .watch(&root, RecursiveMode::NonRecursive)
         .map_err(|e| AppError::Unknown(format!("workspace watcher watch: {e}")))?;
 
+    tracing::info!(id = %workspace_id, path = %root.display(), "watching worktrees root");
+
+    // Keep both debouncers alive under the one workspace handle. A git-dir
+    // watch failure is non-fatal: status just falls back to the file-event
+    // and explicit sync/merge triggers.
+    let git_debouncer = match start_git_dir(app.clone(), workspace_id, &repo_root) {
+        Ok(d) => Some(d),
+        Err(e) => {
+            tracing::warn!(?e, %workspace_id, "git dir watch failed");
+            None
+        }
+    };
+
     registry.inner.insert(
         workspace_id,
         WatcherHandle {
-            _debouncer: Box::new(debouncer),
+            _debouncer: Box::new((debouncer, git_debouncer)),
         },
     );
-    tracing::info!(id = %workspace_id, path = %root.display(), "watching worktrees root");
     Ok(())
+}
+
+/// Watch the repo's common git dir for ref movement: commits, resets,
+/// fetches, and pulls/merges on the default branch. None of these touch a
+/// linked worktree's files (its `.git` is a pointer file, and the per-worktree
+/// watcher ignores `.git` anyway), so without this ahead/behind goes stale
+/// until the next unrelated file edit. Any ref change recomputes status for
+/// every worktree in the workspace — one ref can move ahead/behind for all
+/// of them, and `merged` checks are memoized by SHA pair so it's cheap.
+fn start_git_dir(
+    app: AppHandle,
+    workspace_id: WorkspaceId,
+    repo_root: &Path,
+) -> AppResult<Box<dyn Any + Send + Sync>> {
+    let git_dir = common_git_dir(repo_root)?;
+    // FSEvents reports canonical paths; canonicalize so strip_prefix works
+    // when the repo path goes through a symlink (e.g. /tmp → /private/tmp).
+    let git_dir = git_dir.canonicalize().unwrap_or(git_dir);
+    let watch_root = git_dir.clone();
+
+    let mut debouncer = new_debouncer(
+        Duration::from_millis(WORKSPACE_DEBOUNCE_MS),
+        None,
+        move |result: DebounceEventResult| {
+            let events = match result {
+                Ok(e) => e,
+                Err(errs) => {
+                    for err in errs {
+                        tracing::warn!(?err, "git dir watch error");
+                    }
+                    return;
+                }
+            };
+            let relevant = events.iter().any(|ev| {
+                interesting_kind(&ev.event.kind)
+                    && ev.event.paths.iter().any(|p| {
+                        p.strip_prefix(&watch_root)
+                            .map(is_ref_path)
+                            .unwrap_or(false)
+                    })
+            });
+            if !relevant {
+                return;
+            }
+            tracing::debug!(%workspace_id, "git refs moved: recomputing worktree status");
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move {
+                crate::worktree::status::recompute_all_for_workspace(&app, workspace_id).await;
+            });
+        },
+    )
+    .map_err(|e| AppError::Unknown(format!("git dir watcher init: {e}")))?;
+
+    debouncer
+        .watcher()
+        .watch(&git_dir, RecursiveMode::Recursive)
+        .map_err(|e| AppError::Unknown(format!("git dir watcher watch: {e}")))?;
+
+    tracing::info!(id = %workspace_id, path = %git_dir.display(), "watching git refs");
+    Ok(Box::new(debouncer))
+}
+
+/// The repo's shared git dir. `repo.path()` is the per-checkout git dir;
+/// for a linked worktree it holds a `commondir` file (usually `../..`)
+/// pointing at the shared one. git2 0.19 doesn't expose `commondir()`.
+fn common_git_dir(repo_root: &Path) -> AppResult<PathBuf> {
+    let repo = git2::Repository::open(repo_root)
+        .map_err(|e| AppError::Unknown(format!("open repo: {e}")))?;
+    let git_dir = repo.path().to_path_buf();
+    match std::fs::read_to_string(git_dir.join("commondir")) {
+        Ok(rel) => Ok(git_dir.join(rel.trim())),
+        Err(_) => Ok(git_dir),
+    }
+}
+
+/// Does a path (relative to the common git dir) record a ref moving? Loose
+/// refs, `packed-refs`, the main and per-worktree `HEAD`s, and reflogs (a
+/// backstop — every ref update appends one). Lock files are skipped: git
+/// writes `<ref>.lock` then renames it into place, and the rename lands on
+/// the real path. Everything else (objects, index, config) is ignored, which
+/// also keeps our own recompute's git calls from re-triggering this watcher.
+fn is_ref_path(rel: &Path) -> bool {
+    if rel.extension().is_some_and(|e| e == "lock") {
+        return false;
+    }
+    let mut parts = rel.components().map(|c| c.as_os_str());
+    match parts.next().and_then(|s| s.to_str()) {
+        Some("refs") | Some("logs") => true,
+        Some("packed-refs") | Some("HEAD") => parts.next().is_none(),
+        // worktrees/<slug>/HEAD — a detached-HEAD commit in a linked worktree.
+        Some("worktrees") => {
+            let _slug = parts.next();
+            parts.next().is_some_and(|s| s == "HEAD") && parts.next().is_none()
+        }
+        _ => false,
+    }
 }
 
 pub fn stop_workspace(app: &AppHandle, id: &WorkspaceId) {
@@ -402,4 +511,41 @@ fn is_ignored(gi: &Gitignore, root: &Path, path: &Path) -> bool {
     let rel = path.strip_prefix(root).unwrap_or(path);
     gi.matched_path_or_any_parents(rel, rel.is_dir())
         .is_ignore()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_ref_path;
+    use std::path::Path;
+
+    #[test]
+    fn ref_paths_trigger() {
+        for p in [
+            "refs/heads/feature",
+            "refs/remotes/origin/main",
+            "packed-refs",
+            "HEAD",
+            "logs/refs/heads/main",
+            "worktrees/my-slug/HEAD",
+        ] {
+            assert!(is_ref_path(Path::new(p)), "{p} should trigger");
+        }
+    }
+
+    #[test]
+    fn non_ref_paths_ignored() {
+        for p in [
+            "refs/heads/feature.lock",
+            "packed-refs.lock",
+            "HEAD.lock",
+            "index",
+            "objects/ab/cdef",
+            "config",
+            "worktrees/my-slug/index",
+            "worktrees/my-slug/HEAD.lock",
+            "FETCH_HEAD",
+        ] {
+            assert!(!is_ref_path(Path::new(p)), "{p} should be ignored");
+        }
+    }
 }

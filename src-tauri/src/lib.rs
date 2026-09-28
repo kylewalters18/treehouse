@@ -294,6 +294,9 @@ async fn restore_open_workspaces(app: &tauri::AppHandle) -> util::errors::AppRes
                     }
                     ipc::commands::prime_worktree_watch(app, &wt);
                 }
+                if let Err(e) = fs_watch::start_workspace(app.clone(), ws.id, ws.root.clone()) {
+                    tracing::warn!(?e, "fs_watch start_workspace failed");
+                }
                 worktree::status::recompute_all_for_workspace(app, ws.id).await;
                 tracing::info!(?path, "restored workspace");
             }
