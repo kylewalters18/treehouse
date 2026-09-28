@@ -446,7 +446,7 @@ export function WorktreeSidebar() {
         </div>
         <div className="flex-1 overflow-y-auto overflow-x-hidden">
           {inbox.length > 0 && (
-            <div className="border-b border-neutral-800 bg-amber-400/[0.03] py-1">
+            <div className="relative mb-2 border-b border-amber-400/25 bg-amber-400/[0.06] before:absolute before:inset-y-0 before:left-0 before:w-[2px] before:bg-amber-400/60 py-1">
               {inbox.map((w) => renderDot(w))}
             </div>
           )}
@@ -645,7 +645,7 @@ export function WorktreeSidebar() {
 
       <div className="flex-1 overflow-y-auto">
         {inbox.length > 0 && (
-          <div className="border-b border-neutral-800 bg-amber-400/[0.03] pb-1">
+          <div className="relative mb-2 border-b border-amber-400/25 bg-amber-400/[0.06] before:absolute before:inset-y-0 before:left-0 before:w-[2px] before:bg-amber-400/60 pb-1">
             <SectionHeader label="Needs you" count={inbox.length} />
             <ul>{inbox.map((w) => renderRow(w, { chip: showRepoChips }))}</ul>
           </div>
