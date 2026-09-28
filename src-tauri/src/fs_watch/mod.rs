@@ -117,7 +117,7 @@ pub fn start(
                 }
             };
 
-            tracing::debug!(count = events.len(), worktree_id = %worktree_id, "fs debounce batch");
+            tracing::trace!(count = events.len(), worktree_id = %worktree_id, "fs debounce batch");
 
             // Filter to events with at least one non-ignored path we care about.
             let mut saw_relevant = false;
@@ -126,15 +126,16 @@ pub fn start(
                     continue;
                 }
                 for p in &ev.event.paths {
-                    let ignored = is_ignored(&ignore, &root, p);
-                    tracing::debug!(path = %p.display(), ignored, kind = ?ev.event.kind, "fs event");
-                    if !ignored {
+                    // Ignored paths (e.g. a cargo build churning `target/`)
+                    // can be thousands per batch — don't log them.
+                    if !is_ignored(&ignore, &root, p) {
+                        tracing::trace!(path = %p.display(), kind = ?ev.event.kind, "fs event");
                         saw_relevant = true;
                     }
                 }
             }
             if !saw_relevant {
-                tracing::debug!(worktree_id = %worktree_id, "fs batch: nothing relevant");
+                tracing::trace!(worktree_id = %worktree_id, "fs batch: nothing relevant");
                 return;
             }
 
