@@ -7,6 +7,8 @@ import {
   FolderGit2,
   Home,
   Loader2,
+  PanelLeftClose,
+  PanelLeftOpen,
   Plus,
   X,
 } from "lucide-react";
@@ -35,6 +37,7 @@ import type {
   WorktreeId,
 } from "@/ipc/types";
 import { cn } from "@/lib/cn";
+import { iconButton } from "@/lib/pane-chrome";
 import { runWorktreeSetup } from "@/lib/worktree-setup";
 import {
   inboxWorktrees,
@@ -389,10 +392,13 @@ export function WorktreeSidebar() {
     basenameOf(workspaces.find((ws) => ws.id === w.workspaceId)?.root ?? "");
 
   if (collapsed) {
-    // Collapsed rail mirrors the expanded layout: inbox dots on top,
-    // then each repo's main clone (blue ring) + worktree dots in stable order.
-    const renderDot = (w: Worktree) => {
+    // Collapsed rail mirrors the expanded layout row for row: chrome
+    // header, amber "Needs you" band, then per repo a sticky RepoMark
+    // header (click folds the repo, same state as the expanded header),
+    // main clone + active worktrees, and the same "inactive" pile.
+    const renderDot = (w: Worktree, opts: { dim?: boolean } = {}) => {
       const a = activity[w.id];
+      const act = a?.activity ?? "inactive";
       const tooltip =
         (showRepoChips ? `${repoName(w)} · ` : "") +
         w.branch +
@@ -405,46 +411,110 @@ export function WorktreeSidebar() {
           tooltip={tooltip}
           onClick={() => selectWorktree(w.id)}
           selected={selectedId === w.id}
-          variant={w.isMainClone ? "main" : undefined}
         >
-          <StatusDot activity={a?.activity ?? "inactive"} />
+          <span className={cn("relative flex", opts.dim && "opacity-60")}>
+            {/* Main clone: the Home glyph the expanded row uses stands
+                in for the empty "no agent" dot; with an agent running,
+                it shrinks to a corner badge on the status icon. */}
+            {w.isMainClone && act === "inactive" ? (
+              <Home size={12} className="text-neutral-500" />
+            ) : (
+              <StatusDot activity={act} />
+            )}
+            {w.isMainClone && act !== "inactive" && (
+              <Home
+                size={8}
+                strokeWidth={2.5}
+                className="absolute -bottom-1 -right-1.5 text-neutral-400"
+              />
+            )}
+          </span>
         </RailButton>
       );
     };
     return (
-      <div className="flex h-full flex-col items-center gap-1 overflow-y-auto border-r border-neutral-800 py-2">
-        <button
-          onClick={toggleCollapsed}
-          title="Expand sidebar (⌘B)"
-          className="rounded p-1 text-neutral-500 hover:bg-neutral-900 hover:text-neutral-200"
-        >
-          ▶
-        </button>
-        {inbox.length > 0 && (
-          <>
-            {inbox.map(renderDot)}
-            <RailDivider />
-          </>
-        )}
-        {workspaces.map((ws, wsIdx) => {
-          const repoWorktrees = worktrees.filter(
-            (w) => w.workspaceId === ws.id,
-          );
-          const mainClone =
-            repoWorktrees.find((w) => w.isMainClone) ?? null;
-          const { active, inactive } = splitActive(
-            repoWorktrees.filter((w) => !w.isMainClone),
-            activity,
-          );
-          return (
-            <div key={ws.id} className="flex flex-col items-center gap-1">
-              {wsIdx > 0 && <RailDivider />}
-              {mainClone && renderDot(mainClone)}
-              {active.map(renderDot)}
-              {inactive.map(renderDot)}
+      <div className="flex h-full flex-col border-r border-neutral-800">
+        <div className="flex h-[34px] shrink-0 items-center justify-center border-b border-neutral-800 bg-chrome">
+          <button
+            onClick={toggleCollapsed}
+            title="Expand sidebar (⌘B)"
+            aria-label="Expand sidebar"
+            className={iconButton}
+          >
+            <PanelLeftOpen size={14} />
+          </button>
+        </div>
+        <div className="flex-1 overflow-y-auto overflow-x-hidden">
+          {inbox.length > 0 && (
+            <div className="border-b border-neutral-800 bg-amber-400/[0.03] py-1">
+              {inbox.map((w) => renderDot(w))}
             </div>
-          );
-        })}
+          )}
+          {workspaces.map((ws) => {
+            const repoWorktrees = worktrees.filter(
+              (w) => w.workspaceId === ws.id,
+            );
+            const mainClone =
+              repoWorktrees.find((w) => w.isMainClone) ?? null;
+            const { active, inactive } = splitActive(
+              repoWorktrees.filter((w) => !w.isMainClone),
+              activity,
+            );
+            const name = basenameOf(ws.root);
+            const expanded = !collapsedRepos.has(ws.id);
+            const inactiveOpen = openInactive.has(ws.id);
+            // The selected worktree stays visible even while the pile
+            // is shut, so the rail never loses track of where you are.
+            const shownInactive = inactiveOpen
+              ? inactive
+              : inactive.filter((w) => w.id === selectedId);
+            const hiddenCount = inactive.length - shownInactive.length;
+            return (
+              <div
+                key={ws.id}
+                className={cn("border-b border-neutral-800", expanded && "pb-1")}
+              >
+                <RailButton
+                  tooltip={`${name} · ${expanded ? "collapse" : "expand"}`}
+                  onClick={() => toggleIn(setCollapsedRepos, ws.id)}
+                  className={cn(
+                    "sticky top-0 z-10 h-8 bg-neutral-900 hover:bg-[#1A1D21]",
+                    expanded && "mb-1 border-b border-neutral-800",
+                  )}
+                >
+                  <RepoMark name={name} />
+                </RailButton>
+                {expanded && (
+                  <>
+                    {mainClone && renderDot(mainClone)}
+                    {active.map((w) => renderDot(w))}
+                    {shownInactive.map((w) => renderDot(w, { dim: true }))}
+                    {inactive.length > 0 && (
+                      <RailButton
+                        tooltip={
+                          inactiveOpen
+                            ? `Hide ${inactive.length} inactive`
+                            : `Show ${hiddenCount} inactive`
+                        }
+                        onClick={() => toggleIn(setOpenInactive, ws.id)}
+                        className="h-6 text-[10px] text-neutral-600 hover:text-neutral-400"
+                      >
+                        {inactiveOpen ? (
+                          <ChevronDown size={11} />
+                        ) : (
+                          <>
+                            <ChevronRight size={11} />
+                            {hiddenCount > 0 && hiddenCount}
+                          </>
+                        )}
+                      </RailButton>
+                    )}
+                  </>
+                )}
+              </div>
+            );
+          })}
+        </div>
       </div>
     );
   }
@@ -565,9 +635,10 @@ export function WorktreeSidebar() {
           <button
             onClick={toggleCollapsed}
             title="Collapse sidebar (⌘B)"
-            className="rounded px-1 text-[11px] text-neutral-500 hover:bg-neutral-900 hover:text-neutral-200"
+            aria-label="Collapse sidebar"
+            className={iconButton}
           >
-            ◀
+            <PanelLeftClose size={14} />
           </button>
         </div>
       </div>
@@ -887,14 +958,14 @@ function strategyLabel(s: MergeBackStrategy): string {
 function RailButton({
   tooltip,
   onClick,
-  selected,
-  variant,
+  selected = false,
+  className,
   children,
 }: {
   tooltip: string;
   onClick: () => void;
-  selected: boolean;
-  variant?: "main";
+  selected?: boolean;
+  className?: string;
   children: React.ReactNode;
 }) {
   const btnRef = useRef<HTMLButtonElement>(null);
@@ -931,15 +1002,15 @@ function RailButton({
         onClick={onClick}
         onMouseEnter={onEnter}
         onMouseLeave={onLeave}
+        aria-label={tooltip}
+        aria-current={selected ? "true" : undefined}
         className={cn(
-          "flex h-7 w-7 items-center justify-center rounded hover:bg-neutral-900",
-          // The main clone shows the same status icon as any worktree;
-          // a standing blue ring is what marks it as the repo root.
-          variant === "main" && "ring-1 ring-blue-400/40",
+          // Full-width row with the expanded row's hover + selection
+          // treatment (blue tint, 2px accent bar on the left edge).
+          "relative flex h-7 w-full items-center justify-center gap-0.5 hover:bg-neutral-900/60",
           selected &&
-            (variant === "main"
-              ? "bg-neutral-900 ring-blue-400/80"
-              : "bg-neutral-900 ring-1 ring-neutral-700"),
+            "bg-blue-400/[0.08] hover:bg-blue-400/[0.1] before:absolute before:inset-y-1 before:left-0 before:w-[2px] before:rounded-r before:bg-blue-400",
+          className,
         )}
       >
         {children}
@@ -1246,10 +1317,6 @@ function RepoMark({ name }: { name: string }) {
       <FolderGit2 size={11} strokeWidth={2.25} />
     </span>
   );
-}
-
-function RailDivider() {
-  return <div className="my-1 h-px w-4 bg-neutral-800" />;
 }
 
 function Spinner() {

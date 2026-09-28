@@ -159,3 +159,41 @@ test("editor click places the cursor at the clicked position", async ({
   expect(pos?.line).toBe(3);
   expect(pos?.col).toBeGreaterThanOrEqual(1);
 });
+
+test("dragging the sidebar handle closed switches to the rail", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1400, height: 800 });
+  await bootApp(page, {
+    "plugin:dialog|open": "/fake/repo",
+    open_workspace: FAKE_WORKSPACE,
+    list_worktrees: [fakeMainClone()],
+    get_diff: emptyDiff(),
+    list_agent_activity: [],
+  });
+  await page.getByRole("button", { name: /open repository/i }).click();
+
+  const collapse = page.getByRole("button", { name: "Collapse sidebar" });
+  await expect(collapse).toBeVisible();
+  // First resize handle in the main group is the sidebar's.
+  const handle = page.locator("[data-panel-resize-handle-id]").first();
+  const box = (await handle.boundingBox())!;
+  const y = box.y + box.height / 2;
+
+  await page.mouse.move(box.x, y);
+  await page.mouse.down();
+  await page.mouse.move(10, y, { steps: 10 });
+  await page.mouse.up();
+  await expect(
+    page.getByRole("button", { name: "Expand sidebar" }),
+  ).toBeVisible();
+  await expect(collapse).toBeHidden();
+
+  // …and dragging it back open restores the full sidebar.
+  const railHandle = (await handle.boundingBox())!;
+  await page.mouse.move(railHandle.x, y);
+  await page.mouse.down();
+  await page.mouse.move(350, y, { steps: 10 });
+  await page.mouse.up();
+  await expect(collapse).toBeVisible();
+});
