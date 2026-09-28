@@ -1,5 +1,12 @@
 import { homeDir } from "@tauri-apps/api/path";
-import type { IDisposable, ILink, Terminal } from "xterm";
+import type {
+  IBuffer,
+  IBufferCellPosition,
+  IBufferRange,
+  IDisposable,
+  ILink,
+  Terminal,
+} from "xterm";
 import { openExternalUrl } from "@/ipc/client";
 import type { WorktreeId } from "@/ipc/types";
 import { useDiffsStore } from "@/stores/diffs";
@@ -35,14 +42,11 @@ export function registerTerminalLinks(
 ): IDisposable {
   return term.registerLinkProvider({
     provideLinks(bufferLineNumber, callback) {
-      const buffer = term.buffer.active;
-      const line = buffer.getLine(bufferLineNumber - 1);
-      if (!line) {
-        callback(undefined);
-        return;
-      }
-      const text = line.translateToString(true);
-      const links = combinedLinksForLine(text, bufferLineNumber, worktreeId);
+      const links = linksForBufferLine(
+        term.buffer.active,
+        bufferLineNumber,
+        worktreeId,
+      );
       // Pass `undefined` (not an empty array) when there's nothing —
       // empty array short-circuits xterm's provider chain so any
       // future providers wouldn't get a turn.
@@ -51,23 +55,109 @@ export function registerTerminalLinks(
   });
 }
 
+/// Maps a half-open `[start, end)` range of string indices in the
+/// matched text to an inclusive xterm cell range. A plain number means
+/// "the text is exactly one buffer row, starting at column 1".
+export type RangeMapper = (start: number, end: number) => IBufferRange;
+type Where = number | RangeMapper;
+
+function toMapper(where: Where): RangeMapper {
+  if (typeof where !== "number") return where;
+  // Cells are 1-based. Range is inclusive on both ends per xterm's
+  // convention (start.x is the first cell, end.x is the last cell).
+  return (start, end) => ({
+    start: { x: start + 1, y: where },
+    end: { x: end, y: where },
+  });
+}
+
+/// Cap on how far a soft-wrapped logical line is followed in each
+/// direction. Hover calls this per row, so a pathological single
+/// line spanning thousands of rows shouldn't be re-scanned in full.
+const MAX_WRAPPED_ROWS = 50;
+
+/// Links on buffer row `bufferLineNumber` (1-based), matched against
+/// the whole *logical* line it belongs to. When output is longer than
+/// the terminal width xterm soft-wraps it across rows, flagging each
+/// continuation row `isWrapped`; matching row by row would cut a path
+/// or URL in half at the wrap point. Instead we join the wrapped rows,
+/// match on the joined text, map string offsets back to (possibly
+/// multi-row) cell ranges, and return the links touching this row.
+/// Same approach as VS Code's terminal link detection.
+export function linksForBufferLine(
+  buffer: IBuffer,
+  bufferLineNumber: number,
+  worktreeId: WorktreeId | null,
+): ILink[] {
+  const row = bufferLineNumber - 1;
+  if (!buffer.getLine(row)) return [];
+  let first = row;
+  while (
+    row - first < MAX_WRAPPED_ROWS &&
+    first > 0 &&
+    buffer.getLine(first)?.isWrapped
+  ) {
+    first--;
+  }
+  let last = row;
+  while (
+    last - row < MAX_WRAPPED_ROWS &&
+    buffer.getLine(last + 1)?.isWrapped
+  ) {
+    last++;
+  }
+
+  // Walk cells rather than `translateToString` so each string index
+  // knows its cell. Wide chars (CJK, emoji) occupy two cells with the
+  // second reported as width 0; tracking start and end cell per code
+  // unit keeps ranges right for them too.
+  let text = "";
+  const starts: IBufferCellPosition[] = [];
+  const ends: IBufferCellPosition[] = [];
+  const cell = buffer.getNullCell();
+  for (let y = first; y <= last; y++) {
+    const line = buffer.getLine(y);
+    if (!line) break;
+    for (let x = 0; x < line.length; x++) {
+      if (!line.getCell(x, cell)) break;
+      const width = cell.getWidth();
+      if (width === 0) continue;
+      const chars = cell.getChars() || " ";
+      for (let i = 0; i < chars.length; i++) {
+        starts.push({ x: x + 1, y: y + 1 });
+        ends.push({ x: x + width, y: y + 1 });
+      }
+      text += chars;
+    }
+  }
+  const mapper: RangeMapper = (start, end) => ({
+    start: starts[start],
+    end: ends[end - 1],
+  });
+  return combinedLinksForLine(text, mapper, worktreeId).filter(
+    (l) => l.range.start.y <= bufferLineNumber && bufferLineNumber <= l.range.end.y,
+  );
+}
+
 /// URL and path links for one line, with URL ranges taking
 /// precedence: any path match that overlaps a URL range is dropped.
 export function combinedLinksForLine(
   text: string,
-  bufferLineNumber: number,
+  where: Where,
   worktreeId: WorktreeId | null,
 ): ILink[] {
-  const urls = urlLinksForLine(text, bufferLineNumber);
-  // Build inclusive cell ranges of URL matches so we can filter
-  // overlapping path matches out. `range.start.x` and `range.end.x`
-  // are 1-based and inclusive.
-  const urlRanges = urls.map((u) => [u.range.start.x, u.range.end.x] as const);
+  const urls = urlLinksForLine(text, where);
   // No worktree (the scratch agent) → nowhere to resolve paths against.
   if (!worktreeId) return urls;
-  const paths = linksForLine(text, bufferLineNumber, worktreeId).filter((p) => {
-    const ps = p.range.start.x;
-    const pe = p.range.end.x;
+  // Compare in (row, col) order so overlap works for ranges that span
+  // wrapped rows too.
+  const key = (p: IBufferCellPosition) => p.y * 1e6 + p.x;
+  const urlRanges = urls.map(
+    (u) => [key(u.range.start), key(u.range.end)] as const,
+  );
+  const paths = linksForLine(text, where, worktreeId).filter((p) => {
+    const ps = key(p.range.start);
+    const pe = key(p.range.end);
     return !urlRanges.some(([us, ue]) => ps <= ue && us <= pe);
   });
   return [...urls, ...paths];
@@ -97,21 +187,17 @@ const PATH_REGEX =
 
 export function linksForLine(
   text: string,
-  bufferLineNumber: number,
+  where: Where,
   worktreeId: WorktreeId,
 ): ILink[] {
+  const toRange = toMapper(where);
   const links: ILink[] = [];
   for (const match of text.matchAll(PATH_REGEX)) {
     if (match.index === undefined) continue;
     const start = match.index;
     const end = start + match[0].length;
     links.push({
-      // Cells are 1-based. Range is inclusive on both ends per xterm's
-      // convention (start.x is the first cell, end.x is the last cell).
-      range: {
-        start: { x: start + 1, y: bufferLineNumber },
-        end: { x: end, y: bufferLineNumber },
-      },
+      range: toRange(start, end),
       text: match[0],
       decorations: { pointerCursor: true, underline: true },
       activate(event, text) {
@@ -192,10 +278,8 @@ const URL_REGEX = /https?:\/\/[^\s)>"']+/g;
 /// the link.
 const TRAILING_PUNCT = /[.,;:!?]+$/;
 
-export function urlLinksForLine(
-  text: string,
-  bufferLineNumber: number,
-): ILink[] {
+export function urlLinksForLine(text: string, where: Where): ILink[] {
+  const toRange = toMapper(where);
   const links: ILink[] = [];
   for (const match of text.matchAll(URL_REGEX)) {
     if (match.index === undefined) continue;
@@ -205,10 +289,7 @@ export function urlLinksForLine(
     const start = match.index;
     const end = start + url.length;
     links.push({
-      range: {
-        start: { x: start + 1, y: bufferLineNumber },
-        end: { x: end, y: bufferLineNumber },
-      },
+      range: toRange(start, end),
       text: url,
       decorations: { pointerCursor: true, underline: true },
       activate(event, text) {

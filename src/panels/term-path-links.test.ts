@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   combinedLinksForLine,
+  linksForBufferLine,
   linksForLine,
   parsePathWithLineCol,
   resolveToWorktreeRelative,
@@ -301,5 +302,95 @@ describe("combinedLinksForLine", () => {
     expect(combinedLinksForLine("plain text only", 1, FAKE_WORKTREE_ID)).toEqual(
       [],
     );
+  });
+});
+
+/// Minimal stand-in for xterm's IBuffer: each row is a string of
+/// single-width chars (padded to `cols`), with `isWrapped` set on
+/// continuation rows. Wide chars are written as the char followed by
+/// `\0`, which stands for xterm's width-0 trailing cell.
+function fakeBuffer(rows: { text: string; wrapped?: boolean }[], cols: number) {
+  const lines = rows.map(({ text, wrapped }) => {
+    const cells = [...text.padEnd(cols, " ")];
+    return {
+      isWrapped: !!wrapped,
+      length: cols,
+      getCell(x: number, cell: { c?: string; w?: number }) {
+        const next = cells[x + 1];
+        cell.c = cells[x] === "\0" ? "" : cells[x];
+        cell.w = cells[x] === "\0" ? 0 : next === "\0" ? 2 : 1;
+        return cell;
+      },
+    };
+  });
+  return {
+    getLine: (y: number) => lines[y],
+    getNullCell() {
+      const cell: { c?: string; w?: number; getChars(): string; getWidth(): number } = {
+        getChars: () => cell.c ?? "",
+        getWidth: () => cell.w ?? 1,
+      };
+      return cell;
+    },
+  } as unknown as import("xterm").IBuffer;
+}
+
+describe("linksForBufferLine", () => {
+  it("joins a path soft-wrapped across two rows", () => {
+    const buf = fakeBuffer(
+      [{ text: "see src/panels" }, { text: "/foo.ts:4 ok", wrapped: true }],
+      14,
+    );
+    for (const row of [1, 2]) {
+      const links = linksForBufferLine(buf, row, FAKE_WORKTREE_ID);
+      expect(links.map((l) => l.text)).toEqual(["src/panels/foo.ts:4"]);
+      expect(links[0].range).toEqual({
+        start: { x: 5, y: 1 },
+        end: { x: 9, y: 2 },
+      });
+    }
+  });
+
+  it("joins a URL wrapped over three rows", () => {
+    const buf = fakeBuffer(
+      [
+        { text: "go https:/" },
+        { text: "/example.c", wrapped: true },
+        { text: "om/a b", wrapped: true },
+      ],
+      10,
+    );
+    const links = linksForBufferLine(buf, 2, FAKE_WORKTREE_ID);
+    expect(links.map((l) => l.text)).toEqual(["https://example.com/a"]);
+    expect(links[0].range.start).toEqual({ x: 4, y: 1 });
+    expect(links[0].range.end).toEqual({ x: 4, y: 3 });
+  });
+
+  it("does not join rows that are not wrapped (hard newline)", () => {
+    const buf = fakeBuffer([{ text: "src/pan" }, { text: "els/foo.ts" }], 7);
+    expect(
+      linksForBufferLine(buf, 1, FAKE_WORKTREE_ID).map((l) => l.text),
+    ).toEqual(["src/pan"]);
+  });
+
+  it("only returns links touching the requested row", () => {
+    const buf = fakeBuffer(
+      [{ text: "a/b.ts xxxx" }, { text: "yyy c/d.ts", wrapped: true }],
+      11,
+    );
+    expect(
+      linksForBufferLine(buf, 1, FAKE_WORKTREE_ID).map((l) => l.text),
+    ).toEqual(["a/b.ts"]);
+    expect(
+      linksForBufferLine(buf, 2, FAKE_WORKTREE_ID).map((l) => l.text),
+    ).toEqual(["c/d.ts"]);
+  });
+
+  it("maps cells correctly after a wide char", () => {
+    const buf = fakeBuffer([{ text: "界\0 src/a.ts" }], 12);
+    const links = linksForBufferLine(buf, 1, FAKE_WORKTREE_ID);
+    expect(links[0].text).toBe("src/a.ts");
+    expect(links[0].range.start).toEqual({ x: 4, y: 1 });
+    expect(links[0].range.end).toEqual({ x: 11, y: 1 });
   });
 });
