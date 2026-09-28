@@ -717,13 +717,74 @@ pub fn write_stdin(
         .inner
         .get(&id)
         .ok_or_else(|| AppError::Unknown(format!("unknown agent: {id}")))?;
-    handle.shared.lock().last_input = Some(Instant::now());
+    // Only typing counts as answering a prompt. xterm also writes on its
+    // own — focus in/out when the pane is clicked, mouse reports, replies
+    // to queries replayed on attach — and those must not expire
+    // `NeedsAttention` (see `session_activity`).
+    if !is_terminal_report(data) {
+        handle.shared.lock().last_input = Some(Instant::now());
+    }
     let mut w = handle.writer.lock();
     w.write_all(data)
         .map_err(|e| AppError::Io(format!("agent write: {e}")))?;
     w.flush()
         .map_err(|e| AppError::Io(format!("agent flush: {e}")))?;
     Ok(())
+}
+
+/// True when `data` is made up entirely of sequences the terminal emulator
+/// generates itself rather than keystrokes: focus events (`CSI I` / `CSI O`),
+/// SGR and X10 mouse reports, cursor-position / device-attribute / mode
+/// replies, and OSC / DCS query replies. A bare `ESC` (reject a prompt) or an
+/// arrow key (`CSI A`) is not a report.
+fn is_terminal_report(data: &[u8]) -> bool {
+    let mut i = 0;
+    while i < data.len() {
+        match report_len(&data[i..]) {
+            Some(n) => i += n,
+            None => return false,
+        }
+    }
+    i > 0
+}
+
+/// Length of the terminal report at the start of `d`, if there is one.
+fn report_len(d: &[u8]) -> Option<usize> {
+    match d {
+        [0x1b, b'[', b'I' | b'O', ..] => Some(3),
+        // X10 mouse: CSI M Cb Cx Cy.
+        [0x1b, b'[', b'M', _, _, _, ..] => Some(6),
+        [0x1b, b'[', rest @ ..] => {
+            let end = rest.iter().position(|b| (0x40..=0x7e).contains(b))?;
+            let params = &rest[..end];
+            let fin = rest[end];
+            let ok = match fin {
+                // SGR mouse: CSI < b ; x ; y M|m
+                b'M' | b'm' => params.first() == Some(&b'<'),
+                // Cursor position report: CSI row ; col R
+                b'R' => !params.is_empty() && params.iter().all(|b| b.is_ascii_digit() || *b == b';'),
+                // Device attributes: CSI ? … c / CSI > … c
+                b'c' => matches!(params.first(), Some(b'?' | b'>')),
+                // Mode report (DECRPM): CSI ? … $ y
+                b'y' => params.last() == Some(&b'$'),
+                _ => false,
+            };
+            ok.then_some(2 + end + 1)
+        }
+        // OSC / DCS replies (colour queries, XTVERSION), ended by BEL or ST.
+        [0x1b, b']' | b'P', rest @ ..] => {
+            for (j, b) in rest.iter().enumerate() {
+                if *b == 0x07 {
+                    return Some(2 + j + 1);
+                }
+                if *b == 0x1b && rest.get(j + 1) == Some(&b'\\') {
+                    return Some(2 + j + 2);
+                }
+            }
+            None
+        }
+        _ => None,
+    }
 }
 
 /// Answer a Claude permission dialog without opening the agent: Enter picks
@@ -1042,6 +1103,38 @@ fn parse_kiro_agents(text: &str) -> Vec<super::BackendAgent> {
 mod tests {
     use super::*;
     use super::super::patterns::{AgentPatterns, Which};
+
+    #[test]
+    fn terminal_reports_are_not_user_input() {
+        for r in [
+            &b"\x1b[I"[..],
+            b"\x1b[O",
+            b"\x1b[<0;12;5M\x1b[<0;12;5m",
+            b"\x1b[M #!",
+            b"\x1b[24;80R",
+            b"\x1b[?1;2c",
+            b"\x1b[>0;276;0c",
+            b"\x1b[?2026;2$y",
+            b"\x1b]11;rgb:0000/0000/0000\x07",
+            b"\x1bP>|xterm.js(5.5.0)\x1b\\",
+            b"\x1b[I\x1b[24;80R",
+        ] {
+            assert!(is_terminal_report(r), "{r:?}");
+        }
+        for k in [
+            &b""[..],
+            b"\x1b",
+            b"\r",
+            b"y",
+            b"\x1b[A",
+            b"\x1b[B\r",
+            b"\x1b\r",
+            b"\x1b[Ihello",
+            b"\x1b[200~pasted\x1b[201~",
+        ] {
+            assert!(!is_terminal_report(k), "{k:?}");
+        }
+    }
 
     #[test]
     fn spawn_argv_puts_prompt_after_variadic_mcp_config() {
