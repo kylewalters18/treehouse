@@ -1405,6 +1405,17 @@ pub async fn agent_profile_save(
     crate::user_config::upsert_agent_profile(&app, &profile).await
 }
 
+/// Remove one launch profile, matched by `(workspace, name)`; `None`
+/// workspace targets a global profile.
+#[tauri::command]
+pub async fn agent_profile_delete(
+    workspace: Option<String>,
+    name: String,
+    app: AppHandle,
+) -> AppResult<()> {
+    crate::user_config::remove_agent_profile(&app, workspace.as_deref(), &name).await
+}
+
 /// The two worktree hook arrays from `treehouse.toml`, in IPC
 /// (camelCase) shape.
 #[derive(Debug, serde::Serialize, serde::Deserialize, ts_rs::TS)]

@@ -6,6 +6,7 @@ import { useUiStore } from "@/stores/ui";
 import { useWorkspaceStore } from "@/stores/workspace";
 import { useWorktreesStore } from "@/stores/worktrees";
 import {
+  deleteAgentProfile,
   forgetAgentSession,
   killAgent,
   listAgentHistory,
@@ -423,6 +424,21 @@ function AgentTabs({
     return true;
   }
 
+  async function deleteProfile(p: LaunchProfile) {
+    try {
+      await deleteAgentProfile(p.scope === "repo" ? workspaceRoot : null, p.name);
+    } catch (e) {
+      useToastsStore.getState().push({
+        kind: "error",
+        title: "Couldn't delete profile",
+        body: asMessage(e),
+      });
+      return;
+    }
+    const list = await refreshProfiles();
+    if (list) profilesRef.current = buildLaunchProfiles(list, agentCommands);
+  }
+
   /// Reopen a saved conversation in a new tab, or switch to the tab that
   /// already has it.
   function resumeSession(entry: AgentHistoryEntry) {
@@ -710,6 +726,7 @@ function AgentTabs({
           workspaceName={workspaceRoot.split("/").pop() || workspaceRoot}
           onLaunch={launch}
           onSaveProfile={saveProfile}
+          onDeleteProfile={deleteProfile}
           onClose={() => setLaunchMenuOpen(false)}
         />
       )}

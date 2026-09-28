@@ -589,6 +589,12 @@ export function saveAgentProfile(profile: AgentProfile): Promise<void> {
   return invoke<void>("agent_profile_save", { profile });
 }
 
+/// Remove a launch profile from `treehouse.toml`, matched by
+/// `(workspace, name)`; `null` workspace targets a global profile.
+export function deleteAgentProfile(workspace: string | null, name: string): Promise<void> {
+  return invoke<void>("agent_profile_delete", { workspace, name });
+}
+
 /// User-level worktree lifecycle hooks (`[[worktree.on_create]]` /
 /// `[[worktree.on_destroy]]`).
 export function worktreeHooksGet(): Promise<WorktreeHooks> {

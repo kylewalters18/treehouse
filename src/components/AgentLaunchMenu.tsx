@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Pencil, TerminalSquare } from "lucide-react";
+import { Pencil, TerminalSquare, Trash2 } from "lucide-react";
 import type { AgentBackendKind } from "@/ipc/types";
 import { cn } from "@/lib/cn";
 import {
@@ -27,6 +27,7 @@ export function AgentLaunchMenu({
   workspaceName,
   onLaunch,
   onSaveProfile,
+  onDeleteProfile,
   onClose,
 }: {
   profiles: LaunchProfile[];
@@ -44,6 +45,8 @@ export function AgentLaunchMenu({
     backend: AgentBackendKind,
     command: string,
   ) => Promise<boolean>;
+  /// Remove a saved (repo or global) profile from treehouse.toml.
+  onDeleteProfile: (profile: LaunchProfile) => Promise<void>;
   onClose: () => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
@@ -59,6 +62,13 @@ export function AgentLaunchMenu({
   const [command, setCommand] = useState("");
   const [saveName, setSaveName] = useState("");
   const [saving, setSaving] = useState(false);
+  // Delete takes two clicks: the first arms the row's trash button.
+  const [armedDelete, setArmedDelete] = useState<string | null>(null);
+
+  // Keep the highlight in range after a delete shrinks the list.
+  useEffect(() => {
+    setHighlight((h) => Math.min(h, profiles.length));
+  }, [profiles.length]);
 
   useEffect(() => {
     function onDown(e: MouseEvent) {
@@ -189,6 +199,36 @@ export function AgentLaunchMenu({
                 >
                   <Pencil size={10} />
                 </button>
+                {p.scope !== "default" && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (armedDelete !== p.key) {
+                        setArmedDelete(p.key);
+                        return;
+                      }
+                      setArmedDelete(null);
+                      void onDeleteProfile(p);
+                    }}
+                    onMouseLeave={() => {
+                      if (armedDelete === p.key) setArmedDelete(null);
+                    }}
+                    title={
+                      armedDelete === p.key
+                        ? "Click again to delete from treehouse.toml"
+                        : "Delete this profile"
+                    }
+                    className={cn(
+                      "flex h-4 shrink-0 items-center justify-center gap-1 rounded",
+                      armedDelete === p.key
+                        ? "px-1 text-red-400 opacity-100"
+                        : "w-4 text-neutral-500 opacity-0 hover:text-red-400 group-hover:opacity-100",
+                    )}
+                  >
+                    <Trash2 size={10} />
+                    {armedDelete === p.key && <span className="text-[10px]">Delete?</span>}
+                  </button>
+                )}
               </div>
             </div>
           ))}

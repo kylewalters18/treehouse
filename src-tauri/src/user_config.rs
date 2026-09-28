@@ -260,6 +260,44 @@ fn upsert_agent_profile_in(
     Ok(())
 }
 
+/// Remove the `[[agent.profile]]` matched by `(workspace, name)`. No-op
+/// when absent. Comment-preserving.
+pub async fn remove_agent_profile(
+    app: &AppHandle,
+    workspace: Option<&str>,
+    name: &str,
+) -> AppResult<()> {
+    write_edited(app, |doc| {
+        remove_agent_profile_in(doc, workspace, name);
+        Ok(())
+    })
+    .await
+}
+
+/// Pure core of [`remove_agent_profile`]. Prunes the emptied array and
+/// `[agent]` parent so no dangling header is left behind.
+fn remove_agent_profile_in(doc: &mut toml_edit::DocumentMut, workspace: Option<&str>, name: &str) {
+    use toml_edit::Item;
+    let norm = |w: Option<&str>| w.map(|w| w.trim_end_matches('/').to_string());
+    let want = norm(workspace);
+    let root = doc.as_table_mut();
+    let Some(agent) = root.get_mut("agent").and_then(Item::as_table_mut) else {
+        return;
+    };
+    if let Some(arr) = agent.get_mut("profile").and_then(Item::as_array_of_tables_mut) {
+        arr.retain(|t| {
+            !(t.get("name").and_then(|v| v.as_str()) == Some(name)
+                && norm(t.get("workspace").and_then(|v| v.as_str())) == want)
+        });
+        if arr.is_empty() {
+            agent.remove("profile");
+        }
+    }
+    if agent.is_empty() {
+        root.remove("agent");
+    }
+}
+
 pub fn config_path(app: &AppHandle) -> AppResult<PathBuf> {
     let dir = app
         .path()
@@ -903,6 +941,23 @@ mod tests {
         assert_eq!(parsed.agent.profiles[0].command, "claude --agent b");
         assert_eq!(parsed.agent.profiles[1].workspace, None);
         assert_eq!(parsed.agent.status.claude_code.idle, ["x"]);
+    }
+
+    #[test]
+    fn remove_profile_matches_workspace_and_name() {
+        let mut doc = "# keep me\n".parse::<toml_edit::DocumentMut>().unwrap();
+        upsert_agent_profile_in(&mut doc, &profile(Some("/r/"), "Rev", "claude --agent a")).unwrap();
+        upsert_agent_profile_in(&mut doc, &profile(None, "Rev", "claude")).unwrap();
+        remove_agent_profile_in(&mut doc, Some("/r"), "Rev");
+        let parsed: TreehouseConfig = toml::from_str(&doc.to_string()).unwrap();
+        assert_eq!(parsed.agent.profiles.len(), 1);
+        assert_eq!(parsed.agent.profiles[0].workspace, None);
+
+        // Removing the last one prunes the section but keeps the comment.
+        remove_agent_profile_in(&mut doc, None, "Rev");
+        let out = doc.to_string();
+        assert!(out.contains("# keep me"));
+        assert!(!out.contains("agent"));
     }
 
     fn cfg(id: &str, command: &str) -> LspConfig {
