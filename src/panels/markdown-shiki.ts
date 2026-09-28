@@ -10,6 +10,7 @@
 /// per app session and `MarkdownPreview` can await it on mount.
 
 import { createHighlighter, bundledThemes, type Highlighter, type ThemeRegistration } from "shiki";
+import { EDITOR_CHROME } from "./monaco-theme";
 
 /// Languages we expect to see in markdown code fences. Heavier than
 /// strictly necessary but the tokenization grammars are small; the
@@ -63,12 +64,9 @@ export function getMarkdownHighlighter(): Promise<Highlighter> {
     const theme: ThemeRegistration = {
       ...base,
       name: THEME_NAME,
-      // Match the markdown-preview surface so highlighted blocks blend
-      // into the page rather than punching out a different background.
-      colors: {
-        ...(base.colors ?? {}),
-        "editor.background": "#0e0f10",
-      },
+      // Same chrome as the editor theme so a fenced block reads like
+      // the file it came from; the preview CSS lifts the block surface.
+      colors: { ...(base.colors ?? {}), ...EDITOR_CHROME },
     };
     return await createHighlighter({
       themes: [theme],
@@ -86,8 +84,10 @@ export function highlightCode(
   code: string,
   lang: string,
 ): string {
-  const supported = (LANGS as readonly string[]).includes(lang);
-  if (!supported) return passthroughHtml(code);
+  // `getLoadedLanguages` includes aliases, so ```ts / ```rs / ```py /
+  // ```sh / ```yml resolve to their full grammars.
+  lang = lang.toLowerCase();
+  if (!highlighter.getLoadedLanguages().includes(lang)) return passthroughHtml(code);
   try {
     return highlighter.codeToHtml(code, { lang, theme: THEME_NAME });
   } catch {

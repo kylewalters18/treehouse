@@ -102,6 +102,31 @@ pub async fn read_worktree_file(
     }
 }
 
+/// Raw bytes of a worktree-relative file, same sandbox + size cap as
+/// `read_worktree_file`. Used by the markdown preview to load relative
+/// images (`![](docs/shot.png)`), which the webview can't fetch itself.
+pub async fn read_worktree_file_bytes(
+    worktree_id: WorktreeId,
+    rel_path: &str,
+    state: &AppState,
+) -> AppResult<Vec<u8>> {
+    let wt = state
+        .worktrees
+        .get(&worktree_id)
+        .ok_or_else(|| AppError::Unknown(format!("unknown worktree: {worktree_id}")))?
+        .clone();
+
+    let abs = resolve_sandboxed(&wt.path, rel_path)?;
+    let meta = tokio::fs::metadata(&abs).await?;
+    if !meta.is_file() {
+        return Err(AppError::Unknown(format!("not a regular file: {rel_path}")));
+    }
+    if meta.len() > MAX_READ_BYTES {
+        return Err(AppError::Unknown(format!("file too large: {rel_path}")));
+    }
+    Ok(tokio::fs::read(&abs).await?)
+}
+
 /// Write `content` to a worktree-relative path, truncating any existing
 /// file. Used by editor write-back (Cmd+S). The path goes through a
 /// write-flavored sandbox check that canonicalizes the *parent* directory

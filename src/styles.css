@@ -80,37 +80,225 @@ body {
   display: none !important;
 }
 
-/* Shiki-rendered code fences inside the markdown preview. Shiki emits
- * <pre class="shiki"><code><span>…</span></code></pre> with inline
- * background/color via CSS variables. We provide the padding +
- * monospace stack, and force the `prose` defaults for code/pre off so
- * they don't double-paint the background or override Shiki's colors. */
-.shiki-block {
-  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
-    monospace;
+/* Markdown preview (MarkdownPreview.tsx). Our own GitHub-shaped sheet
+ * on the app's color tokens (tailwind.config.js) rather than
+ * @tailwindcss/typography, whose defaults (backticks around inline code,
+ * quote marks on blockquotes, its own gray scale) fought every override. */
+.markdown-body {
+  color: #C4C9D0;
+  font-family: "Geist Variable", -apple-system, BlinkMacSystemFont, sans-serif;
+  font-size: 14px;
+  line-height: 1.65;
+  overflow-wrap: break-word;
 }
-.shiki-block .shiki {
+.markdown-body > :first-child { margin-top: 0 !important; }
+.markdown-body > :last-child { margin-bottom: 0 !important; }
+
+.markdown-body p,
+.markdown-body ul,
+.markdown-body ol,
+.markdown-body blockquote,
+.markdown-body .table-wrap,
+.markdown-body details,
+.markdown-body .shiki-block {
+  margin: 0 0 16px;
+}
+
+/* Headings */
+.markdown-body h1,
+.markdown-body h2,
+.markdown-body h3,
+.markdown-body h4,
+.markdown-body h5,
+.markdown-body h6 {
+  color: #E6E8EB;
+  font-weight: 600;
+  line-height: 1.3;
+  letter-spacing: -0.01em;
+  margin: 28px 0 14px;
+  scroll-margin-top: 16px;
+}
+.markdown-body h1 {
+  font-size: 1.9em;
+  padding-bottom: 0.3em;
+  border-bottom: 1px solid #22262B;
+}
+.markdown-body h2 {
+  font-size: 1.45em;
+  padding-bottom: 0.3em;
+  border-bottom: 1px solid #22262B;
+}
+.markdown-body h3 { font-size: 1.2em; }
+.markdown-body h4 { font-size: 1em; }
+.markdown-body h5 { font-size: 0.9em; }
+.markdown-body h6 { font-size: 0.85em; color: #9AA1AA; }
+
+.markdown-body strong { color: #E6E8EB; font-weight: 600; }
+.markdown-body a { color: #6AA1FF; text-decoration: none; cursor: pointer; }
+.markdown-body a:hover { text-decoration: underline; text-underline-offset: 2px; }
+.markdown-body hr {
+  height: 1px;
+  margin: 24px 0;
+  border: 0;
+  background: #2C3137;
+}
+
+/* Lists */
+.markdown-body ul,
+.markdown-body ol { padding-left: 2em; }
+.markdown-body ul { list-style: disc; }
+.markdown-body ol { list-style: decimal; }
+.markdown-body ul ul { list-style: circle; }
+.markdown-body ul ul ul { list-style: square; }
+.markdown-body li + li { margin-top: 4px; }
+.markdown-body li > p { margin-bottom: 8px; }
+.markdown-body li > ul,
+.markdown-body li > ol { margin: 4px 0 0; }
+.markdown-body li::marker { color: #7D858F; }
+.markdown-body .contains-task-list { list-style: none; padding-left: 1.6em; }
+.markdown-body .task-list-item input[type="checkbox"] {
+  margin: 0 0.5em 0.2em -1.5em;
+  vertical-align: middle;
+  accent-color: #3874E0;
+}
+
+/* Inline code */
+.markdown-body code,
+.markdown-body kbd {
+  font-family: "Geist Mono Variable", ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.86em;
+}
+.markdown-body :not(pre) > code {
+  padding: 0.15em 0.4em;
+  border-radius: 5px;
+  background: #1C2025;
+  color: #D0D4D9;
+}
+.markdown-body a > code { color: inherit; }
+.markdown-body kbd {
+  padding: 0.1em 0.4em;
+  border: 1px solid #2C3137;
+  border-bottom-width: 2px;
+  border-radius: 5px;
+  background: #16191D;
+  color: #D0D4D9;
+}
+
+/* Code fences. Shiki inlines its theme background on <pre>; lift it one
+ * step off the page so blocks read as blocks. */
+.markdown-body .shiki-block {
+  overflow: hidden;
+  border: 1px solid #22262B;
+  border-radius: 6px;
+}
+.markdown-body .shiki-block .shiki {
   margin: 0;
-  padding: 12px 14px;
-  font-size: 12px;
-  line-height: 1.55;
-  white-space: pre;
+  padding: 12px 16px;
   overflow-x: auto;
+  background: #16191D !important;
+  font-size: 12.5px;
+  line-height: 1.6;
+  white-space: pre;
 }
-.shiki-block .shiki code {
-  background: transparent;
-  padding: 0;
-  font-family: inherit;
+.markdown-body .shiki-block .shiki:not([style]) { color: #BEC3CA; }
+.markdown-body .shiki-block code { font-size: inherit; }
+
+/* Blockquotes and GitHub alerts */
+.markdown-body blockquote {
+  padding: 0 1em;
+  border-left: 3px solid #2C3137;
+  color: #9AA1AA;
+}
+.markdown-body blockquote > :last-child { margin-bottom: 0; }
+.markdown-body .markdown-alert {
+  padding: 8px 14px;
+  border-left-width: 3px;
+  border-radius: 0 6px 6px 0;
   color: inherit;
 }
-.prose .shiki-block .shiki,
-.prose .shiki-block .shiki code {
-  /* Override `prose` defaults that put rounded corners + a different
-   * background on bare <pre>/<code>. The wrapper handles the border
-   * and rounding so the inner Shiki block can paint edge-to-edge. */
-  background: var(--shiki-bg, #0e0f10);
-  color: var(--shiki-fg, #BBBEBF);
-  border-radius: 0;
+.markdown-body .markdown-alert-title {
+  margin-bottom: 4px;
+  font-weight: 600;
+  font-size: 0.93em;
+}
+.markdown-body .markdown-alert-note { border-color: #4F8CF5; background: #4F8CF50F; }
+.markdown-body .markdown-alert-note .markdown-alert-title { color: #6AA1FF; }
+.markdown-body .markdown-alert-tip { border-color: #34D399; background: #34D3990D; }
+.markdown-body .markdown-alert-tip .markdown-alert-title { color: #34D399; }
+.markdown-body .markdown-alert-important { border-color: #A78BFA; background: #A78BFA0F; }
+.markdown-body .markdown-alert-important .markdown-alert-title { color: #A78BFA; }
+.markdown-body .markdown-alert-warning { border-color: #FBBF24; background: #FBBF240D; }
+.markdown-body .markdown-alert-warning .markdown-alert-title { color: #FBBF24; }
+.markdown-body .markdown-alert-caution { border-color: #FB7185; background: #FB71850F; }
+.markdown-body .markdown-alert-caution .markdown-alert-title { color: #FB7185; }
+
+/* Tables */
+.markdown-body .table-wrap { overflow-x: auto; }
+.markdown-body table {
+  border-collapse: collapse;
+  font-size: 0.93em;
+  font-variant-numeric: tabular-nums;
+}
+.markdown-body th,
+.markdown-body td {
+  padding: 6px 13px;
+  border: 1px solid #22262B;
+}
+.markdown-body th {
+  background: #16191D;
+  color: #E6E8EB;
+  font-weight: 600;
+  text-align: left;
+}
+.markdown-body tr:nth-child(2n) td { background: #13161A; }
+
+/* Images and raw HTML */
+.markdown-body img {
+  display: inline-block;
+  max-width: 100%;
+  height: auto;
+  border-radius: 4px;
+}
+.markdown-body p[align="center"],
+.markdown-body div[align="center"],
+.markdown-body h1[align="center"],
+.markdown-body h2[align="center"],
+.markdown-body h3[align="center"] { text-align: center; }
+.markdown-body img[align="right"] { float: right; margin-left: 12px; }
+.markdown-body img[align="left"] { float: left; margin-right: 12px; }
+.markdown-body .img-missing {
+  display: inline-block;
+  padding: 2px 8px;
+  border: 1px dashed #2C3137;
+  border-radius: 4px;
+  color: #7D858F;
+  font-size: 0.86em;
+}
+.markdown-body details {
+  padding: 8px 12px;
+  border: 1px solid #22262B;
+  border-radius: 6px;
+}
+.markdown-body details[open] > summary { margin-bottom: 8px; }
+.markdown-body summary { cursor: pointer; color: #E6E8EB; font-weight: 500; }
+.markdown-body del { color: #7D858F; }
+.markdown-body sup { font-size: 0.75em; }
+
+/* Footnotes */
+.markdown-body .footnotes {
+  margin-top: 32px;
+  padding-top: 12px;
+  border-top: 1px solid #22262B;
+  color: #9AA1AA;
+  font-size: 0.88em;
+}
+.markdown-body .sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
 }
 
 /* xterm scrollbar — terminal and agent panes. Defining

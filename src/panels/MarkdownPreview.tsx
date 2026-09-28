@@ -1,26 +1,52 @@
 /// GitHub-flavored markdown preview for `.md` / `.mdx` files.
 ///
-/// Uses `react-markdown` + `remark-gfm` so tables, task lists, strikethrough,
-/// and autolinks all render. Code fences run through Shiki with the Dark+
-/// theme so highlighted blocks match the editor's tokenization. Styled via
-/// Tailwind's `prose` utilities (dark variant); code-block colors come
-/// straight from Shiki so the `prose` defaults don't fight the highlight.
+/// `react-markdown` + `remark-gfm` for tables, task lists, footnotes and
+/// autolinks; raw HTML (`<details>`, `<img align>`, …) goes through
+/// `rehype-raw` and then `rehype-sanitize` — this webview can call Tauri
+/// commands, so agent-written HTML must never run script. After
+/// sanitizing, `rehype-slug` adds heading ids and `rehypeGithubAlerts`
+/// turns `> [!NOTE]` blocks into callouts. Styling is our own
+/// `.markdown-body` sheet in styles.css (GitHub-shaped, on the app's
+/// color tokens); code fences run through Shiki with the editor theme.
+/// Links and images resolve against the worktree like GitHub does.
 
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import ReactMarkdown from "react-markdown";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import ReactMarkdown, { type Components } from "react-markdown";
+import rehypeRaw from "rehype-raw";
+import rehypeSanitize from "rehype-sanitize";
+import rehypeSlug from "rehype-slug";
 import remarkGfm from "remark-gfm";
 import type { Highlighter } from "shiki";
-import { readFile } from "@/ipc/client";
-import { onDiffUpdated } from "@/ipc/client";
+import { onDiffUpdated, openExternalUrl, readFile, readFileBytes } from "@/ipc/client";
 import type { FileContent, WorktreeId } from "@/ipc/types";
 import { asMessage } from "@/lib/errors";
+import { useDiffsStore } from "@/stores/diffs";
 import { getMarkdownHighlighter, highlightCode } from "./markdown-shiki";
 import { renderMermaid } from "./markdown-mermaid";
+import {
+  imageMime,
+  rehypeGithubAlerts,
+  resolveLink,
+  resolveRelativePath,
+} from "./markdown-plugins";
 import {
   SUSPECT_RECHECK_MS,
   classifyDiskRead,
   createCoalescedRunner,
 } from "./disk-sync";
+
+const REMARK_PLUGINS = [remarkGfm];
+const REHYPE_PLUGINS = [rehypeRaw, rehypeSanitize, rehypeSlug, rehypeGithubAlerts];
+// Sanitize already prefixes ids with `user-content-`; without this,
+// footnote ids get the prefix twice and their links break.
+const REMARK_REHYPE_OPTIONS = { clobberPrefix: "" };
 
 type Props = {
   worktreeId: WorktreeId;
@@ -127,38 +153,83 @@ export function MarkdownPreview({ worktreeId, path }: Props) {
   }
 
   return (
-    <div className="h-full overflow-auto bg-neutral-950 px-6 py-4">
-      <article className="prose prose-invert prose-sm max-w-3xl">
+    <PreviewBody worktreeId={worktreeId} path={path} text={content.text} highlighter={highlighter} />
+  );
+}
+
+function PreviewBody({
+  worktreeId,
+  path,
+  text,
+  highlighter,
+}: {
+  worktreeId: WorktreeId;
+  path: string;
+  text: string;
+  highlighter: Highlighter | null;
+}) {
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  const scrollToAnchor = useCallback((id: string) => {
+    const root = scrollRef.current;
+    if (!root || !id) return;
+    // Heading slugs are unprefixed; raw-HTML `id`/`name` and footnotes
+    // carry sanitize's `user-content-` prefix.
+    const target =
+      root.querySelector(`[id="${CSS.escape(id)}"]`) ??
+      root.querySelector(`[id="user-content-${CSS.escape(id)}"]`) ??
+      root.querySelector(`[name="user-content-${CSS.escape(id)}"]`);
+    target?.scrollIntoView({ block: "start" });
+  }, []);
+
+  // A cross-file link (`other.md#section`) lands here once the target
+  // file's content has rendered.
+  useEffect(() => {
+    if (pendingAnchor?.path === path) {
+      scrollToAnchor(pendingAnchor.id);
+      pendingAnchor = null;
+    }
+  }, [path, text, scrollToAnchor]);
+
+  const components = useMemo(
+    () => markdownComponents({ worktreeId, path, highlighter, scrollToAnchor }),
+    [worktreeId, path, highlighter, scrollToAnchor],
+  );
+
+  return (
+    <div ref={scrollRef} className="h-full overflow-auto bg-neutral-950 px-8 py-6">
+      <article className="markdown-body mx-auto max-w-[52rem]">
         <ReactMarkdown
-          remarkPlugins={[remarkGfm]}
-          components={codeComponents(highlighter)}
+          remarkPlugins={REMARK_PLUGINS}
+          rehypePlugins={REHYPE_PLUGINS}
+          remarkRehypeOptions={REMARK_REHYPE_OPTIONS}
+          components={components}
         >
-          {content.text}
+          {text}
         </ReactMarkdown>
       </article>
     </div>
   );
 }
 
-/// react-markdown component overrides for inline + fenced code. Inline
-/// code stays a styled `<code>`; fenced blocks (those with a
-/// `language-X` className from remark) get Shiki HTML injected.
-function codeComponents(highlighter: Highlighter | null) {
+/// react-markdown component overrides: Shiki / mermaid code fences,
+/// worktree-aware links and images, and scrollable tables.
+function markdownComponents({
+  worktreeId,
+  path,
+  highlighter,
+  scrollToAnchor,
+}: {
+  worktreeId: WorktreeId;
+  path: string;
+  highlighter: Highlighter | null;
+  scrollToAnchor: (id: string) => void;
+}): Components {
   return {
-    code(props: {
-      className?: string;
-      children?: React.ReactNode;
-    }) {
-      const { className, children } = props;
-      const match = /language-(\w+)/.exec(className ?? "");
-      // Inline code (no language fence) — keep as a small bordered chip.
-      if (!match) {
-        return (
-          <code className="rounded border border-neutral-800 bg-neutral-900 px-1 py-0.5 text-[0.875em] text-neutral-200">
-            {children}
-          </code>
-        );
-      }
+    code({ className, children }) {
+      const match = /language-(\S+)/.exec(className ?? "");
+      // Inline code (no language fence) — styled by `.markdown-body code`.
+      if (!match) return <code>{children}</code>;
       const code = String(children ?? "").replace(/\n$/, "");
       // Mermaid fences render as diagrams, not highlighted source.
       if (match[1] === "mermaid") {
@@ -169,27 +240,153 @@ function codeComponents(highlighter: Highlighter | null) {
       // resolves will replace this with the highlighted version.
       if (!highlighter) {
         return (
-          <pre className="shiki-pending overflow-x-auto rounded border border-neutral-800 bg-neutral-900 p-3 text-xs text-neutral-200">
-            <code>{code}</code>
-          </pre>
+          <div className="shiki-block">
+            <pre className="shiki">
+              <code>{code}</code>
+            </pre>
+          </div>
         );
       }
-      const html = highlightCode(highlighter, code, match[1]);
       return (
         <div
-          className="shiki-block overflow-x-auto rounded border border-neutral-800 text-xs"
-          dangerouslySetInnerHTML={{ __html: html }}
+          className="shiki-block"
+          dangerouslySetInnerHTML={{ __html: highlightCode(highlighter, code, match[1]) }}
         />
       );
     },
-    // `pre` from react-markdown wraps fenced `<code>`; default styles
-    // from `prose` add their own background which collides with
-    // Shiki's. Strip them — our `code` component already provides the
-    // outer container.
-    pre(props: { children?: React.ReactNode }) {
-      return <>{props.children}</>;
+    // `pre` wraps fenced `<code>`; our `code` component renders the
+    // whole block (Shiki emits its own `<pre>`), so drop the wrapper.
+    pre({ children }) {
+      return <>{children}</>;
+    },
+    // Wide tables scroll inside the column instead of the whole pane.
+    table({ children }) {
+      return (
+        <div className="table-wrap">
+          <table>{children}</table>
+        </div>
+      );
+    },
+    a({ href, children, title, id }) {
+      return (
+        <a
+          href={href}
+          title={title}
+          id={id}
+          onClick={(e) => {
+            // Never let the webview itself navigate away from the app.
+            e.preventDefault();
+            if (!href) return;
+            followLink(worktreeId, path, href, scrollToAnchor);
+          }}
+        >
+          {children}
+        </a>
+      );
+    },
+    img({ node, src, alt, title, width, height }) {
+      // `align` isn't in React's img typings; read it off the hast node.
+      const align = node?.properties?.align;
+      return (
+        <WorktreeImage
+          worktreeId={worktreeId}
+          fromPath={path}
+          src={typeof src === "string" ? src : undefined}
+          alt={alt}
+          title={title}
+          width={width}
+          height={height}
+          align={typeof align === "string" ? align : undefined}
+        />
+      );
     },
   };
+}
+
+/// Anchor to scroll to after a cross-file link switches the preview.
+let pendingAnchor: { path: string; id: string } | null = null;
+
+function followLink(
+  worktreeId: WorktreeId,
+  fromPath: string,
+  href: string,
+  scrollToAnchor: (id: string) => void,
+) {
+  const target = resolveLink(fromPath, href);
+  switch (target.kind) {
+    case "anchor":
+      scrollToAnchor(target.id);
+      return;
+    case "external":
+      void openExternalUrl(target.url);
+      return;
+    case "file": {
+      if (target.path === fromPath) {
+        if (target.anchor) scrollToAnchor(target.anchor);
+        return;
+      }
+      const ds = useDiffsStore.getState();
+      pendingAnchor = target.anchor ? { path: target.path, id: target.anchor } : null;
+      ds.selectFile(worktreeId, target.path);
+      // Markdown stays in Preview; anything else opens in the editor.
+      ds.setView(worktreeId, isMarkdownPath(target.path) ? "preview" : "file");
+      return;
+    }
+    case "none":
+      return;
+  }
+}
+
+/// `<img>` that loads worktree-relative sources through IPC (the webview
+/// has no file access) and passes http(s) sources straight through.
+function WorktreeImage({
+  worktreeId,
+  fromPath,
+  src,
+  ...rest
+}: {
+  worktreeId: WorktreeId;
+  fromPath: string;
+  src: string | undefined;
+  alt?: string;
+  title?: string;
+  width?: number | string;
+  height?: number | string;
+  align?: string;
+}) {
+  const remote = !!src && /^https?:\/\//i.test(src);
+  const localPath = src && !remote ? resolveRelativePath(fromPath, src.split(/[?#]/)[0]) : null;
+  const [blobUrl, setBlobUrl] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    setBlobUrl(null);
+    setFailed(false);
+    if (!localPath) return;
+    let cancelled = false;
+    let url: string | null = null;
+    readFileBytes(worktreeId, localPath).then(
+      (buf) => {
+        if (cancelled) return;
+        url = URL.createObjectURL(new Blob([buf], { type: imageMime(localPath) }));
+        setBlobUrl(url);
+      },
+      () => {
+        if (!cancelled) setFailed(true);
+      },
+    );
+    return () => {
+      cancelled = true;
+      if (url) URL.revokeObjectURL(url);
+    };
+  }, [worktreeId, localPath]);
+
+  if (remote) return <img src={src} {...rest} />;
+  if (failed || (!localPath && src)) {
+    return <span className="img-missing">{rest.alt || src}</span>;
+  }
+  if (!blobUrl) return null;
+  return <img src={blobUrl} {...rest} />;
 }
 
 /// Renders a single ` ```mermaid ` fence to an inline SVG diagram.

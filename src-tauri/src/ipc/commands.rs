@@ -1016,6 +1016,18 @@ pub async fn read_file(
     fs_api::read_worktree_file(worktree_id, &path, &state).await
 }
 
+/// Raw file bytes, returned as a binary IPC response (an `ArrayBuffer`
+/// on the JS side) rather than a JSON number array.
+#[tauri::command]
+pub async fn read_file_bytes(
+    worktree_id: WorktreeId,
+    path: String,
+    state: State<'_, AppState>,
+) -> AppResult<tauri::ipc::Response> {
+    let bytes = fs_api::read_worktree_file_bytes(worktree_id, &path, &state).await?;
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
 #[tauri::command]
 pub async fn write_file(
     worktree_id: WorktreeId,

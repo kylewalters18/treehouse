@@ -220,6 +220,15 @@ export function readFile(
   return invoke<FileContent>("read_file", { worktreeId, path });
 }
 
+/// Raw bytes of a worktree file (binary IPC response, not JSON). Used by
+/// the markdown preview to load relative images.
+export function readFileBytes(
+  worktreeId: WorktreeId,
+  path: string,
+): Promise<ArrayBuffer> {
+  return invoke<ArrayBuffer>("read_file_bytes", { worktreeId, path });
+}
+
 /// Write `content` to a worktree-relative path, truncating any existing
 /// file. The Rust side runs a write-flavored sandbox check (canonicalizes
 /// the *parent*, since the file may not exist yet) and rejects paths

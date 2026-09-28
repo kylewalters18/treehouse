@@ -23,7 +23,7 @@ function getMermaid() {
       startOnLoad: false,
       theme: "dark",
       darkMode: true,
-      // Diagrams sit inside `prose` on the neutral-950 page; a
+      // Diagrams sit inside `.markdown-body` on the neutral-950 page; a
       // transparent canvas lets that background show through.
       themeVariables: { background: "transparent" },
       // Local markdown is trusted, but `strict` still blocks script
