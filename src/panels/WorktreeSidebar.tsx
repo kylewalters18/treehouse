@@ -9,6 +9,8 @@ import {
   Loader2,
   PanelLeftClose,
   PanelLeftOpen,
+  Pin,
+  PinOff,
   Plus,
   X,
 } from "lucide-react";
@@ -18,6 +20,7 @@ import { useWorktreesStore } from "@/stores/worktrees";
 import { useUiStore } from "@/stores/ui";
 import { useActivityStore } from "@/stores/activity";
 import { useSettingsStore } from "@/stores/settings";
+import { usePinsStore } from "@/stores/pins";
 import {
   listAgentActivity,
   mergeWorktree,
@@ -42,6 +45,7 @@ import { runWorktreeSetup } from "@/lib/worktree-setup";
 import {
   inboxWorktrees,
   nextAcks,
+  pinnedWorktrees,
   splitActive,
   statusCounts,
   type Acks,
@@ -89,6 +93,9 @@ export function WorktreeSidebar() {
     (s) => s.settings.initSubmodules,
   );
   const activity = useActivityStore((s) => s.byWorktree);
+  const pinnedPaths = usePinsStore((s) => s.paths);
+  const loadPins = usePinsStore((s) => s.load);
+  const setPinned = usePinsStore((s) => s.setPinned);
   const setActivity = useActivityStore((s) => s.setAll);
   // Per-repo collapse state. Expanded by default; the header's status
   // tally keeps a collapsed repo legible. The repo owning the
@@ -162,6 +169,10 @@ export function WorktreeSidebar() {
   }, [workspaceIdsKey]);
 
   const showRepoChips = workspaces.length > 1;
+
+  useEffect(() => {
+    void loadPins();
+  }, [loadPins]);
 
   useEffect(() => {
     setAcks((prev) => nextAcks(prev, activity, selectedId));
@@ -388,6 +399,10 @@ export function WorktreeSidebar() {
   const allRegular = worktrees.filter((w) => !w.isMainClone);
   // The main clone can host agents too, so it's eligible for the inbox.
   const inbox = inboxWorktrees(worktrees, activity, acks);
+  // Pinned worktrees are hoisted out of their repo's list (they still
+  // show in "Needs you" when their agent does).
+  const pinned = pinnedWorktrees(worktrees, pinnedPaths);
+  const isPinned = (w: Worktree) => pinnedPaths.includes(w.path);
   const repoName = (w: Worktree) =>
     basenameOf(workspaces.find((ws) => ws.id === w.workspaceId)?.root ?? "");
 
@@ -444,20 +459,27 @@ export function WorktreeSidebar() {
             <PanelLeftOpen size={14} />
           </button>
         </div>
-        <div className="flex-1 overflow-y-auto overflow-x-hidden">
-          {inbox.length > 0 && (
-            <div className="relative mb-2 border-b border-amber-400/25 bg-amber-400/[0.06] before:absolute before:inset-y-0 before:left-0 before:w-[2px] before:bg-amber-400/60 py-1">
-              {inbox.map((w) => renderDot(w))}
-            </div>
-          )}
+        {/* Fixed above the scroll area so they never scroll away. */}
+        {inbox.length > 0 && (
+          <div className="relative shrink-0 border-b border-amber-400/25 bg-amber-400/[0.06] before:absolute before:inset-y-0 before:left-0 before:w-[2px] before:bg-amber-400/60 py-1">
+            {inbox.map((w) => renderDot(w))}
+          </div>
+        )}
+        {pinned.length > 0 && (
+          <div className="shrink-0 border-b border-neutral-800 py-1">
+            {pinned.map((w) => renderDot(w))}
+          </div>
+        )}
+        <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
           {workspaces.map((ws) => {
             const repoWorktrees = worktrees.filter(
               (w) => w.workspaceId === ws.id,
             );
             const mainClone =
-              repoWorktrees.find((w) => w.isMainClone) ?? null;
+              repoWorktrees.find((w) => w.isMainClone && !isPinned(w)) ??
+              null;
             const { active, inactive } = splitActive(
-              repoWorktrees.filter((w) => !w.isMainClone),
+              repoWorktrees.filter((w) => !w.isMainClone && !isPinned(w)),
               activity,
             );
             const name = basenameOf(ws.root);
@@ -527,7 +549,10 @@ export function WorktreeSidebar() {
         className={cn(
           // Fixed height, not padding: the hover swap (badges → ⋯) trades
           // content of slightly different heights, which made the row jump.
-          "group relative flex h-7 cursor-pointer items-center pl-3 pr-1 hover:bg-neutral-900/60",
+          "group relative flex cursor-pointer items-center pl-3 pr-1 hover:bg-neutral-900/60",
+          // Rows with a repo line ("Needs you" / Pinned, multi-repo) get
+          // a second line instead of a `repo /` prefix eating the branch.
+          opts.chip ? "h-10" : "h-7",
           selectedId === w.id &&
             "bg-blue-400/[0.08] hover:bg-blue-400/[0.1] before:absolute before:inset-y-1 before:left-0 before:w-[2px] before:rounded-r before:bg-blue-400",
         )}
@@ -550,18 +575,21 @@ export function WorktreeSidebar() {
           )}
         >
           <StatusDot activity={a?.activity ?? "inactive"} />
-          {opts.chip && (
-            <span
-              className="flex shrink-0 items-center gap-1 text-[11px] text-neutral-500"
-              title={repoName(w)}
-            >
-              <RepoMark name={repoName(w)} />
-              {repoName(w)}
-              <span className="text-neutral-700">/</span>
+          <span className="flex min-w-0 flex-1 flex-col">
+            <span className="truncate font-mono text-xs text-neutral-200">
+              {w.branch}
             </span>
-          )}
-          <span className="min-w-0 flex-1 truncate font-mono text-xs text-neutral-200">
-            {w.branch}
+            {/* Repo name only — keep this line from growing into a
+                status/metadata slot. */}
+            {opts.chip && (
+              <span
+                className="flex min-w-0 items-center gap-1 text-[10.5px] leading-4 text-neutral-500"
+                title={repoName(w)}
+              >
+                <RepoMark name={repoName(w)} size="sm" />
+                <span className="truncate">{repoName(w)}</span>
+              </span>
+            )}
           </span>
           {/* Badges give way to the ⋯ menu on hover (and while it's
               open) so the one-line row never has to fit both. */}
@@ -603,6 +631,10 @@ export function WorktreeSidebar() {
             )}
           </span>
         </div>
+        <PinToggle
+          pinned={isPinned(w)}
+          onToggle={() => void setPinned(w.path, !isPinned(w))}
+        />
         {!w.isMainClone && (
           <RowMenu
             behind={a?.behind ?? 0}
@@ -643,22 +675,37 @@ export function WorktreeSidebar() {
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto">
-        {inbox.length > 0 && (
-          <div className="relative mb-2 border-b border-amber-400/25 bg-amber-400/[0.06] before:absolute before:inset-y-0 before:left-0 before:w-[2px] before:bg-amber-400/60 pb-1">
-            <SectionHeader label="Needs you" count={inbox.length} />
-            <ul>{inbox.map((w) => renderRow(w, { chip: showRepoChips }))}</ul>
-          </div>
-        )}
+      {/* Pinned above the scroll area so it stays visible however many
+          worktrees there are. Deliberately not its own scroller: overflow
+          would clip RowMenu's absolutely-positioned dropdown. */}
+      {inbox.length > 0 && (
+        <div className="relative z-30 shrink-0 border-b border-amber-400/25 bg-amber-400/[0.06] before:absolute before:inset-y-0 before:left-0 before:w-[2px] before:bg-amber-400/60 pb-1">
+          <SectionHeader label="Needs you" count={inbox.length} />
+          <ul>{inbox.map((w) => renderRow(w, { chip: showRepoChips }))}</ul>
+        </div>
+      )}
+      {/* Same treatment as "Needs you": fixed, not scrolling. Stacks
+          under it (lower z) so its row menus can overlap this band. */}
+      {pinned.length > 0 && (
+        <div className="relative z-20 shrink-0 border-b border-neutral-800 pb-1">
+          <SectionHeader label="Pinned" count={pinned.length} tone="neutral" />
+          <ul>{pinned.map((w) => renderRow(w, { chip: showRepoChips }))}</ul>
+        </div>
+      )}
+
+      <div className="min-h-0 flex-1 overflow-y-auto">
 
         {workspaces.map((ws) => {
           const repoWorktrees = worktrees.filter(
             (w) => w.workspaceId === ws.id,
           );
           const mainClone =
-            repoWorktrees.find((w) => w.isMainClone) ?? null;
+            repoWorktrees.find((w) => w.isMainClone && !isPinned(w)) ?? null;
           const regular = repoWorktrees.filter((w) => !w.isMainClone);
-          const { active, inactive } = splitActive(regular, activity);
+          const { active, inactive } = splitActive(
+            regular.filter((w) => !isPinned(w)),
+            activity,
+          );
           const liveName = creatingNames[ws.id];
           const liveStep = creatingSteps[ws.id];
           const expanded = !collapsedRepos.has(ws.id);
@@ -1256,14 +1303,58 @@ function MenuItem({
   );
 }
 
-function SectionHeader({ label, count }: { label: string; count: number }) {
+function SectionHeader({
+  label,
+  count,
+  tone = "amber",
+}: {
+  label: string;
+  count: number;
+  tone?: "amber" | "neutral";
+}) {
   return (
-    <div className="flex h-7 items-center gap-1.5 px-3 text-[10.5px] font-semibold uppercase tracking-[0.08em] text-amber-400/80">
+    <div
+      className={cn(
+        "flex h-7 items-center gap-1.5 px-3 text-[10.5px] font-semibold uppercase tracking-[0.08em]",
+        tone === "amber" ? "text-amber-400/80" : "text-neutral-500",
+      )}
+    >
       {label}
-      <span className="rounded-full bg-amber-400/15 px-1.5 font-mono text-[10px] font-medium leading-4 tracking-normal text-amber-400">
+      <span
+        className={cn(
+          "rounded-full px-1.5 font-mono text-[10px] font-medium leading-4 tracking-normal",
+          tone === "amber"
+            ? "bg-amber-400/15 text-amber-400"
+            : "bg-neutral-800 text-neutral-400",
+        )}
+      >
         {count}
       </span>
     </div>
+  );
+}
+
+/// Hover-revealed pin button, beside the ⋯ menu where a row has one.
+/// Also shown while that menu is open, when the row's badges are hidden.
+function PinToggle({
+  pinned,
+  onToggle,
+}: {
+  pinned: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      onClick={(e) => {
+        e.stopPropagation();
+        onToggle();
+      }}
+      title={pinned ? "Unpin" : "Pin to top"}
+      aria-label={pinned ? "Unpin" : "Pin to top"}
+      className="hidden shrink-0 rounded p-0.5 text-neutral-500 hover:bg-neutral-800 hover:text-neutral-200 group-hover:block group-has-[[data-open]]:block"
+    >
+      {pinned ? <PinOff size={12} /> : <Pin size={12} />}
+    </button>
   );
 }
 
@@ -1303,18 +1394,25 @@ const REPO_TINTS = [
 
 /// Small tinted tile identifying a repo. The tint is hashed from the
 /// name, so a repo keeps its color across sessions.
-function RepoMark({ name }: { name: string }) {
+function RepoMark({
+  name,
+  size = "md",
+}: {
+  name: string;
+  size?: "sm" | "md";
+}) {
   let h = 0;
   for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) | 0;
   return (
     <span
       aria-hidden
       className={cn(
-        "flex h-4 w-4 shrink-0 items-center justify-center rounded",
+        "flex shrink-0 items-center justify-center rounded",
+        size === "sm" ? "h-3 w-3" : "h-4 w-4",
         REPO_TINTS[Math.abs(h) % REPO_TINTS.length],
       )}
     >
-      <FolderGit2 size={11} strokeWidth={2.25} />
+      <FolderGit2 size={size === "sm" ? 9 : 11} strokeWidth={2.25} />
     </span>
   );
 }

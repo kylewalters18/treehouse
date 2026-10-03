@@ -142,6 +142,17 @@ export function onBrowserNavigated(
   return listen<BrowserNavigated>("browser://navigated", (ev) => handler(ev.payload));
 }
 
+export function listPinnedWorktrees(): Promise<string[]> {
+  return invoke<string[]>("list_pinned_worktrees");
+}
+
+export function setWorktreePinned(
+  path: string,
+  pinned: boolean,
+): Promise<string[]> {
+  return invoke<string[]>("set_worktree_pinned", { path, pinned });
+}
+
 export function getSettings(): Promise<Settings> {
   return invoke<Settings>("get_settings");
 }

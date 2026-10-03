@@ -104,3 +104,14 @@ export function statusCounts(
   }
   return c;
 }
+
+/// The "Pinned" section: worktrees whose path is pinned, in pin order.
+/// Pins for worktrees not currently open (repo closed, removed outside
+/// the app) simply match nothing.
+export function pinnedWorktrees(
+  worktrees: Worktree[],
+  pinnedPaths: string[],
+): Worktree[] {
+  const byPath = new Map(worktrees.map((w) => [w.path, w]));
+  return pinnedPaths.flatMap((p) => byPath.get(p) ?? []);
+}

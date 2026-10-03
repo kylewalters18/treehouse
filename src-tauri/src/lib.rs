@@ -99,6 +99,8 @@ pub fn run() {
         ipc::commands::get_settings,
         ipc::commands::update_settings,
         ipc::commands::set_workspace_base_ref,
+        ipc::commands::list_pinned_worktrees,
+        ipc::commands::set_worktree_pinned,
         ipc::commands::list_branches,
         ipc::commands::list_comments,
         ipc::commands::save_comments,

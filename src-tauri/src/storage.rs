@@ -19,6 +19,7 @@ const RECENT_FILE: &str = "recent.json";
 const OPEN_WORKSPACES_FILE: &str = "open_workspaces.json";
 const SETTINGS_FILE: &str = "settings.json";
 const COMMENTS_FILE: &str = "comments.json";
+const PINNED_WORKTREES_FILE: &str = "pinned_worktrees.json";
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -174,6 +175,68 @@ async fn write_open(app: &AppHandle, items: &[PathBuf]) -> AppResult<()> {
         .await
         .map_err(|e| AppError::Io(format!("write {}: {e}", path.display())))?;
     Ok(())
+}
+
+// --- Pinned worktrees ---
+//
+// Worktree paths the user pinned to the top of the sidebar. Keyed by
+// path because `WorktreeId`s are regenerated every launch. Its own file
+// rather than a `Settings` field: the frontend saves `Settings` whole,
+// so a pin written here would be clobbered by its next stale copy.
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct PinnedWorktreesFile {
+    items: Vec<PathBuf>,
+}
+
+/// Serializes the load → modify → write in `set_pinned` so two quick
+/// toggles can't drop each other's change.
+static PINNED_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+fn pinned_worktrees_path(app: &AppHandle) -> AppResult<PathBuf> {
+    Ok(config_dir(app)?.join(PINNED_WORKTREES_FILE))
+}
+
+/// Pinned worktree paths in pin order. Missing or unreadable file →
+/// empty list; pins aren't worth failing a sidebar render over.
+pub async fn list_pinned(app: &AppHandle) -> AppResult<Vec<PathBuf>> {
+    let path = pinned_worktrees_path(app)?;
+    let bytes = match tokio::fs::read(&path).await {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(AppError::Io(format!("read {}: {e}", path.display()))),
+    };
+    let file: PinnedWorktreesFile = serde_json::from_slice(&bytes).unwrap_or_default();
+    Ok(file.items)
+}
+
+/// Pin (append) or unpin `worktree_path`. Idempotent. Returns the new list.
+pub async fn set_pinned(
+    app: &AppHandle,
+    worktree_path: &PathBuf,
+    pinned: bool,
+) -> AppResult<Vec<PathBuf>> {
+    let _guard = PINNED_LOCK.lock().await;
+    let mut items = list_pinned(app).await.unwrap_or_default();
+    let present = items.iter().any(|p| p == worktree_path);
+    if pinned == present {
+        return Ok(items);
+    }
+    if pinned {
+        items.push(worktree_path.clone());
+    } else {
+        items.retain(|p| p != worktree_path);
+    }
+    let dir = config_dir(app)?;
+    let _ = tokio::fs::create_dir_all(&dir).await;
+    let path = pinned_worktrees_path(app)?;
+    let file = PinnedWorktreesFile { items: items.clone() };
+    let bytes = serde_json::to_vec_pretty(&file)
+        .map_err(|e| AppError::Unknown(format!("serialize pinned worktrees: {e}")))?;
+    tokio::fs::write(&path, bytes)
+        .await
+        .map_err(|e| AppError::Io(format!("write {}: {e}", path.display())))?;
+    Ok(items)
 }
 
 // --- Settings ---

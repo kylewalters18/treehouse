@@ -8,6 +8,7 @@ import type {
 import {
   inboxWorktrees,
   nextAcks,
+  pinnedWorktrees,
   splitActive,
   statusCounts,
 } from "./worktree-sidebar-model";
@@ -113,5 +114,16 @@ describe("statusCounts", () => {
       idle: 0,
       needsAttention: 1,
     });
+  });
+});
+
+describe("pinnedWorktrees", () => {
+  it("returns pinned worktrees in pin order and skips unknown paths", () => {
+    const [a, b, c] = [wt("a"), wt("b"), wt("c")];
+    const pins = [c.path, "/gone", a.path];
+    expect(pinnedWorktrees([a, b, c], pins).map((w) => w.id)).toEqual([
+      "c",
+      "a",
+    ]);
   });
 });

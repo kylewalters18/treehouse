@@ -190,6 +190,30 @@ pub async fn update_settings(
     Ok(to_save)
 }
 
+#[tauri::command]
+pub async fn list_pinned_worktrees(app: AppHandle) -> AppResult<Vec<String>> {
+    Ok(paths_to_strings(storage::list_pinned(&app).await?))
+}
+
+/// Pin or unpin a worktree (by path) to the sidebar's Pinned section.
+/// Returns the full pinned list so the frontend can replace its copy.
+#[tauri::command]
+pub async fn set_worktree_pinned(
+    path: String,
+    pinned: bool,
+    app: AppHandle,
+) -> AppResult<Vec<String>> {
+    let items = storage::set_pinned(&app, &PathBuf::from(path), pinned).await?;
+    Ok(paths_to_strings(items))
+}
+
+fn paths_to_strings(paths: Vec<PathBuf>) -> Vec<String> {
+    paths
+        .into_iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect()
+}
+
 /// Set (or clear, with `None`) the per-workspace base ref the Changes
 /// (Branch-view) diff compares against — e.g. `"origin/main"`, `"develop"`.
 /// Persists by workspace root path, updates the in-memory workspace, and
@@ -381,8 +405,9 @@ pub async fn remove_worktree(
     fs_watch::stop(&app, &worktree_id);
     pty::manager::close_for_worktree(&state.terminals, worktree_id);
     agent::supervisor::kill_for_worktree(&state.agents, worktree_id);
-    if let Some(path) = state.worktrees.get(&worktree_id).map(|w| w.path.clone()) {
-        state.agents.forget_worktree_history(&path);
+    let removed_path = state.worktrees.get(&worktree_id).map(|w| w.path.clone());
+    if let Some(path) = &removed_path {
+        state.agents.forget_worktree_history(path);
     }
     lsp::supervisor::kill_for_worktree(&state.lsp, worktree_id);
     state.diffs.remove(&worktree_id);
@@ -395,6 +420,14 @@ pub async fn remove_worktree(
         &state,
     )
     .await?;
+
+    // Drop the pin so a later worktree at the same path doesn't come
+    // back pinned. Best effort — a stale pin only matches nothing.
+    if let Some(path) = &removed_path {
+        if let Err(e) = storage::set_pinned(&app, path, false).await {
+            tracing::warn!(?e, "unpin removed worktree failed");
+        }
+    }
 
     if let Some(ws_id) = workspace_id {
         let _ = app.emit(&events::worktrees_changed(ws_id), ());

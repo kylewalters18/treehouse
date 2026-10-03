@@ -32,6 +32,7 @@ export function installE2EMocks(): void {
     open_external_url: async () => null,
     get_settings: async () => structuredClone(DEFAULT_SETTINGS),
     list_comments: async () => [],
+    list_pinned_worktrees: async () => [],
     list_branches: async () => [],
     lsp_list_configs: async () => [],
     lsp_resolve_command: async () => null,

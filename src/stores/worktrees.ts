@@ -4,6 +4,7 @@ import type { Worktree, WorkspaceId, WorktreeId } from "@/ipc/types";
 import { asMessage } from "@/lib/errors";
 import { toastError, toastInfo } from "@/stores/toasts";
 import { useEditorViewStateStore } from "@/stores/editor-view-state";
+import { usePinsStore } from "@/stores/pins";
 import { clearAgentLeafStatesForWorktree } from "@/panels/agent-leaf-state";
 
 type WorktreesState = {
@@ -90,7 +91,11 @@ export const useWorktreesStore = create<WorktreesState>((set, get) => ({
   },
   async remove(worktreeId, force = false, skipHook = false) {
     try {
+      const path = get().worktrees.find((w) => w.id === worktreeId)?.path;
       const summary = await ipc.removeWorktree(worktreeId, force, skipHook);
+      // Rust drops the persisted pin; mirror it so a new worktree at the
+      // same path this session doesn't show up pinned.
+      if (path) usePinsStore.getState().forget(path);
       set({
         worktrees: get().worktrees.filter((w) => w.id !== worktreeId),
       });
