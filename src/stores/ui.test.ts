@@ -83,16 +83,16 @@ describe("ui store", () => {
     expect(useUiStore.getState().agentSeenAt["a-1"]).toBeGreaterThan(0);
   });
 
-  it("board and scratch overlays close each other", () => {
+  it("board and planner overlays close each other", () => {
     const s = useUiStore.getState();
-    s.toggleScratch();
-    expect(useUiStore.getState().scratchOpen).toBe(true);
+    s.togglePlanner();
+    expect(useUiStore.getState().plannerOpen).toBe(true);
     s.toggleAgentBoard();
-    expect(useUiStore.getState()).toMatchObject({ agentBoardOpen: true, scratchOpen: false });
-    s.toggleScratch();
-    expect(useUiStore.getState()).toMatchObject({ agentBoardOpen: false, scratchOpen: true });
-    s.toggleScratch();
-    expect(useUiStore.getState()).toMatchObject({ agentBoardOpen: false, scratchOpen: false });
+    expect(useUiStore.getState()).toMatchObject({ agentBoardOpen: true, plannerOpen: false });
+    s.togglePlanner();
+    expect(useUiStore.getState()).toMatchObject({ agentBoardOpen: false, plannerOpen: true });
+    s.togglePlanner();
+    expect(useUiStore.getState()).toMatchObject({ agentBoardOpen: false, plannerOpen: false });
   });
 
   it("reset wipes everything back to defaults", () => {

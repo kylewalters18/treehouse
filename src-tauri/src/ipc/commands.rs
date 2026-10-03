@@ -336,6 +336,7 @@ pub async fn close_workspace(
     // watchers, cached diffs, then the worktrees and the workspace itself.
     // On-disk worktree dirs and their branches are left intact.
     fs_watch::stop_workspace(&app, &workspace_id);
+    state.planners.forget(&state.agents, workspace_id);
     let wt_ids: Vec<WorktreeId> = state
         .worktrees
         .iter()
@@ -1065,23 +1066,94 @@ pub async fn list_agent_activity(
     Ok(out)
 }
 
-/// Show the global scratch agent: attach to the running session (ring-buffer
-/// replay) or start one. See `crate::scratch`.
+/// Show a ⌘J planner: the repo's (`workspace_id`), or the global scratch
+/// agent with `None`. Attaches to the running session (ring-buffer replay)
+/// or starts one — a repo planner refreshes its checkout first. See
+/// `crate::planner` / `crate::scratch`.
 #[tauri::command]
-pub async fn open_scratch_agent(
+#[allow(clippy::too_many_arguments)]
+pub async fn open_planner(
+    workspace_id: Option<WorkspaceId>,
+    resume: Option<String>,
     app: AppHandle,
     cols: u16,
     rows: u16,
     channel: Channel<AgentEvent>,
     state: State<'_, AppState>,
-) -> AppResult<AgentSession> {
-    crate::scratch::open(&app, &state.scratch, &state.agents, cols, rows, channel).await
+) -> AppResult<crate::planner::PlannerOpened> {
+    match workspace_id {
+        None => Ok(crate::planner::PlannerOpened {
+            session: crate::scratch::open(
+                &app,
+                &state.scratch,
+                &state.agents,
+                resume,
+                cols,
+                rows,
+                channel,
+            )
+            .await?,
+            checkout: None,
+        }),
+        Some(id) => {
+            let ws = state
+                .workspaces
+                .get(&id)
+                .map(|e| e.value().clone())
+                .ok_or_else(|| AppError::Unknown(format!("unknown workspace: {id}")))?;
+            crate::planner::open(&app, &state.planners, &state.agents, &ws, resume, cols, rows, channel)
+                .await
+        }
+    }
 }
 
-/// Scratch agent activity for the header pill. In-memory; safe to poll.
+/// A planner's past conversations (newest first), resumable via
+/// `open_planner`'s `resume` — the repo's, or the global one with `None`.
 #[tauri::command]
-pub async fn scratch_agent_activity(state: State<'_, AppState>) -> AppResult<AgentActivity> {
-    Ok(state.scratch.activity(&state.agents))
+pub async fn list_planner_history(
+    workspace_id: Option<WorkspaceId>,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> AppResult<Vec<agent::history::AgentHistoryEntry>> {
+    let dir = match workspace_id {
+        None => crate::scratch::dir(&app)?,
+        Some(id) => {
+            let root = state
+                .workspaces
+                .get(&id)
+                .map(|e| e.value().root.clone())
+                .ok_or_else(|| AppError::Unknown(format!("unknown workspace: {id}")))?;
+            crate::planner::checkout_dir(&root)
+        }
+    };
+    Ok(state.agents.history_for(&dir))
+}
+
+/// One planner's activity for the ⌘J pill (`workspace_id` null = global).
+#[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct PlannerActivity {
+    pub workspace_id: Option<WorkspaceId>,
+    pub activity: AgentActivity,
+}
+
+/// Activity of every planner with a session, global included. In-memory;
+/// safe to poll.
+#[tauri::command]
+pub async fn planner_activities(state: State<'_, AppState>) -> AppResult<Vec<PlannerActivity>> {
+    let mut out = vec![PlannerActivity {
+        workspace_id: None,
+        activity: state.scratch.activity(&state.agents),
+    }];
+    out.extend(
+        state
+            .planners
+            .activities(&state.agents)
+            .into_iter()
+            .map(|(ws, activity)| PlannerActivity { workspace_id: Some(ws), activity }),
+    );
+    Ok(out)
 }
 
 #[tauri::command]

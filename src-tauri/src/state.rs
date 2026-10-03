@@ -45,6 +45,8 @@ pub struct AppState {
     pub mcp: Arc<McpRegistry>,
     /// The global ⌘J scratch agent — see `crate::scratch`.
     pub scratch: Arc<ScratchState>,
+    /// Per-repo ⌘J planners — see `crate::planner`.
+    pub planners: Arc<crate::planner::Planners>,
 }
 
 impl AppState {
@@ -64,6 +66,7 @@ impl AppState {
             forge_remotes: Arc::new(DashMap::new()),
             mcp: Arc::new(McpRegistry::new()),
             scratch: Arc::new(ScratchState::new()),
+            planners: Arc::new(crate::planner::Planners::default()),
         }
     }
 }

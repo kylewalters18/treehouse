@@ -9,7 +9,7 @@ use tokio::process::Command;
 use crate::util::errors::{AppError, AppResult};
 use git2::Repository;
 
-async fn git<I, S>(repo_root: &Path, args: I) -> AppResult<String>
+pub(crate) async fn git<I, S>(repo_root: &Path, args: I) -> AppResult<String>
 where
     I: IntoIterator<Item = S>,
     S: AsRef<std::ffi::OsStr>,

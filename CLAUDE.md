@@ -44,6 +44,9 @@ src-tauri/src/
   user_config.rs          # User-edited treehouse.toml: custom LSPs, LSP overrides, worktree hooks,
                           #   agent status patterns
   scratch.rs              # Global ⌘J scratch agent, not tied to a repo
+  planner.rs              # Per-repo ⌘J planner: read-only `clone --shared` of origin/<default> at
+                          #   <repo>__worktrees/.planner (not a git worktree → never adopted), refreshed
+                          #   per session; MCP-scoped to its repo
   fs_api.rs               # File tree + read-file commands (ignore-aware)
   test_support.rs         # Shared fixtures (repo scaffolding, etc.) for #[cfg(test)]
   ipc/

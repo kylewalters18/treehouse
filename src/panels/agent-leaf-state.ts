@@ -7,12 +7,14 @@ import {
   attachAgent,
   killAgent,
   launchAgent,
-  openScratchAgent,
+  openPlanner,
 } from "@/ipc/client";
 import type {
   AgentBackendKind,
   AgentEvent,
   AgentSessionId,
+  PlannerCheckout,
+  WorkspaceId,
   WorktreeId,
 } from "@/ipc/types";
 import { fitAndPin } from "./xterm-fit";
@@ -29,8 +31,16 @@ export type AgentLeafMode =
       prompt?: string;
     }
   | { kind: "attach"; agentId: AgentSessionId }
-  /// The global scratch agent: attach-or-launch in one call.
-  | { kind: "scratch" };
+  /// A ⌘J planner — the repo's, or the global scratch agent with
+  /// `workspaceId` null: attach-or-launch in one call. `onCheckout` gets
+  /// what a repo planner is reading once the session is up.
+  | {
+      kind: "planner";
+      workspaceId: WorkspaceId | null;
+      /// Resume this past conversation instead of attaching/starting fresh.
+      resume?: string;
+      onCheckout?: (c: PlannerCheckout | null) => void;
+    };
 
 export type AgentLeafState = {
   host: HTMLDivElement;
@@ -223,9 +233,16 @@ export function createAgentLeafState(
           await killAgent(id).catch(() => {});
           return;
         }
-      } else if (mode.kind === "scratch") {
-        const s = await openScratchAgent(term.cols, term.rows, onEvent);
-        id = s.id;
+      } else if (mode.kind === "planner") {
+        const opened = await openPlanner(
+          mode.workspaceId,
+          term.cols,
+          term.rows,
+          onEvent,
+          mode.resume,
+        );
+        id = opened.session.id;
+        mode.onCheckout?.(opened.checkout);
         // Closed while starting: the backend holds onto the session, so
         // detaching is enough — "New session" kills it explicitly.
         if (state.killed) return;

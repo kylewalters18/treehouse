@@ -50,7 +50,7 @@ type CardContext = {
   pendingComments: number;
 };
 
-/// Title-bar button for the board, beside the scratch pill. Turns amber
+/// Title-bar button for the board, beside the planner pill. Turns amber
 /// with a count when any worktree's agent needs you and the board is
 /// closed.
 export function AgentBoardPill() {

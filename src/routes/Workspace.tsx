@@ -21,7 +21,7 @@ import { FileFinder } from "@/components/FileFinder";
 import { CommandPalette } from "@/components/CommandPalette";
 import { SystemFileViewer } from "@/components/SystemFileViewer";
 import { AgentBoard, AgentBoardPill } from "@/components/AgentBoard";
-import { ScratchAgent, ScratchPill } from "@/components/ScratchAgent";
+import { PlannerPopup, PlannerPill } from "@/components/Planner";
 import { StatusBar } from "@/components/StatusBar";
 import { effectiveBaseRef } from "@/lib/base-ref";
 import { Search, X } from "lucide-react";
@@ -216,10 +216,10 @@ export function Workspace() {
         e.preventDefault();
         useUiStore.getState().requestAgentLaunch();
       } else if (e.metaKey && !e.shiftKey && (e.key === "j" || e.key === "J")) {
-        // ⌘J — scratch agent popup. Cmd only: Ctrl+J is a newline in
+        // ⌘J — planner popup (this repo's, or global). Cmd only: Ctrl+J is a newline in
         // Claude's input (and LF in shells), so it must reach the xterm.
         e.preventDefault();
-        useUiStore.getState().toggleScratch();
+        useUiStore.getState().togglePlanner();
       } else if (e.shiftKey && (e.key === "n" || e.key === "N")) {
         // ⌘⇧N — new worktree in the active (or first open) workspace.
         e.preventDefault();
@@ -312,7 +312,7 @@ export function Workspace() {
           className="flex items-center justify-end gap-1.5"
         >
           <AgentBoardPill />
-          <ScratchPill />
+          <PlannerPill />
           <SettingsMenu />
           <button
             onClick={() => {
@@ -427,7 +427,7 @@ export function Workspace() {
       />
       <SystemFileViewerMount />
       <AgentBoard />
-      <ScratchAgent />
+      <PlannerPopup />
     </div>
   );
 }

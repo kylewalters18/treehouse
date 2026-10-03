@@ -8,6 +8,7 @@ mod ipc;
 mod lsp;
 mod mcp;
 mod pty;
+mod planner;
 mod scratch;
 mod state;
 mod storage;
@@ -134,8 +135,9 @@ pub fn run() {
         ipc::commands::list_backend_agents,
         ipc::commands::attach_agent,
         ipc::commands::list_agent_activity,
-        ipc::commands::open_scratch_agent,
-        ipc::commands::scratch_agent_activity,
+        ipc::commands::open_planner,
+        ipc::commands::planner_activities,
+        ipc::commands::list_planner_history,
         ipc::commands::list_agent_overview,
         ipc::commands::agent_respond_permission,
         ipc::commands::lsp_ensure,

@@ -9,9 +9,10 @@
 //!   and gets the server injected via `--mcp-config` (never written into the
 //!   repo). The token is how a tool call knows its caller's workspace and
 //!   parent worktree; it stops working once the agent exits.
-//! - Tools live in `tools`: `create_worktree`, plus `list_repos` for the
-//!   scratch agent (`crate::scratch`), which isn't in any repo and so has to
-//!   name one.
+//! - Tools live in `tools`: `create_issue`, `create_worktree`, `create_pr`
+//!   (worktree agents only), plus `list_repos` for the global scratch agent
+//!   (`crate::scratch`), which isn't in any repo and so has to name one. A
+//!   repo planner (`crate::planner`) is scoped to its repo.
 //! - Gating is Claude Code's own permission prompt: we don't pre-approve the
 //!   tool, so each call asks the user in the parent agent's pane (which also
 //!   flips that worktree to needs-attention in the sidebar).
@@ -28,7 +29,7 @@ use tauri::{AppHandle, Manager};
 
 use crate::agent::AgentBackendKind;
 use crate::state::AppState;
-use crate::util::ids::{AgentSessionId, WorktreeId};
+use crate::util::ids::{AgentSessionId, WorkspaceId, WorktreeId};
 
 pub use server::start;
 
@@ -49,6 +50,9 @@ pub enum CallerScope {
     Worktree(WorktreeId),
     /// The global scratch agent: no repo of its own, names one per call.
     Scratch,
+    /// A repo's ⌘J planner (`crate::planner`): acts on that repo, but has no
+    /// worktree of its own (so no `create_pr`).
+    Planner(WorkspaceId),
 }
 
 pub struct McpRegistry {
@@ -100,6 +104,8 @@ pub fn claude_config_for(
     let port = mcp.port()?;
     let scope = if worktree_id == state.scratch.worktree_id {
         CallerScope::Scratch
+    } else if let Some(ws) = state.planners.workspace_for(worktree_id) {
+        CallerScope::Planner(ws)
     } else {
         CallerScope::Worktree(worktree_id)
     };

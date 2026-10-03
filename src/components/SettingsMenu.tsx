@@ -313,7 +313,7 @@ const KEYBINDING_GROUPS: { group: string; items: Binding[] }[] = [
       { combos: [["⌘", "P"]], label: "Go to file" },
       { combos: [["⌘", "⇧", "P"]], label: "Command palette" },
       { combos: [["⌘", "K"]], label: "Agent board" },
-      { combos: [["⌘", "J"]], label: "Scratch agent" },
+      { combos: [["⌘", "J"]], label: "Planner (this repo, or global)" },
       { combos: [["⌘", "["]], label: "Navigate back (cursor history)" },
       { combos: [["⌘", "]"]], label: "Navigate forward (cursor history)" },
       { combos: [["⌘", "="]], label: "Zoom in" },

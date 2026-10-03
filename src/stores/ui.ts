@@ -85,8 +85,12 @@ type UiState = {
   /// Agent board overlay (⌘K).
   agentBoardOpen: boolean;
   agentBoardLayout: "board" | "list";
-  /// Scratch agent popup (⌘J).
-  scratchOpen: boolean;
+  /// ⌘J planner popup (a repo's planner, or the global scratch agent).
+  plannerOpen: boolean;
+  /// A planner the user picked by hand in the popup, sticky while they stay
+  /// in `forRepo` (the repo they were in when picking); `scope` null =
+  /// global. Cleared implicitly once they move to another repo.
+  plannerPick: { scope: WorkspaceId | null; forRepo: WorkspaceId | null } | null;
   /// Epoch ms each agent session was last on screen — its tab active in
   /// the selected worktree. Maintained by the subscription below; the
   /// board uses it to tell finished-and-unseen turns from seen ones.
@@ -142,8 +146,9 @@ type UiState = {
   closeNewWorktreeDialog: () => void;
   setAgentBoardOpen: (open: boolean) => void;
   toggleAgentBoard: () => void;
-  setScratchOpen: (open: boolean) => void;
-  toggleScratch: () => void;
+  setPlannerOpen: (open: boolean) => void;
+  togglePlanner: () => void;
+  setPlannerPick: (pick: { scope: WorkspaceId | null; forRepo: WorkspaceId | null }) => void;
   setAgentBoardLayout: (layout: "board" | "list") => void;
   markAgentSeen: (agentId: AgentSessionId) => void;
   /// Select `worktreeId` and make `agentId` its active agent tab.
@@ -174,7 +179,8 @@ export const useUiStore = create<UiState>((set, get) => ({
   newWorktreeWorkspace: null,
   agentBoardOpen: false,
   agentBoardLayout: "board",
-  scratchOpen: false,
+  plannerOpen: false,
+  plannerPick: null,
   agentSeenAt: {},
   agentFocusRequest: null,
   showResolvedComments: false,
@@ -313,19 +319,22 @@ export const useUiStore = create<UiState>((set, get) => ({
       const visible = visibleAgent(get());
       if (visible) get().markAgentSeen(visible);
     }
-    // One overlay at a time: the board and scratch both want the keyboard.
-    set(open ? { agentBoardOpen: true, scratchOpen: false } : { agentBoardOpen: false });
+    // One overlay at a time: the board and planner both want the keyboard.
+    set(open ? { agentBoardOpen: true, plannerOpen: false } : { agentBoardOpen: false });
   },
   toggleAgentBoard() {
     get().setAgentBoardOpen(!get().agentBoardOpen);
   },
-  setScratchOpen(open) {
-    // Hiding scratch only detaches its xterm, so closing it for the board
+  setPlannerOpen(open) {
+    // Hiding a planner only detaches its xterm, so closing it for the board
     // (and vice versa) loses nothing.
-    set(open ? { scratchOpen: true, agentBoardOpen: false } : { scratchOpen: false });
+    set(open ? { plannerOpen: true, agentBoardOpen: false } : { plannerOpen: false });
   },
-  toggleScratch() {
-    get().setScratchOpen(!get().scratchOpen);
+  setPlannerPick(pick) {
+    set({ plannerPick: pick });
+  },
+  togglePlanner() {
+    get().setPlannerOpen(!get().plannerOpen);
   },
   setAgentBoardLayout(layout) {
     set({ agentBoardLayout: layout });

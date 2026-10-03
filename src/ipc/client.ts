@@ -1,7 +1,6 @@
 import { invoke, Channel } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
-  AgentActivity,
   AgentBackendKind,
   AgentOverview,
   AgentProfile,
@@ -47,6 +46,8 @@ import type {
   ForgeStatus,
   ForgeIssue,
   IssueStart,
+  PlannerActivity,
+  PlannerOpened,
   ForgeMr,
   ForgePipeline,
   ForgeJob,
@@ -468,20 +469,38 @@ export function attachAgent(
   return invoke<AgentSession>("attach_agent", { agentId, channel });
 }
 
-/// Show the global scratch agent: attaches to the running session (ring
-/// buffer replayed into the channel) or starts one.
-export function openScratchAgent(
+/// Show a ⌘J planner — the repo's, or the global scratch agent with
+/// `workspaceId` null. Attaches to the running session (ring buffer replayed
+/// into the channel) or starts one; a new repo planner first refreshes its
+/// checkout to `origin/<default>`, which can take a fetch's worth of time.
+/// With `resume` (a past conversation's Claude session id), the planner's
+/// running session is replaced by that conversation.
+export function openPlanner(
+  workspaceId: WorkspaceId | null,
   cols: number,
   rows: number,
   onEvent: (ev: AgentEvent) => void,
-): Promise<AgentSession> {
+  resume?: string,
+): Promise<PlannerOpened> {
   const channel = new Channel<AgentEvent>();
   channel.onmessage = onEvent;
-  return invoke<AgentSession>("open_scratch_agent", { cols, rows, channel });
+  return invoke<PlannerOpened>("open_planner", {
+    workspaceId,
+    resume: resume ?? null,
+    cols,
+    rows,
+    channel,
+  });
 }
 
-export function scratchAgentActivity(): Promise<AgentActivity> {
-  return invoke<AgentActivity>("scratch_agent_activity");
+/// A planner's past conversations, newest first (global = null).
+export function listPlannerHistory(workspaceId: WorkspaceId | null): Promise<AgentHistoryEntry[]> {
+  return invoke<AgentHistoryEntry[]>("list_planner_history", { workspaceId });
+}
+
+/// Activity of every planner with a session (global = `workspaceId` null).
+export function plannerActivities(): Promise<PlannerActivity[]> {
+  return invoke<PlannerActivity[]>("planner_activities");
 }
 
 export function listAgentActivity(

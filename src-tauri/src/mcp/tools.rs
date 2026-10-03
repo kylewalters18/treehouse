@@ -29,6 +29,11 @@ pub fn list(scope: CallerScope) -> Value {
             create_worktree_schema(scope),
             create_pr_schema(),
         ]),
+        // A planner has a repo but no worktree, so nothing to open a PR from.
+        CallerScope::Planner(_) => json!([
+            create_issue_schema(scope),
+            create_worktree_schema(scope),
+        ]),
         CallerScope::Scratch => json!([
             {
                 "name": "list_repos",
@@ -101,19 +106,23 @@ fn create_pr_schema() -> Value {
 
 fn create_worktree_schema(scope: CallerScope) -> Value {
     let scratch = scope == CallerScope::Scratch;
-    let (what, base_hint) = if scratch {
-        (
+    let (what, base_hint) = match scope {
+        CallerScope::Scratch => (
             "Create a new git worktree (and branch) in one of the repos open in treehouse \
             (see list_repos), shown in that repo's sidebar section like one the user created.",
             "Ref to branch from. Defaults to origin/<default branch>.",
-        )
-    } else {
-        (
+        ),
+        CallerScope::Planner(_) => (
+            "Create a new git worktree (and branch) in this repo, shown in its sidebar section \
+            like one the user created.",
+            "Ref to branch from. Defaults to origin/<default branch>.",
+        ),
+        CallerScope::Worktree(_) => (
             "Create a new git worktree (and branch) as a sibling of the current one, \
             shown in treehouse's sidebar like one the user created.",
             "Ref to branch from. Defaults to origin/<default branch>. Pass the current branch \
             name to build on this worktree's committed work (uncommitted changes are not carried over).",
-        )
+        ),
     };
     let mut properties = json!({
         "name": {
@@ -203,6 +212,7 @@ fn target_workspace(
                 .ok_or("the calling worktree no longer exists")?;
             Ok((parent.workspace_id, parent.branch))
         }
+        CallerScope::Planner(ws) => Ok((ws, crate::planner::CREATED_BY.to_string())),
         CallerScope::Scratch => {
             let repo = str_arg(args, "repo")
                 .ok_or("`repo` is required — call list_repos for the options")?;
@@ -336,7 +346,8 @@ async fn create_worktree(app: &AppHandle, caller: McpCaller, args: &Value) -> Re
 /// Open a PR/MR for the calling agent's own worktree.
 async fn create_pr(app: &AppHandle, caller: McpCaller, args: &Value) -> Result<Value, String> {
     let CallerScope::Worktree(id) = caller.scope else {
-        return Err("create_pr opens a PR for the calling worktree; the scratch agent has none".into());
+        return Err("create_pr opens a PR for the calling worktree; this agent has none — \
+            tell a worktree's agent to call it".into());
     };
     let title = str_arg(args, "title").ok_or("`title` is required")?;
     let body = str_arg(args, "body").unwrap_or_default();
@@ -476,6 +487,17 @@ mod tests {
         assert_eq!(names(&tools), ["list_repos", "create_issue", "create_worktree"]);
         assert_eq!(tools[1]["inputSchema"]["required"], json!(["repo", "title", "body"]));
         assert_eq!(tools[2]["inputSchema"]["required"], json!(["repo"]));
+    }
+
+    #[test]
+    fn planners_act_on_their_repo_without_create_pr() {
+        let tools = list(CallerScope::Planner(WorkspaceId::new()));
+        assert_eq!(names(&tools), ["create_issue", "create_worktree"]);
+        for t in tools.as_array().unwrap() {
+            assert!(t["inputSchema"]["properties"].get("repo").is_none(), "{}", t["name"]);
+        }
+        let desc = tools[1]["description"].as_str().unwrap();
+        assert!(desc.contains("in this repo"), "{desc}");
     }
 
     #[test]

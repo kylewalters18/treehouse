@@ -46,24 +46,35 @@ impl ScratchState {
     }
 }
 
+/// The scratch agent's working dir. Stable, so its past conversations
+/// can be listed and resumed (Claude resumes only in the same directory).
+pub fn dir(app: &AppHandle) -> AppResult<std::path::PathBuf> {
+    Ok(storage::config_dir(app)?.join("scratch"))
+}
+
 /// Attach `channel` to the running scratch session, or start one if there
 /// isn't a live one. Either way the caller gets output from the start: a new
 /// session streams straight into `channel`, an existing one replays its ring
-/// buffer first.
+/// buffer first. With `resume`, the running session is replaced by that
+/// past conversation.
 pub async fn open(
     app: &AppHandle,
     scratch: &ScratchState,
     agents: &AgentRegistry,
+    resume: Option<String>,
     cols: u16,
     rows: u16,
     channel: Channel<AgentEvent>,
 ) -> AppResult<AgentSession> {
     let existing = *scratch.agent.lock();
     if let Some(id) = existing.filter(|id| supervisor::is_live(agents, *id)) {
-        return supervisor::attach(agents, id, channel);
+        if resume.is_none() {
+            return supervisor::attach(agents, id, channel);
+        }
+        supervisor::kill_for_worktree(agents, scratch.worktree_id);
     }
 
-    let cwd = storage::config_dir(app)?.join("scratch");
+    let cwd = dir(app)?;
     std::fs::create_dir_all(&cwd)
         .map_err(|e| AppError::Unknown(format!("create scratch dir: {e}")))?;
     let settings = storage::load_settings(app).await.unwrap_or_default();
@@ -78,7 +89,7 @@ pub async fn open(
         backend,
         Some(argv),
         None,
-        None,
+        resume,
         cols,
         rows,
         Some(channel),
