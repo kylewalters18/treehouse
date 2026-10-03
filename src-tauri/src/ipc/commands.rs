@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use tauri::ipc::Channel;
@@ -9,8 +10,8 @@ use crate::agent::{
 };
 use crate::diff::{self, DiffMode, DiffSet};
 use crate::forge::{
-    self, ForgeApproval, ForgeIssue, ForgeJob, ForgeMr, ForgePipeline, ForgeStatus, ForgeThread,
-    ReviewCommentInput,
+    self, workflow, ForgeApproval, ForgeIssue, ForgeJob, ForgeMr, ForgePipeline, ForgeStatus,
+    ForgeThread, IssueStart, ReviewCommentInput,
 };
 use crate::fs_api::{self, FileContent, TreeEntry};
 use crate::lsp::{self, LspConfig, LspEvent, LspServerSession};
@@ -207,6 +208,31 @@ pub async fn set_worktree_pinned(
     Ok(paths_to_strings(items))
 }
 
+/// Worktree path → linked forge issue number, for every linked worktree.
+#[tauri::command]
+pub async fn list_issue_links(app: AppHandle) -> AppResult<HashMap<String, u64>> {
+    Ok(links_to_strings(storage::list_issue_links(&app).await?))
+}
+
+/// Link a worktree (by path) to a forge issue, or unlink with `null`.
+/// Returns the full map so the frontend can replace its copy.
+#[tauri::command]
+pub async fn set_worktree_issue(
+    path: String,
+    issue: Option<u64>,
+    app: AppHandle,
+) -> AppResult<HashMap<String, u64>> {
+    let items = workflow::set_issue_link(&app, &PathBuf::from(path), issue).await?;
+    Ok(links_to_strings(items))
+}
+
+fn links_to_strings(links: std::collections::BTreeMap<PathBuf, u64>) -> HashMap<String, u64> {
+    links
+        .into_iter()
+        .map(|(p, n)| (p.to_string_lossy().into_owned(), n))
+        .collect()
+}
+
 fn paths_to_strings(paths: Vec<PathBuf>) -> Vec<String> {
     paths
         .into_iter()
@@ -359,16 +385,20 @@ pub async fn list_worktrees(
     Ok(worktree::list_for_workspace(workspace_id, &state))
 }
 
+/// Create a worktree. With `issue`, also run the create-from-issue extras
+/// (link, assign, seed prompt — see `forge::workflow::start_from_issue`); the
+/// renderer launches the agent with the returned prompt.
 #[tauri::command]
 pub async fn create_worktree(
     workspace_id: WorkspaceId,
     name: String,
     init_submodules: bool,
     base: Option<String>,
+    issue: Option<IssueStart>,
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> AppResult<CreateWorktreeResult> {
-    let result = worktree::create(
+    let mut result = worktree::create(
         Some(&app),
         workspace_id,
         &name,
@@ -377,12 +407,21 @@ pub async fn create_worktree(
     )
     .await?;
     finish_create(&app, workspace_id, &result);
+    if let Some(start) = issue {
+        result.issue = Some(match resolve_forge(workspace_id, &state).await {
+            Ok((f, _)) => workflow::start_from_issue(&app, &f, &result.worktree.path, &start).await,
+            Err(e) => forge::IssueStartResult {
+                prompt: None,
+                warnings: vec![format!("couldn't reach the forge for #{}: {e}", start.number)],
+            },
+        });
+    }
     Ok(result)
 }
 
-/// Post-create wiring shared by `create_worktree` and
-/// `forge_create_worktree_from_issue`: start the watcher + initial diff,
-/// kick a status recompute, and fan out the sidebar refresh signal.
+/// Post-create wiring shared by `create_worktree` and the MCP tool: start
+/// the watcher + initial diff, kick a status recompute, and fan out the
+/// sidebar refresh signal.
 pub fn finish_create(app: &AppHandle, workspace_id: WorkspaceId, result: &CreateWorktreeResult) {
     prime_worktree_watch(app, &result.worktree);
     worktree::status::spawn_recompute(app, result.worktree.id);
@@ -421,11 +460,14 @@ pub async fn remove_worktree(
     )
     .await?;
 
-    // Drop the pin so a later worktree at the same path doesn't come
-    // back pinned. Best effort — a stale pin only matches nothing.
+    // Drop the pin and issue link so a later worktree at the same path
+    // doesn't inherit them. Best effort — a stale pin only matches nothing.
     if let Some(path) = &removed_path {
         if let Err(e) = storage::set_pinned(&app, path, false).await {
             tracing::warn!(?e, "unpin removed worktree failed");
+        }
+        if let Err(e) = workflow::set_issue_link(&app, path, None).await {
+            tracing::warn!(?e, "unlink removed worktree's issue failed");
         }
     }
 
@@ -511,7 +553,7 @@ pub async fn merge_worktree(
 /// Resolve the workspace root and build the active forge provider, using the
 /// `forge_remotes` cache to avoid re-forking `git remote get-url` per call.
 /// Errors with `AppError::Forge` when the workspace has no recognized remote.
-async fn resolve_forge(
+pub(crate) async fn resolve_forge(
     workspace_id: WorkspaceId,
     state: &AppState,
 ) -> AppResult<(forge::Forge, PathBuf)> {
@@ -624,43 +666,75 @@ pub async fn forge_find_mr_for_branch(
     f.find_mr_for_branch(&branch).await
 }
 
-/// Push the branch to origin, then open an MR/PR. Body defaults to
-/// `Closes #<n>` when the branch name carries an `<n>-…` issue prefix.
+/// Push the branch to origin, then open an MR/PR (see
+/// `forge::workflow::create_pr`). `close_issue` keeps a linked worktree's
+/// `Closes #n` line in the body — or takes it out when false.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn forge_create_mr(
     workspace_id: WorkspaceId,
     branch: String,
     title: String,
     body: Option<String>,
     draft: bool,
+    close_issue: bool,
+    app: AppHandle,
     state: State<'_, AppState>,
 ) -> AppResult<ForgeMr> {
     let (f, root) = resolve_forge(workspace_id, &state).await?;
-    // Target the branch this worktree was forked from (chosen at create time),
-    // falling back to the repo default for adopted worktrees we don't track.
-    let target = state
-        .worktrees
-        .iter()
-        .find(|e| e.value().workspace_id == workspace_id && e.value().branch == branch)
-        .map(|e| e.value().base_branch.clone())
-        .or_else(|| {
-            state
-                .workspaces
-                .get(&workspace_id)
-                .map(|e| e.value().default_branch.clone())
-        })
-        .ok_or_else(|| AppError::Unknown(format!("unknown workspace: {workspace_id}")))?;
-    worktree::git_ops::push_branch(&root, &branch).await?;
-    let body = body.unwrap_or_else(|| match issue_number_from_branch(&branch) {
-        Some(n) => format!("Closes #{n}"),
-        None => String::new(),
-    });
-    f.create_mr(&branch, &target, &title, &body, draft).await
+    workflow::create_pr(
+        &app,
+        &state,
+        &f,
+        &root,
+        workspace_id,
+        &branch,
+        &title,
+        &body.unwrap_or_default(),
+        draft,
+        close_issue,
+    )
+    .await
 }
 
-/// Parse a leading issue number from a `<n>-slug` branch name.
-fn issue_number_from_branch(branch: &str) -> Option<u64> {
-    branch.split('-').next()?.parse().ok()
+/// An issue formatted as an agent prompt — the same text create-from-issue
+/// seeds, for the issue chip's "Send to agent".
+#[tauri::command]
+pub async fn forge_issue_prompt(
+    workspace_id: WorkspaceId,
+    number: u64,
+    state: State<'_, AppState>,
+) -> AppResult<String> {
+    let (f, _) = resolve_forge(workspace_id, &state).await?;
+    Ok(workflow::issue_prompt(&f.get_issue(number).await?))
+}
+
+#[tauri::command]
+pub async fn forge_create_issue(
+    workspace_id: WorkspaceId,
+    title: String,
+    body: String,
+    state: State<'_, AppState>,
+) -> AppResult<ForgeIssue> {
+    let (f, _) = resolve_forge(workspace_id, &state).await?;
+    f.create_issue(title.trim(), &body).await
+}
+
+/// Replace an issue's title/body. `expected_updated_at` = the `updatedAt`
+/// the caller loaded; a mismatch fails with kind `Conflict` and writes
+/// nothing.
+#[tauri::command]
+pub async fn forge_update_issue(
+    workspace_id: WorkspaceId,
+    number: u64,
+    title: String,
+    body: String,
+    expected_updated_at: Option<String>,
+    state: State<'_, AppState>,
+) -> AppResult<ForgeIssue> {
+    let (f, _) = resolve_forge(workspace_id, &state).await?;
+    f.update_issue(number, title.trim(), &body, expected_updated_at.as_deref())
+        .await
 }
 
 #[tauri::command]
@@ -811,12 +885,16 @@ pub async fn forge_job_log(
 
 // --- Agents ---
 
+/// `prompt` is submitted as the agent's first message (e.g. an issue when
+/// creating a worktree from one) on backends that take a positional prompt;
+/// others start without it.
 #[tauri::command]
 pub async fn launch_agent(
     app: AppHandle,
     worktree_id: WorktreeId,
     backend: AgentBackendKind,
     argv: Option<Vec<String>>,
+    prompt: Option<String>,
     resume: Option<String>,
     cols: u16,
     rows: u16,
@@ -835,7 +913,7 @@ pub async fn launch_agent(
         wt.path,
         backend,
         argv,
-        None,
+        prompt,
         resume,
         cols,
         rows,

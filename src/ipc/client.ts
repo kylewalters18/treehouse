@@ -46,6 +46,7 @@ import type {
   WorktreeId,
   ForgeStatus,
   ForgeIssue,
+  IssueStart,
   ForgeMr,
   ForgePipeline,
   ForgeJob,
@@ -146,6 +147,19 @@ export function listPinnedWorktrees(): Promise<string[]> {
   return invoke<string[]>("list_pinned_worktrees");
 }
 
+/// Worktree path → linked forge issue number.
+export function listIssueLinks(): Promise<Record<string, number>> {
+  return invoke<Record<string, number>>("list_issue_links");
+}
+
+/// Link a worktree (by path) to an issue, or unlink with `null`.
+export function setWorktreeIssue(
+  path: string,
+  issue: number | null,
+): Promise<Record<string, number>> {
+  return invoke<Record<string, number>>("set_worktree_issue", { path, issue });
+}
+
 export function setWorktreePinned(
   path: string,
   pinned: boolean,
@@ -178,13 +192,14 @@ export function listWorktrees(workspaceId: WorkspaceId): Promise<Worktree[]> {
 export function createWorktree(
   workspaceId: WorkspaceId,
   name: string,
-  opts: { initSubmodules?: boolean; base?: string | null } = {},
+  opts: { initSubmodules?: boolean; base?: string | null; issue?: IssueStart | null } = {},
 ): Promise<CreateWorktreeResult> {
   return invoke<CreateWorktreeResult>("create_worktree", {
     workspaceId,
     name,
     initSubmodules: opts.initSubmodules ?? false,
     base: opts.base ?? null,
+    issue: opts.issue ?? null,
   });
 }
 
@@ -392,6 +407,7 @@ export function launchAgent(
   onEvent: (ev: AgentEvent) => void,
   argv?: string[],
   resume?: string,
+  prompt?: string,
 ): Promise<AgentSession> {
   const channel = new Channel<AgentEvent>();
   channel.onmessage = onEvent;
@@ -399,6 +415,7 @@ export function launchAgent(
     worktreeId,
     backend,
     argv,
+    prompt,
     resume,
     cols,
     rows,
@@ -775,12 +792,15 @@ export function forgeFindMrForBranch(
   });
 }
 
+/// `closeIssue`: keep (or, false, remove) a linked worktree's `Closes #n`
+/// line — Rust guarantees exactly one when true.
 export function forgeCreateMr(
   workspaceId: WorkspaceId,
   branch: string,
   title: string,
   body: string | null,
   draft: boolean,
+  closeIssue: boolean,
 ): Promise<ForgeMr> {
   return invoke<ForgeMr>("forge_create_mr", {
     workspaceId,
@@ -788,7 +808,53 @@ export function forgeCreateMr(
     title,
     body,
     draft,
+    closeIssue,
   });
+}
+
+/// The issue as an agent prompt (same text create-from-issue seeds).
+export function forgeIssuePrompt(workspaceId: WorkspaceId, number: number): Promise<string> {
+  return invoke<string>("forge_issue_prompt", { workspaceId, number });
+}
+
+export function forgeCreateIssue(
+  workspaceId: WorkspaceId,
+  title: string,
+  body: string,
+): Promise<ForgeIssue> {
+  return invoke<ForgeIssue>("forge_create_issue", { workspaceId, title, body });
+}
+
+/// Fails with kind `Conflict` when the issue's `updatedAt` no longer matches
+/// `expectedUpdatedAt` (edited on the forge meanwhile); pass null to skip the
+/// check (overwrite).
+export function forgeUpdateIssue(
+  workspaceId: WorkspaceId,
+  number: number,
+  title: string,
+  body: string,
+  expectedUpdatedAt: string | null,
+): Promise<ForgeIssue> {
+  return invoke<ForgeIssue>("forge_update_issue", {
+    workspaceId,
+    number,
+    title,
+    body,
+    expectedUpdatedAt,
+  });
+}
+
+/// The worktree → issue link map changed (UI or an agent over MCP).
+export function onIssueLinksChanged(handler: () => void): Promise<UnlistenFn> {
+  return listen("issue-links://changed", handler);
+}
+
+/// An MR/PR was created for `branch` in this workspace (UI or MCP).
+export function onMrChanged(
+  workspaceId: WorkspaceId,
+  handler: (branch: string) => void,
+): Promise<UnlistenFn> {
+  return listen<string>(`workspace://${workspaceId}/mr-changed`, (e) => handler(e.payload));
 }
 
 export function forgeApproveMr(

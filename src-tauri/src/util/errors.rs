@@ -24,6 +24,11 @@ pub enum AppError {
     #[error("forge error: {0}")]
     Forge(String),
 
+    /// A write lost a race: the target changed since the caller read it
+    /// (e.g. an issue edited on the forge while the user was editing it).
+    #[error("{0}")]
+    Conflict(String),
+
     #[error("{0}")]
     Unknown(String),
 }
@@ -44,6 +49,7 @@ pub enum AppErrorKind {
     Io,
     AlreadyOpen,
     Forge,
+    Conflict,
     Unknown,
 }
 
@@ -56,6 +62,7 @@ impl AppError {
             AppError::Io(_) => AppErrorKind::Io,
             AppError::AlreadyOpen(_) => AppErrorKind::AlreadyOpen,
             AppError::Forge(_) => AppErrorKind::Forge,
+            AppError::Conflict(_) => AppErrorKind::Conflict,
             AppError::Unknown(_) => AppErrorKind::Unknown,
         }
     }

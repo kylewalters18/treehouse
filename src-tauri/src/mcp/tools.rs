@@ -8,7 +8,8 @@ use serde_json::{json, Value};
 use tauri::{AppHandle, Manager};
 
 use crate::agent::supervisor;
-use crate::ipc::commands::finish_create;
+use crate::forge::{workflow, IssueStart};
+use crate::ipc::commands::{finish_create, resolve_forge};
 use crate::state::AppState;
 use crate::util::ids::WorkspaceId;
 use crate::storage;
@@ -23,18 +24,79 @@ const HEADLESS_ROWS: u16 = 40;
 
 pub fn list(scope: CallerScope) -> Value {
     match scope {
-        CallerScope::Worktree(_) => json!([create_worktree_schema(scope)]),
+        CallerScope::Worktree(_) => json!([
+            create_issue_schema(scope),
+            create_worktree_schema(scope),
+            create_pr_schema(),
+        ]),
         CallerScope::Scratch => json!([
             {
                 "name": "list_repos",
                 "description": "List the git repos currently open in treehouse — the only repos \
-                    create_worktree can target. Call this first to get a valid `repo`; the set \
-                    changes as the user opens and closes repos.",
+                    create_worktree and create_issue can target. Call this first to get a valid \
+                    `repo`; the set changes as the user opens and closes repos.",
                 "inputSchema": { "type": "object", "properties": {} }
             },
+            create_issue_schema(scope),
             create_worktree_schema(scope),
         ]),
     }
+}
+
+fn repo_property() -> Value {
+    json!({
+        "type": "string",
+        "description": "Which open repo: a `name` or `path` from list_repos."
+    })
+}
+
+fn create_issue_schema(scope: CallerScope) -> Value {
+    let mut properties = json!({
+        "title": { "type": "string", "description": "Issue title." },
+        "body": {
+            "type": "string",
+            "description": "Issue description. Write it to stand on its own for whoever picks it up: \
+                the problem, where it shows up, and what done looks like."
+        }
+    });
+    let mut required = vec!["title", "body"];
+    if scope == CallerScope::Scratch {
+        properties["repo"] = repo_property();
+        required.insert(0, "repo");
+    }
+    json!({
+        "name": "create_issue",
+        "description": "File a new issue on this repo's GitLab/GitHub project (it is visible to the \
+            team). Returns its number and URL; pass the number to create_worktree's `issue` to start \
+            work on it.",
+        "inputSchema": { "type": "object", "properties": properties, "required": required }
+    })
+}
+
+fn create_pr_schema() -> Value {
+    json!({
+        "name": "create_pr",
+        "description": "Push THIS worktree's branch and open a pull/merge request for it against the \
+            branch it was created from. Commit your work first — treehouse never commits for you, and \
+            this refuses when the branch has no commits ahead of its base. When this worktree is \
+            linked to an issue, the description gets a `Closes #n` line (unless close_issue is false).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "title": { "type": "string", "description": "PR/MR title." },
+                "body": {
+                    "type": "string",
+                    "description": "Description for reviewers: what changed, why, and how it was verified."
+                },
+                "draft": { "type": "boolean", "description": "Open as a draft. Default false." },
+                "close_issue": {
+                    "type": "boolean",
+                    "description": "Close the linked issue when this merges. Default true."
+                }
+            },
+            "required": ["title", "body"]
+        }
+    })
 }
 
 fn create_worktree_schema(scope: CallerScope) -> Value {
@@ -61,24 +123,30 @@ fn create_worktree_schema(scope: CallerScope) -> Value {
         "base": { "type": "string", "description": base_hint },
         "prompt": {
             "type": "string",
-            "description": "First message for the new worktree's agent."
+            "description": "First message for the new worktree's agent. With `issue`, this is added \
+                after the issue text — use it for extra instructions."
+        },
+        "issue": {
+            "type": "integer",
+            "description": "Work on this existing issue number: links the worktree to it (its PR will \
+                close it) and seeds the new agent with the issue. `name` defaults to `<n>-<title>`."
         }
     });
-    let mut required = vec!["name"];
+    let mut required = vec![];
     if scratch {
-        properties["repo"] = json!({
-            "type": "string",
-            "description": "Which open repo to create it in: a `name` or `path` from list_repos."
-        });
-        required.insert(0, "repo");
+        properties["repo"] = repo_property();
+        required.push("repo");
     }
     json!({
         "name": "create_worktree",
-        "description": format!("{what} If `prompt` is given, a new agent is started in it with that \
-            prompt as its first message; that agent starts with NO context from this conversation, \
-            so make the prompt self-contained (goal, relevant files, constraints, how to verify). \
-            The user is not switched to it. Always use this instead of `git worktree add` or \
-            EnterWorktree — worktrees created those ways are invisible to treehouse."),
+        "description": format!("{what} Pass `name`, `issue`, or both. If `prompt` or `issue` is \
+            given, a new agent is started in it with that as its first message; that agent starts \
+            with NO context from this conversation, so make the prompt self-contained (goal, \
+            relevant files, constraints, how to verify). If the user wants a pull/merge request \
+            for the work, say so in `prompt`: tell the new agent to commit when done and call \
+            create_pr — you can't open it for them. The user is not switched to it. Always use \
+            this instead of `git worktree add` or EnterWorktree — worktrees created those ways are \
+            invisible to treehouse."),
         "inputSchema": {
             "type": "object",
             "properties": properties,
@@ -92,6 +160,8 @@ pub async fn call(app: &AppHandle, caller: McpCaller, params: &Value) -> Value {
     let args = params.get("arguments").cloned().unwrap_or(Value::Null);
     let outcome = match name {
         "create_worktree" => create_worktree(app, caller, &args).await,
+        "create_issue" => create_issue(app, caller, &args).await,
+        "create_pr" => create_pr(app, caller, &args).await,
         "list_repos" if caller.scope == CallerScope::Scratch => Ok(list_repos(app)),
         other => Err(format!("unknown tool: {other}")),
     };
@@ -107,38 +177,84 @@ pub async fn call(app: &AppHandle, caller: McpCaller, params: &Value) -> Value {
     }
 }
 
-async fn create_worktree(app: &AppHandle, caller: McpCaller, args: &Value) -> Result<Value, String> {
-    let str_arg = |k: &str| {
-        args.get(k)
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(str::to_string)
-    };
-    let name = str_arg("name").ok_or("`name` is required")?;
-    let base = str_arg("base");
-    let prompt = str_arg("prompt");
+fn str_arg(args: &Value, k: &str) -> Option<String> {
+    args.get(k)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
 
+/// The workspace a call targets, and the label new worktrees record as their
+/// creator: the caller's own repo for a worktree agent, the `repo` argument
+/// for the scratch agent.
+fn target_workspace(
+    app: &AppHandle,
+    caller: McpCaller,
+    args: &Value,
+) -> Result<(WorkspaceId, String), String> {
     let state = app.state::<AppState>();
-    let (workspace_id, created_by) = match caller.scope {
+    match caller.scope {
         CallerScope::Worktree(id) => {
             let parent = state
                 .worktrees
                 .get(&id)
                 .map(|e| e.value().clone())
                 .ok_or("the calling worktree no longer exists")?;
-            (parent.workspace_id, parent.branch)
+            Ok((parent.workspace_id, parent.branch))
         }
         CallerScope::Scratch => {
-            let repo = str_arg("repo").ok_or("`repo` is required — call list_repos for the options")?;
+            let repo = str_arg(args, "repo")
+                .ok_or("`repo` is required — call list_repos for the options")?;
             let repos = open_repos(app);
             let i = resolve_repo(&repos, &repo)?;
-            (repos[i].id, crate::scratch::CREATED_BY.to_string())
+            Ok((repos[i].id, crate::scratch::CREATED_BY.to_string()))
         }
+    }
+}
+
+async fn create_issue(app: &AppHandle, caller: McpCaller, args: &Value) -> Result<Value, String> {
+    let title = str_arg(args, "title").ok_or("`title` is required")?;
+    let body = str_arg(args, "body").unwrap_or_default();
+    let (workspace_id, _) = target_workspace(app, caller, args)?;
+    let state = app.state::<AppState>();
+    let (forge, _) = resolve_forge(workspace_id, &state).await.map_err(|e| e.to_string())?;
+    let issue = forge.create_issue(&title, &body).await.map_err(|e| e.to_string())?;
+    tracing::info!(number = issue.number, "mcp: created issue");
+    Ok(json!({ "number": issue.number, "url": issue.url, "title": issue.title }))
+}
+
+async fn create_worktree(app: &AppHandle, caller: McpCaller, args: &Value) -> Result<Value, String> {
+    let base = str_arg(args, "base");
+    let extra_prompt = str_arg(args, "prompt");
+    let issue_number = match args.get("issue") {
+        None | Some(Value::Null) => None,
+        Some(v) => Some(v.as_u64().ok_or("`issue` must be an issue number")?),
+    };
+    let (workspace_id, created_by) = target_workspace(app, caller, args)?;
+    let state = app.state::<AppState>();
+
+    // With an issue, read it up front: a bad number fails before anything is
+    // created, and it names the branch when `name` is omitted.
+    let issue = match issue_number {
+        Some(n) => {
+            let (forge, _) = resolve_forge(workspace_id, &state).await.map_err(|e| e.to_string())?;
+            let issue = forge.get_issue(n).await.map_err(|e| format!("couldn't read #{n}: {e}"))?;
+            Some((forge, issue))
+        }
+        None => None,
+    };
+    let name = match (str_arg(args, "name"), &issue) {
+        (Some(n), _) => n,
+        // Matches the dialog: `<n>-` + the title, slug kept short.
+        (None, Some((_, i))) => {
+            format!("{}-{}", i.number, i.title.chars().take(50).collect::<String>())
+        }
+        (None, None) => return Err("pass `name`, `issue`, or both".into()),
     };
     let settings = storage::load_settings(app).await.unwrap_or_default();
 
-    let result = worktree::create(
+    let mut result = worktree::create(
         Some(app),
         workspace_id,
         &name,
@@ -155,10 +271,25 @@ async fn create_worktree(app: &AppHandle, caller: McpCaller, args: &Value) -> Re
     // `worktrees-changed` fan-out that makes the row appear. No selection
     // change — that's the renderer's call and it deliberately doesn't.
     finish_create(app, workspace_id, &result);
-    let wt = &result.worktree;
-    tracing::info!(id = %wt.id, parent = %created_by, "mcp: created worktree");
+    tracing::info!(id = %result.worktree.id, parent = %created_by, "mcp: created worktree");
 
-    // Prompt implies an agent; otherwise follow the user's "start default
+    // Link (never assign — that's the user's call) and seed from the issue;
+    // an explicit prompt rides after the issue text.
+    let mut warnings: Vec<String> = result.warning.take().into_iter().collect();
+    let mut prompt = extra_prompt.clone();
+    if let Some((forge, i)) = &issue {
+        let start = IssueStart { number: i.number, assign: false, link: true };
+        let started = workflow::start_from_issue(app, forge, &result.worktree.path, &start).await;
+        warnings.extend(started.warnings);
+        let seed = started.prompt.unwrap_or_else(|| workflow::issue_prompt(i));
+        prompt = Some(match extra_prompt {
+            Some(p) => format!("{seed}\n{p}"),
+            None => seed,
+        });
+    }
+    let wt = &result.worktree;
+
+    // A prompt implies an agent; otherwise follow the user's "start default
     // agent" setting, same as the New Worktree dialog's default.
     let mut agent_error = None;
     let agent_started = if prompt.is_some() || settings.auto_start_agent {
@@ -194,11 +325,52 @@ async fn create_worktree(app: &AppHandle, caller: McpCaller, args: &Value) -> Re
     Ok(json!({
         "branch": wt.branch,
         "path": wt.path,
+        "issue": issue_number,
         "agentStarted": agent_started,
         "promptDelivered": prompt_delivered,
         "agentError": agent_error,
-        "warning": result.warning,
+        "warning": (!warnings.is_empty()).then(|| warnings.join("; ")),
     }))
+}
+
+/// Open a PR/MR for the calling agent's own worktree.
+async fn create_pr(app: &AppHandle, caller: McpCaller, args: &Value) -> Result<Value, String> {
+    let CallerScope::Worktree(id) = caller.scope else {
+        return Err("create_pr opens a PR for the calling worktree; the scratch agent has none".into());
+    };
+    let title = str_arg(args, "title").ok_or("`title` is required")?;
+    let body = str_arg(args, "body").unwrap_or_default();
+    let draft = args.get("draft").and_then(Value::as_bool).unwrap_or(false);
+    let close_issue = args.get("close_issue").and_then(Value::as_bool).unwrap_or(true);
+
+    let state = app.state::<AppState>();
+    let wt = state
+        .worktrees
+        .get(&id)
+        .map(|e| e.value().clone())
+        .ok_or("the calling worktree no longer exists")?;
+    if wt.is_main_clone {
+        return Err("create_pr can't open a PR from the main clone".into());
+    }
+    let (forge, root) = resolve_forge(wt.workspace_id, &state)
+        .await
+        .map_err(|e| e.to_string())?;
+    let mr = workflow::create_pr(
+        app,
+        &state,
+        &forge,
+        &root,
+        wt.workspace_id,
+        &wt.branch,
+        &title,
+        &body,
+        draft,
+        close_issue,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    tracing::info!(number = mr.number, branch = %wt.branch, "mcp: created PR");
+    Ok(json!({ "number": mr.number, "url": mr.url, "draft": mr.draft }))
 }
 
 /// An open workspace as the scratch agent sees it.
@@ -294,15 +466,25 @@ mod tests {
         assert!(resolve_repo(&[], "x").unwrap_err().contains("no repos"));
     }
 
-    #[test]
-    fn scratch_gets_list_repos_and_required_repo() {
-        let tools = list(CallerScope::Scratch);
-        let names: Vec<_> = tools.as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
-        assert_eq!(names, ["list_repos", "create_worktree"]);
-        assert_eq!(tools[1]["inputSchema"]["required"], json!(["repo", "name"]));
+    fn names(tools: &Value) -> Vec<&str> {
+        tools.as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect()
+    }
 
+    #[test]
+    fn scratch_gets_list_repos_and_required_repo_but_no_create_pr() {
+        let tools = list(CallerScope::Scratch);
+        assert_eq!(names(&tools), ["list_repos", "create_issue", "create_worktree"]);
+        assert_eq!(tools[1]["inputSchema"]["required"], json!(["repo", "title", "body"]));
+        assert_eq!(tools[2]["inputSchema"]["required"], json!(["repo"]));
+    }
+
+    #[test]
+    fn worktree_agents_get_create_pr_and_no_repo_arg() {
         let tools = list(CallerScope::Worktree(crate::util::ids::WorktreeId::new()));
-        assert_eq!(tools.as_array().unwrap().len(), 1);
-        assert!(tools[0]["inputSchema"]["properties"].get("repo").is_none());
+        assert_eq!(names(&tools), ["create_issue", "create_worktree", "create_pr"]);
+        for t in tools.as_array().unwrap() {
+            assert!(t["inputSchema"]["properties"].get("repo").is_none(), "{}", t["name"]);
+        }
+        assert!(tools[1]["inputSchema"]["properties"].get("issue").is_some());
     }
 }

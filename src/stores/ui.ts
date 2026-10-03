@@ -8,7 +8,11 @@ import type { ChangeGroup } from "./diffs";
 export const BROWSER_DEVICES = {
   "iphone-16-pro": { label: "iPhone 16 Pro", width: 402, height: 874 },
 } as const;
+
 export type BrowserDeviceId = keyof typeof BROWSER_DEVICES;
+
+/// A queued first launch for a new worktree's AgentPane.
+export type PendingAgentLaunch = { prompt?: string };
 
 export type BottomPaneTab = "terminal" | "browser" | "problems" | "review" | "ci";
 
@@ -71,8 +75,9 @@ type UiState = {
   /// Worktrees that should launch the default agent the first time their
   /// AgentPane mounts (set by the New Worktree "Start default agent"
   /// option). One-shot: AgentPane consumes the entry after adoption, and
-  /// only launches if the worktree has no agents yet.
-  pendingAgentLaunch: Record<WorktreeId, true>;
+  /// only launches if the worktree has no agents yet. `prompt` becomes the
+  /// agent's first message (create-from-issue seeds it with the issue).
+  pendingAgentLaunch: Record<WorktreeId, PendingAgentLaunch>;
   /// Which workspace the New Worktree dialog is open for, if any. Lifted
   /// out of WorktreeSidebar-local state so the Cmd+Shift+N global
   /// shortcut can open it for the active workspace.
@@ -130,9 +135,9 @@ type UiState = {
   toggleChangeGroup: (group: ChangeGroup) => void;
   toggleProblemsTab: () => void;
   requestAgentLaunch: () => void;
-  requestAgentLaunchFor: (worktreeId: WorktreeId) => void;
-  /// Clears the pending flag; returns whether one was set.
-  consumePendingAgentLaunch: (worktreeId: WorktreeId) => boolean;
+  requestAgentLaunchFor: (worktreeId: WorktreeId, prompt?: string) => void;
+  /// Clears the pending request and returns it, or null if none was set.
+  consumePendingAgentLaunch: (worktreeId: WorktreeId) => PendingAgentLaunch | null;
   openNewWorktreeDialog: (workspaceId: WorkspaceId) => void;
   closeNewWorktreeDialog: () => void;
   setAgentBoardOpen: (open: boolean) => void;
@@ -281,18 +286,19 @@ export const useUiStore = create<UiState>((set, get) => ({
   requestAgentLaunch() {
     set((s) => ({ agentLaunchNonce: s.agentLaunchNonce + 1 }));
   },
-  requestAgentLaunchFor(worktreeId) {
+  requestAgentLaunchFor(worktreeId, prompt) {
     set((s) => ({
-      pendingAgentLaunch: { ...s.pendingAgentLaunch, [worktreeId]: true },
+      pendingAgentLaunch: { ...s.pendingAgentLaunch, [worktreeId]: { prompt } },
     }));
   },
   consumePendingAgentLaunch(worktreeId) {
-    if (!get().pendingAgentLaunch[worktreeId]) return false;
+    const req = get().pendingAgentLaunch[worktreeId];
+    if (!req) return null;
     set((s) => {
       const { [worktreeId]: _, ...rest } = s.pendingAgentLaunch;
       return { pendingAgentLaunch: rest };
     });
-    return true;
+    return req;
   },
   openNewWorktreeDialog(workspaceId) {
     set({ newWorktreeWorkspace: workspaceId });

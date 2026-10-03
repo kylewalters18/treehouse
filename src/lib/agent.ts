@@ -1,5 +1,5 @@
 import { agentWrite, listAgentsForWorktree } from "@/ipc/client";
-import type { AgentSessionId, WorktreeId } from "@/ipc/types";
+import type { AgentBackendKind, AgentSessionId, WorktreeId } from "@/ipc/types";
 
 // Bracketed-paste sequences — tells a TTY REPL (Claude Code, etc.) that the
 // following bytes are a single paste, so embedded newlines aren't each
@@ -31,4 +31,10 @@ export async function resolveSendableAgent(
     return preferredId;
   }
   return sendable[0]?.id ?? null;
+}
+
+/// Mirror of Rust `AgentBackendKind::accepts_positional_prompt`: backends
+/// whose CLI starts a session with `-- "<prompt>"` already submitted.
+export function acceptsPositionalPrompt(backend: AgentBackendKind): boolean {
+  return backend === "claudeCode" || backend === "codex";
 }

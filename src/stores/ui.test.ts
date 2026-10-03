@@ -40,9 +40,15 @@ describe("ui store", () => {
   it("pending agent launch is one-shot and per worktree", () => {
     const s = useUiStore.getState();
     s.requestAgentLaunchFor("wt-1");
-    expect(s.consumePendingAgentLaunch("wt-2")).toBe(false);
-    expect(s.consumePendingAgentLaunch("wt-1")).toBe(true);
-    expect(s.consumePendingAgentLaunch("wt-1")).toBe(false);
+    expect(s.consumePendingAgentLaunch("wt-2")).toBeNull();
+    expect(s.consumePendingAgentLaunch("wt-1")).toEqual({ prompt: undefined });
+    expect(s.consumePendingAgentLaunch("wt-1")).toBeNull();
+  });
+
+  it("pending agent launch carries its first prompt", () => {
+    const s = useUiStore.getState();
+    s.requestAgentLaunchFor("wt-3", "Work on issue #7");
+    expect(s.consumePendingAgentLaunch("wt-3")).toEqual({ prompt: "Work on issue #7" });
   });
 
   it("stamps an agent as seen when it becomes, or stops being, visible", () => {

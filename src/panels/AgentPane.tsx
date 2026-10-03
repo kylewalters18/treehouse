@@ -21,8 +21,9 @@ import type {
   AgentSessionId,
   WorktreeId,
 } from "@/ipc/types";
-import { useToastsStore } from "@/stores/toasts";
+import { toastInfo, useToastsStore } from "@/stores/toasts";
 import { cn } from "@/lib/cn";
+import { acceptsPositionalPrompt } from "@/lib/agent";
 import { asMessage } from "@/lib/errors";
 import { instanceStrip, instanceTab, instanceTabClose } from "@/lib/pane-chrome";
 import { ChevronDown, Plus, X } from "lucide-react";
@@ -298,13 +299,12 @@ function AgentTabs({
           matchActive?.localId ?? adopted[adopted.length - 1]?.localId ?? null,
         );
         adoptionDone.current = true;
-        // New worktree created with "Start default agent": launch once,
-        // and only into an empty pane so a remount never double-launches.
-        if (
-          useUiStore.getState().consumePendingAgentLaunch(worktreeId) &&
-          adopted.length === 0
-        ) {
-          onLaunchRef.current();
+        // New worktree created with "Start default agent" (or from an
+        // issue, which seeds the first prompt): launch once, and only into
+        // an empty pane so a remount never double-launches.
+        const pending = useUiStore.getState().consumePendingAgentLaunch(worktreeId);
+        if (pending && adopted.length === 0) {
+          onLaunchRef.current(pending.prompt);
         }
       } catch {
         adoptionDone.current = true;
@@ -375,6 +375,7 @@ function AgentTabs({
     backend: AgentBackendKind,
     command: string,
     profileKey: string | null,
+    prompt?: string,
   ) {
     setLaunchMenuOpen(false);
     // Empty command → undefined argv, which the Rust side resolves to the
@@ -382,7 +383,7 @@ function AgentTabs({
     const argv = commandArgv(command);
     const next: Tab = {
       localId: crypto.randomUUID(),
-      mode: { kind: "launch", backend, argv },
+      mode: { kind: "launch", backend, argv, prompt },
       backend,
       label: nextLabel(tabLabelBase(backend, argv, profilesRef.current)),
     };
@@ -395,13 +396,20 @@ function AgentTabs({
   }
 
   /// `+`, ⌘⇧A, and "Start default agent": the repo's last-used profile.
-  function onLaunch() {
+  /// `prompt` (create-from-issue) is the agent's first message.
+  function onLaunch(prompt?: string) {
     const p = resolveDefaultProfile(
       profilesRef.current,
       getLastProfileKey(workspaceRoot),
       useSettingsStore.getState().settings.defaultAgentBackend,
     );
-    launch(p.backend, p.command, p.key);
+    if (prompt && !acceptsPositionalPrompt(p.backend)) {
+      toastInfo(
+        "Agent started without the issue",
+        "This backend can't take a starting prompt — use Send to agent on the issue chip.",
+      );
+    }
+    launch(p.backend, p.command, p.key, prompt);
   }
 
   async function saveProfile(
@@ -683,7 +691,7 @@ function AgentTabs({
             )}
           >
             <button
-              onClick={onLaunch}
+              onClick={() => onLaunch()}
               title={`Launch ${defaultProfile.name} (⌘⇧A)`}
               className="flex items-center gap-1 px-1.5 text-neutral-300 hover:bg-neutral-800 hover:text-neutral-100"
             >

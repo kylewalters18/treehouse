@@ -24,7 +24,7 @@ import {
   reviewKey,
   useCommentsStore,
 } from "@/stores/comments";
-import { useForgeStore, forgeBranchKey } from "@/stores/forge";
+import { useForgeStore, forgeBranchKey, useForgeTerms } from "@/stores/forge";
 import { useUiStore } from "@/stores/ui";
 import { useWorktreesStore } from "@/stores/worktrees";
 import { useDiffsStore } from "@/stores/diffs";
@@ -59,6 +59,7 @@ export function ReviewPanel() {
   const workspace = workspaceForWorktree(selected?.workspaceId);
 
   const wsId = workspace?.id ?? null;
+  const terms = useForgeTerms(wsId);
   const root = workspace?.root ?? "";
   const branch = selected?.branch ?? null;
   const key = reviewKey(root, branch ?? "");
@@ -104,6 +105,9 @@ export function ReviewPanel() {
   );
   const threads = useForgeStore((s) =>
     wsId && mr ? s.threadsByMr[`${wsId}::mr::${mr.number}`] : undefined,
+  );
+  const threadsError = useForgeStore((s) =>
+    wsId && mr ? s.threadsErrorByMr[`${wsId}::mr::${mr.number}`] : undefined,
   );
 
   // `findMr` leaves the store untouched when the forge is unreachable, so
@@ -271,7 +275,7 @@ export function ReviewPanel() {
       await resolveMany(pending.map((c) => c.id));
       setSummary(key, "");
       toastSuccess(
-        `Posted ${pending.length} comment${pending.length === 1 ? "" : "s"} to !${mr.number}`,
+        `Posted ${pending.length} comment${pending.length === 1 ? "" : "s"} to ${terms.ref(mr.number)}`,
       );
     }
     setBusy(false);
@@ -340,7 +344,7 @@ export function ReviewPanel() {
         {mr ? (
           <>
             <GitPullRequest size={13} className="shrink-0 text-violet-400" />
-            <span className="font-mono text-[11px] text-neutral-500">!{mr.number}</span>
+            <span className="font-mono text-[11px] text-neutral-500">{terms.ref(mr.number)}</span>
             <span className="min-w-0 flex-1 truncate text-neutral-200">{mr.title}</span>
             <StateBadge state={mr.state} />
           </>
@@ -416,10 +420,10 @@ export function ReviewPanel() {
                 <button
                   disabled={busy}
                   onClick={() => void postToMr()}
-                  title="Post the pending comments to the MR as an inline review"
+                  title={`Post the pending comments to the ${terms.mr} as an inline review`}
                   className="flex h-6 items-center rounded-md border border-neutral-700 px-2 text-[11px] text-neutral-300 transition-colors hover:bg-neutral-800 hover:text-neutral-100 disabled:opacity-40"
                 >
-                  Post to !{mr.number}
+                  Post to {terms.ref(mr.number)}
                 </button>
               )}
               {agents.length > 1 && (
@@ -555,7 +559,7 @@ export function ReviewPanel() {
         {mr && (
           <>
             <SectionHeader
-              label="MR threads"
+              label={`${terms.mr} threads`}
               count={inline.length}
               className="mt-5"
               action={
@@ -563,7 +567,7 @@ export function ReviewPanel() {
                   <button
                     disabled={resolvingAll}
                     onClick={() => void resolveAllThreads()}
-                    title="Resolve every open review thread on the MR"
+                    title={`Resolve every open review thread on the ${terms.mr}`}
                     className="flex h-5 items-center gap-1 rounded px-1.5 text-[11px] text-neutral-400 transition-colors hover:bg-emerald-400/10 hover:text-emerald-300 disabled:opacity-50"
                   >
                     <Check size={12} />
@@ -572,8 +576,13 @@ export function ReviewPanel() {
                 )
               }
             />
+            {threadsError && (
+              <div className="mb-1.5 rounded border border-red-900/60 bg-red-950/30 px-2 py-1 text-[11px] text-red-300">
+                Couldn't load {terms.mr} threads: {threadsError}
+              </div>
+            )}
             {inline.length === 0 ? (
-              <Muted>No inline review threads.</Muted>
+              <Muted>{threadsError ? "—" : "No inline review threads."}</Muted>
             ) : (
               <div className="flex flex-col gap-1.5">
                 {inline.map(({ thread, path, line }) => (
@@ -597,7 +606,7 @@ export function ReviewPanel() {
               </div>
             )}
 
-            <SectionHeader label="MR conversation" count={general.length} className="mt-4" />
+            <SectionHeader label={`${terms.mr} conversation`} count={general.length} className="mt-4" />
             {general.length === 0 ? (
               <Muted>No general comments.</Muted>
             ) : (
@@ -615,7 +624,7 @@ export function ReviewPanel() {
                 onKeyDown={(e) => {
                   if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void onPost();
                 }}
-                placeholder="Comment on the MR… (⌘↵ to post)"
+                placeholder={`Comment on the ${terms.mr}… (⌘↵ to post)`}
                 rows={2}
                 className="flex-1 resize-none rounded-md border border-neutral-800 bg-neutral-900 px-2 py-1.5 text-neutral-100 placeholder:text-neutral-600 transition-colors focus:border-blue-500/60 focus:outline-none focus:ring-1 focus:ring-blue-500/30"
               />

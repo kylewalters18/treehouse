@@ -182,3 +182,28 @@ pub(crate) fn normalize_state(s: &str) -> String {
         other => other.to_string(),
     }
 }
+
+/// Create-from-issue options for `create_worktree`: which issue, and the
+/// extras to run once the worktree exists.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct IssueStart {
+    #[ts(type = "number")]
+    pub number: u64,
+    /// Self-assign the issue on the forge.
+    pub assign: bool,
+    /// Store the worktree → issue link (issue chip, `Closes #n` on the PR).
+    pub link: bool,
+}
+
+/// What starting from an issue produced. Failures are `warnings`, never a
+/// failed create — the worktree already exists by then.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct IssueStartResult {
+    /// The issue as the new agent's first prompt; `None` if it couldn't be read.
+    pub prompt: Option<String>,
+    pub warnings: Vec<String>,
+}

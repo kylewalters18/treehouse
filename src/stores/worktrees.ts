@@ -1,6 +1,12 @@
 import { create } from "zustand";
 import * as ipc from "@/ipc/client";
-import type { Worktree, WorkspaceId, WorktreeId } from "@/ipc/types";
+import type {
+  CreateWorktreeResult,
+  IssueStart,
+  Worktree,
+  WorkspaceId,
+  WorktreeId,
+} from "@/ipc/types";
 import { asMessage } from "@/lib/errors";
 import { toastError, toastInfo } from "@/stores/toasts";
 import { useEditorViewStateStore } from "@/stores/editor-view-state";
@@ -21,11 +27,13 @@ type WorktreesState = {
   /// closed so the sidebar doesn't briefly show its (now-orphaned)
   /// worktrees before the next refresh.
   dropForWorkspace: (workspaceId: WorkspaceId) => void;
+  /// With `opts.issue`, Rust also links/assigns the issue and returns the
+  /// agent seed prompt in `result.issue`.
   create: (
     workspaceId: WorkspaceId,
     name: string,
-    opts?: { initSubmodules?: boolean; base?: string | null },
-  ) => Promise<Worktree | null>;
+    opts?: { initSubmodules?: boolean; base?: string | null; issue?: IssueStart | null },
+  ) => Promise<CreateWorktreeResult | null>;
   remove: (
     worktreeId: WorktreeId,
     force?: boolean,
@@ -82,7 +90,10 @@ export const useWorktreesStore = create<WorktreesState>((set, get) => ({
       if (result.warning) {
         toastInfo(`${result.worktree.branch}: ${result.warning}`);
       }
-      return result.worktree;
+      for (const w of result.issue?.warnings ?? []) {
+        toastInfo(`${result.worktree.branch}: ${w}`);
+      }
+      return result;
     } catch (e: unknown) {
       toastError(`Couldn't create "${name}"`, asMessage(e));
       set({ creating: false });

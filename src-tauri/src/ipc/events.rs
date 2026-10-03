@@ -25,3 +25,15 @@ pub fn lsp_servers_changed(workspace_id: WorkspaceId) -> String {
 pub fn worktree_create_step(workspace_id: WorkspaceId) -> String {
     format!("workspace://{workspace_id}/worktree-create-step")
 }
+
+/// The worktree → issue link map changed (any workspace). No payload; the
+/// renderer reloads the map. Global because links are keyed by path.
+pub fn issue_links_changed() -> String {
+    "issue-links://changed".to_string()
+}
+
+/// An MR/PR was created (or otherwise changed) for a branch in this
+/// workspace — by the UI or by an agent over MCP. Payload: the branch name.
+pub fn mr_changed(workspace_id: WorkspaceId) -> String {
+    format!("workspace://{workspace_id}/mr-changed")
+}

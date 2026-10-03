@@ -133,6 +133,22 @@ impl GitlabForge {
         Ok(raw.normalize())
     }
 
+    pub async fn create_issue(&self, title: &str, body: &str) -> AppResult<ForgeIssue> {
+        let path = format!("projects/{}/issues", self.pid());
+        let form = [("title", title.to_string()), ("description", body.to_string())];
+        let raw: GlIssue =
+            Self::parse("create_issue", &self.send(reqwest::Method::POST, &path, &form).await?)?;
+        Ok(raw.normalize())
+    }
+
+    pub async fn update_issue(&self, number: u64, title: &str, body: &str) -> AppResult<ForgeIssue> {
+        let path = format!("projects/{}/issues/{}", self.pid(), number);
+        let form = [("title", title.to_string()), ("description", body.to_string())];
+        let raw: GlIssue =
+            Self::parse("update_issue", &self.send(reqwest::Method::PUT, &path, &form).await?)?;
+        Ok(raw.normalize())
+    }
+
     pub async fn set_issue_assignee(&self, number: u64, assign: bool) -> AppResult<()> {
         let path = format!("projects/{}/issues/{}", self.pid(), number);
         // assignee_ids[]=<my id> assigns; assignee_ids[]=0 clears all.

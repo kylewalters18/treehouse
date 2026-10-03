@@ -17,3 +17,13 @@ export function asMessage(e: unknown): string {
     return String(e);
   }
 }
+
+/// The `AppError` kind of a Tauri command failure (`"Conflict"`, `"Forge"`,
+/// …), or null for anything that isn't one.
+export function errorKind(e: unknown): string | null {
+  if (e && typeof e === "object") {
+    const k = (e as { kind?: unknown }).kind;
+    if (typeof k === "string") return k;
+  }
+  return null;
+}

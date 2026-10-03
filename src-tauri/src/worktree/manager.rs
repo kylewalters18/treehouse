@@ -41,6 +41,8 @@ pub struct CreateOptions {
 pub struct CreateWorktreeResult {
     pub worktree: Worktree,
     pub warning: Option<String>,
+    /// Set when created from an issue (`create_worktree` with `issue`).
+    pub issue: Option<crate::forge::IssueStartResult>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, TS, PartialEq, Eq, Default)]
@@ -266,7 +268,7 @@ pub async fn create(
         None
     };
 
-    Ok(CreateWorktreeResult { worktree, warning })
+    Ok(CreateWorktreeResult { worktree, warning, issue: None })
 }
 
 pub async fn sync_with_default(

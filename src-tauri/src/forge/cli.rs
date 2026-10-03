@@ -7,6 +7,7 @@
 
 use std::path::Path;
 use std::process::Stdio;
+use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
 use crate::util::errors::{AppError, AppResult};
@@ -15,19 +16,48 @@ use crate::util::errors::{AppError, AppResult};
 /// (no shell), so multipart bodies and free-text comments pass through safely.
 /// Maps a missing binary and a nonzero exit both to `AppError::Forge`.
 pub async fn run(bin: &str, cwd: &Path, host: Option<&str>, args: &[String]) -> AppResult<String> {
+    run_with_input(bin, cwd, host, args, None).await
+}
+
+/// `run`, optionally piping `input` to stdin — for JSON request bodies
+/// (`gh api --input -`) that don't fit flat `-f key=value` fields.
+pub async fn run_with_input(
+    bin: &str,
+    cwd: &Path,
+    host: Option<&str>,
+    args: &[String],
+    input: Option<&str>,
+) -> AppResult<String> {
     let mut cmd = Command::new(bin);
-    cmd.current_dir(cwd).args(args);
+    cmd.current_dir(cwd)
+        .args(args)
+        // Never block on an interactive prompt — there's no TTY to answer it.
+        .env("GH_PROMPT_DISABLED", "1")
+        .stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     if let Some(h) = host {
         // Harmless to set both; each CLI reads only its own.
         cmd.env("GITLAB_HOST", h).env("GH_HOST", h);
     }
-    let out = cmd.output().await.map_err(|e| {
+    let mut child = cmd.spawn().map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
             AppError::Forge(format!("{bin} is not installed (not found on PATH)"))
         } else {
             AppError::Forge(format!("spawn {bin}: {e}"))
         }
     })?;
+    if let (Some(data), Some(mut stdin)) = (input, child.stdin.take()) {
+        stdin
+            .write_all(data.as_bytes())
+            .await
+            .map_err(|e| AppError::Forge(format!("write {bin} stdin: {e}")))?;
+        // Dropping closes the pipe so the CLI sees EOF.
+    }
+    let out = child
+        .wait_with_output()
+        .await
+        .map_err(|e| AppError::Forge(format!("wait {bin}: {e}")))?;
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
         let msg = if stderr.is_empty() {

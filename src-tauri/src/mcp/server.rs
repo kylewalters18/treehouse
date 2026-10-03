@@ -23,6 +23,11 @@ coding agents in parallel git worktrees. Use create_worktree to split independen
 of work into sibling worktrees, each with its own agent seeded with a prompt. The user sees \
 them appear in treehouse's sidebar and reviews/merges them there.
 
+For issue work: create_issue files an issue on the repo's GitLab/GitHub project; \
+create_worktree with `issue` starts a worktree + agent on an existing one; create_pr opens a \
+pull/merge request for your own worktree once your work is committed. To get PRs for \
+worktrees you start, tell their agents in `prompt` to commit and call create_pr when done.
+
 Whenever you need a new git worktree, ALWAYS use create_worktree. NEVER run \
 `git worktree add` (in any form) and never use Claude Code's built-in worktree features \
 (the EnterWorktree tool, or subagents with worktree isolation). Worktrees made those ways \

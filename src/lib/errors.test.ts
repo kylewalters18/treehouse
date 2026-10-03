@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { asMessage } from "./errors";
+import { asMessage, errorKind } from "./errors";
 
 describe("asMessage", () => {
   it("extracts .message from Tauri-style error objects", () => {
@@ -22,5 +22,16 @@ describe("asMessage", () => {
     // The bug we originally shipped — guard against regression.
     expect(asMessage({ kind: "X", message: "real" })).not.toBe("[object Object]");
     expect(asMessage({ foo: "x" })).not.toBe("[object Object]");
+  });
+});
+
+describe("errorKind", () => {
+  it("reads an AppError's kind", () => {
+    expect(errorKind({ kind: "Conflict", message: "changed" })).toBe("Conflict");
+  });
+  it("is null for other throwables", () => {
+    expect(errorKind(new Error("x"))).toBeNull();
+    expect(errorKind("x")).toBeNull();
+    expect(errorKind(null)).toBeNull();
   });
 });

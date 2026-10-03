@@ -40,6 +40,9 @@ type ForgeState = {
   threadsByMr: Record<string, ForgeThread[] | undefined>;
   /// Current user's approval state per MR (keyed `${workspaceId}::mr::${iid}`).
   approvalByMr: Record<string, ForgeApproval | undefined>;
+  /// Last thread-load failure per MR (same key); cleared on success. Shown
+  /// in the Review panel so a failing fetch doesn't look like "no threads".
+  threadsErrorByMr: Record<string, string | undefined>;
 
   loadStatus: (workspaceId: WorkspaceId) => Promise<void>;
   loadIssues: (
@@ -54,6 +57,7 @@ type ForgeState = {
     title: string,
     body: string | null,
     draft: boolean,
+    closeIssue: boolean,
   ) => Promise<ForgeMr | null>;
   loadApproval: (workspaceId: WorkspaceId, iid: number) => Promise<void>;
   approveMr: (workspaceId: WorkspaceId, iid: number) => Promise<boolean>;
@@ -111,6 +115,7 @@ export const useForgeStore = create<ForgeState>((set, get) => ({
   jobsByPipeline: {},
   threadsByMr: {},
   approvalByMr: {},
+  threadsErrorByMr: {},
 
   async loadStatus(workspaceId) {
     try {
@@ -144,9 +149,9 @@ export const useForgeStore = create<ForgeState>((set, get) => ({
     }
   },
 
-  async createMr(workspaceId, branch, title, body, draft) {
+  async createMr(workspaceId, branch, title, body, draft, closeIssue) {
     try {
-      const mr = await ipc.forgeCreateMr(workspaceId, branch, title, body, draft);
+      const mr = await ipc.forgeCreateMr(workspaceId, branch, title, body, draft, closeIssue);
       set((st) => ({ mrByBranch: { ...st.mrByBranch, [bkey(workspaceId, branch)]: mr } }));
       return mr;
     } catch (e) {
@@ -227,11 +232,19 @@ export const useForgeStore = create<ForgeState>((set, get) => ({
   async loadThreads(workspaceId, iid) {
     try {
       const threads = await ipc.forgeListThreads(workspaceId, iid);
+      const k = `${workspaceId}::mr::${iid}`;
       set((st) => ({
-        threadsByMr: { ...st.threadsByMr, [`${workspaceId}::mr::${iid}`]: threads },
+        threadsByMr: { ...st.threadsByMr, [k]: threads },
+        threadsErrorByMr: { ...st.threadsErrorByMr, [k]: undefined },
       }));
     } catch (e) {
       console.warn("load threads failed", asMessage(e));
+      set((st) => ({
+        threadsErrorByMr: {
+          ...st.threadsErrorByMr,
+          [`${workspaceId}::mr::${iid}`]: asMessage(e),
+        },
+      }));
     }
   },
 
@@ -303,3 +316,14 @@ export const useForgeStore = create<ForgeState>((set, get) => ({
 
 export { bkey as forgeBranchKey };
 export type { IssueState as ForgeIssueState };
+
+/// Forge-specific wording: GitLab says "MR !12", GitHub says "PR #12".
+/// Falls back to GitLab's terms until the workspace's status has loaded.
+export function useForgeTerms(workspaceId: WorkspaceId | null | undefined) {
+  const kind = useForgeStore((s) => (workspaceId ? s.status[workspaceId]?.kind : undefined));
+  const github = kind === "github";
+  return {
+    mr: github ? "PR" : "MR",
+    ref: (n: number) => (github ? `#${n}` : `!${n}`),
+  };
+}

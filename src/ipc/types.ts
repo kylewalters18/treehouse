@@ -70,6 +70,8 @@ export type { AppFileContent } from "./bindings/AppFileContent";
 export type { ForgeKind } from "./bindings/ForgeKind";
 export type { ForgeStatus } from "./bindings/ForgeStatus";
 export type { ForgeIssue } from "./bindings/ForgeIssue";
+export type { IssueStart } from "./bindings/IssueStart";
+export type { IssueStartResult } from "./bindings/IssueStartResult";
 export type { ForgeMr } from "./bindings/ForgeMr";
 export type { ForgePipeline } from "./bindings/ForgePipeline";
 export type { ForgeJob } from "./bindings/ForgeJob";

@@ -20,6 +20,7 @@ const OPEN_WORKSPACES_FILE: &str = "open_workspaces.json";
 const SETTINGS_FILE: &str = "settings.json";
 const COMMENTS_FILE: &str = "comments.json";
 const PINNED_WORKTREES_FILE: &str = "pinned_worktrees.json";
+const ISSUE_LINKS_FILE: &str = "issue_links.json";
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -237,6 +238,66 @@ pub async fn set_pinned(
         .await
         .map_err(|e| AppError::Io(format!("write {}: {e}", path.display())))?;
     Ok(items)
+}
+
+// --- Issue links ---
+//
+// The forge issue a worktree is working on, keyed by worktree path (stable
+// across restarts and branch renames, unlike `WorktreeId` or the branch
+// name). Set explicitly — at create-from-issue time or via "Link issue" —
+// and read back by the issue chip and PR creation (`Closes #n`). Never
+// inferred from the branch name: `404-page` is just a name.
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct IssueLinksFile {
+    items: std::collections::BTreeMap<PathBuf, u64>,
+}
+
+static ISSUE_LINKS_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+fn issue_links_path(app: &AppHandle) -> AppResult<PathBuf> {
+    Ok(config_dir(app)?.join(ISSUE_LINKS_FILE))
+}
+
+/// Worktree path → linked issue number. Missing or unreadable file → empty.
+pub async fn list_issue_links(
+    app: &AppHandle,
+) -> AppResult<std::collections::BTreeMap<PathBuf, u64>> {
+    let path = issue_links_path(app)?;
+    let bytes = match tokio::fs::read(&path).await {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Default::default()),
+        Err(e) => return Err(AppError::Io(format!("read {}: {e}", path.display()))),
+    };
+    let file: IssueLinksFile = serde_json::from_slice(&bytes).unwrap_or_default();
+    Ok(file.items)
+}
+
+/// Link `worktree_path` to `issue`, or unlink with `None`. Returns the new map.
+pub async fn set_issue_link(
+    app: &AppHandle,
+    worktree_path: &PathBuf,
+    issue: Option<u64>,
+) -> AppResult<std::collections::BTreeMap<PathBuf, u64>> {
+    let _guard = ISSUE_LINKS_LOCK.lock().await;
+    let mut items = list_issue_links(app).await.unwrap_or_default();
+    let changed = match issue {
+        Some(n) => items.insert(worktree_path.clone(), n) != Some(n),
+        None => items.remove(worktree_path).is_some(),
+    };
+    if !changed {
+        return Ok(items);
+    }
+    let dir = config_dir(app)?;
+    let _ = tokio::fs::create_dir_all(&dir).await;
+    let path = issue_links_path(app)?;
+    let file = IssueLinksFile { items };
+    let bytes = serde_json::to_vec_pretty(&file)
+        .map_err(|e| AppError::Unknown(format!("serialize issue links: {e}")))?;
+    tokio::fs::write(&path, bytes)
+        .await
+        .map_err(|e| AppError::Io(format!("write {}: {e}", path.display())))?;
+    Ok(file.items)
 }
 
 // --- Settings ---

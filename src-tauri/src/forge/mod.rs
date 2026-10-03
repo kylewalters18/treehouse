@@ -1,11 +1,12 @@
 //! Forge integration — issues, merge/pull requests, review threads, and CI —
-//! over the `glab`/`gh` CLIs. The Rust side stays the source of truth; the
-//! renderer calls the `forge_*` commands in `ipc::commands`.
+//! GitLab over its REST API (token from `~/.netrc`), GitHub over the `gh` CLI.
+//! The Rust side stays the source of truth; the renderer calls the `forge_*`
+//! commands in `ipc::commands`.
 //!
-//! `Forge` is a closed two-variant enum (static dispatch, no `async-trait`).
-//! The GitLab provider is built/validated first; GitHub follows the same
-//! method surface (see `github.rs`). Auto-detected per workspace from the git
-//! remote; never let the CLI infer the host from cwd — we pass it explicitly.
+//! `Forge` is a closed two-variant enum (static dispatch, no `async-trait`);
+//! both providers map into the same normalized types (`types.rs`).
+//! Auto-detected per workspace from the git remote; never let the CLI infer
+//! the host from cwd — we pass it explicitly.
 
 pub mod cli;
 pub mod github;
@@ -13,6 +14,7 @@ pub mod gitlab;
 pub mod netrc;
 pub mod remote;
 pub mod types;
+pub mod workflow;
 
 use std::path::Path;
 
@@ -91,6 +93,38 @@ impl Forge {
         match self {
             Forge::Gitlab(g) => g.get_issue(number).await,
             Forge::Github(g) => g.get_issue(number).await,
+        }
+    }
+    pub async fn create_issue(&self, title: &str, body: &str) -> AppResult<ForgeIssue> {
+        match self {
+            Forge::Gitlab(g) => g.create_issue(title, body).await,
+            Forge::Github(g) => g.create_issue(title, body).await,
+        }
+    }
+    /// Replace an issue's title and body. With `expected_updated_at` (the
+    /// `updatedAt` the caller's copy was read at), re-read first and refuse
+    /// with `AppError::Conflict` if it has changed since — so an edit made on
+    /// the forge meanwhile is never silently overwritten. Neither forge offers
+    /// a conditional write through these APIs, so this narrows the race
+    /// rather than closing it.
+    pub async fn update_issue(
+        &self,
+        number: u64,
+        title: &str,
+        body: &str,
+        expected_updated_at: Option<&str>,
+    ) -> AppResult<ForgeIssue> {
+        if let Some(expected) = expected_updated_at {
+            let current = self.get_issue(number).await?;
+            if current.updated_at != expected {
+                return Err(AppError::Conflict(format!(
+                    "#{number} changed on the forge since you opened it"
+                )));
+            }
+        }
+        match self {
+            Forge::Gitlab(g) => g.update_issue(number, title, body).await,
+            Forge::Github(g) => g.update_issue(number, title, body).await,
         }
     }
     pub async fn set_issue_assignee(&self, number: u64, assign: bool) -> AppResult<()> {

@@ -20,7 +20,14 @@ import { registerTerminalLinks } from "./term-path-links";
 import { attachTerminalSearch } from "./term-search";
 
 export type AgentLeafMode =
-  | { kind: "launch"; backend: AgentBackendKind; argv?: string[]; resume?: string }
+  | {
+      kind: "launch";
+      backend: AgentBackendKind;
+      argv?: string[];
+      resume?: string;
+      /// First message for the new agent (positional-prompt backends only).
+      prompt?: string;
+    }
   | { kind: "attach"; agentId: AgentSessionId }
   /// The global scratch agent: attach-or-launch in one call.
   | { kind: "scratch" };
@@ -205,6 +212,7 @@ export function createAgentLeafState(
           onEvent,
           mode.argv,
           mode.resume,
+          mode.prompt,
         );
         id = s.id;
         // disposeAgentLeafState fired while launchAgent was in flight —

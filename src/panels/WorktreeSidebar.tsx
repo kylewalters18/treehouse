@@ -28,7 +28,11 @@ import {
   onWorktreesChanged,
   syncWorktree,
 } from "@/ipc/client";
-import { NewWorktreeDialog } from "@/components/NewWorktreeDialog";
+import {
+  NewWorktreeDialog,
+  type NewWorktreeOptions,
+} from "@/components/NewWorktreeDialog";
+import { useIssueLinksStore } from "@/stores/issueLinks";
 import { toastError, toastInfo, toastSuccess } from "@/stores/toasts";
 import type {
   AgentActivity,
@@ -94,6 +98,7 @@ export function WorktreeSidebar() {
   );
   const activity = useActivityStore((s) => s.byWorktree);
   const pinnedPaths = usePinsStore((s) => s.paths);
+  const issueLinks = useIssueLinksStore((s) => s.byPath);
   const loadPins = usePinsStore((s) => s.load);
   const setPinned = usePinsStore((s) => s.setPinned);
   const setActivity = useActivityStore((s) => s.setAll);
@@ -172,6 +177,7 @@ export function WorktreeSidebar() {
 
   useEffect(() => {
     void loadPins();
+    void useIssueLinksStore.getState().load();
   }, [loadPins]);
 
   useEffect(() => {
@@ -222,22 +228,34 @@ export function WorktreeSidebar() {
     workspaceId: string,
     name: string,
     base: string | null,
-    opts: { initSubmodules: boolean; runSetup: boolean; startAgent: boolean },
+    opts: NewWorktreeOptions,
   ) {
     const trimmed = name.trim();
     if (!trimmed || creating) return;
     setCreatingNames((prev) => ({ ...prev, [workspaceId]: trimmed }));
     setCreatingSteps((prev) => ({ ...prev, [workspaceId]: null }));
     try {
-      const wt = await createWt(workspaceId, trimmed, {
+      const result = await createWt(workspaceId, trimmed, {
         initSubmodules: opts.initSubmodules,
         base,
+        issue: opts.issue ?? null,
       });
-      if (wt) {
+      if (result) {
+        const wt = result.worktree;
         // Flag before selecting so the AgentPane that mounts for the new
-        // worktree sees it on its first adoption pass.
+        // worktree sees it on its first adoption pass. From an issue, Rust
+        // has already linked/assigned it and hands back the seed prompt.
         if (opts.startAgent) {
-          useUiStore.getState().requestAgentLaunchFor(wt.id);
+          useUiStore.getState().requestAgentLaunchFor(wt.id, result.issue?.prompt ?? undefined);
+        }
+        if (opts.issue) {
+          const n = opts.issue.number;
+          toastSuccess(
+            `Worktree created from #${n}`,
+            opts.issue.assign && !result.issue?.warnings.some((w) => w.includes("assign"))
+              ? `Assigned #${n} to you`
+              : undefined,
+          );
         }
         selectWorktree(wt.id);
         if (opts.runSetup) {
@@ -605,6 +623,14 @@ export function WorktreeSidebar() {
             {w.createdBy && (
               <span className="min-w-0 max-w-[8rem] shrink truncate font-mono text-[10px] text-neutral-600">
                 ↳ {w.createdBy}
+              </span>
+            )}
+            {issueLinks[w.path] != null && (
+              <span
+                className="shrink-0 rounded bg-blue-950/50 px-1 font-mono text-[10px] text-blue-300"
+                title={`Linked to issue #${issueLinks[w.path]}`}
+              >
+                #{issueLinks[w.path]}
               </span>
             )}
             {(a?.agentCount ?? 0) > 1 && (

@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import * as ipc from "@/ipc/client";
 import { useWorktreesStore } from "./worktrees";
 import { useToastsStore } from "./toasts";
-import type { Worktree } from "@/ipc/types";
+import type { CreateWorktreeResult, Worktree } from "@/ipc/types";
 
 vi.mock("@/ipc/client");
 const ipcMocked = vi.mocked(ipc);
@@ -40,9 +40,10 @@ describe("worktrees store", () => {
     ipcMocked.createWorktree.mockResolvedValueOnce({
       worktree: newWt,
       warning: null,
+      issue: null,
     });
     const result = await useWorktreesStore.getState().create("ws-1", "one");
-    expect(result).toEqual(newWt);
+    expect(result?.worktree).toEqual(newWt);
     expect(useWorktreesStore.getState().worktrees).toEqual([newWt]);
   });
 
@@ -51,9 +52,10 @@ describe("worktrees store", () => {
     ipcMocked.createWorktree.mockResolvedValueOnce({
       worktree: newWt,
       warning: "Submodule init failed: auth required",
+      issue: null,
     });
     const result = await useWorktreesStore.getState().create("ws-1", "two");
-    expect(result).toEqual(newWt);
+    expect(result?.worktree).toEqual(newWt);
     const toasts = useToastsStore.getState().toasts;
     expect(toasts).toHaveLength(1);
     expect(toasts[0].kind).toBe("info");
@@ -131,14 +133,14 @@ describe("worktrees store", () => {
 
   it("creating flag flips around the IPC call", async () => {
     let resolve!: (
-      r: { worktree: Worktree; warning: string | null },
+      r: CreateWorktreeResult,
     ) => void;
     ipcMocked.createWorktree.mockImplementationOnce(
       () => new Promise((r) => (resolve = r)),
     );
     const p = useWorktreesStore.getState().create("ws-1", "pending");
     expect(useWorktreesStore.getState().creating).toBe(true);
-    resolve({ worktree: wt({ id: "p" }), warning: null });
+    resolve({ worktree: wt({ id: "p" }), warning: null, issue: null });
     await p;
     expect(useWorktreesStore.getState().creating).toBe(false);
   });

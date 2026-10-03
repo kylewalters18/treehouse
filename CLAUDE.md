@@ -40,7 +40,7 @@ src-tauri/src/
   main.rs, lib.rs         # Tauri builder, command/channel registration, shutdown hook
   state.rs                # AppState: DashMap registries + async merge lock
   storage.rs              # Persisted JSON under ~/Library/Application Support/com.treehouse.app/
-                          #   recent workspaces, comments, settings (LSP toggles, merge strategy)
+                          #   recent workspaces, comments, pins, worktree→issue links, settings
   user_config.rs          # User-edited treehouse.toml: custom LSPs, LSP overrides, worktree hooks,
                           #   agent status patterns
   scratch.rs              # Global ⌘J scratch agent, not tied to a repo
@@ -59,8 +59,10 @@ src-tauri/src/
                           #   registry + supervisor; opt-in via settings, Monaco-facing events
   diff/                   # DiffSet types + compute (git2 diff_tree_to_workdir)
   fs_watch/               # Per-worktree debounced notify watcher → triggers diff recompute
-  forge/                  # GitLab/GitHub issues, MR/PR threads, CI via glab/gh CLIs
-  mcp/                    # Local MCP server exposed to launched Claude sessions (create_worktree, …)
+  forge/                  # GitLab (REST + ~/.netrc) / GitHub (gh) issues, MR/PR threads, CI;
+                          #   workflow.rs = issue → worktree → PR steps shared by UI commands + MCP
+  mcp/                    # Local MCP server exposed to launched Claude sessions
+                          #   (create_worktree [+issue], create_issue, create_pr, list_repos)
   util/
     ids.rs                # ULID-backed typed ID newtypes (WorktreeId, AgentSessionId, LspServerId, ...)
     errors.rs             # AppError → serde { kind, message }
