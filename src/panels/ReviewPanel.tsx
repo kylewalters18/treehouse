@@ -20,7 +20,6 @@ import {
   anchorLabel,
   commentStatus,
   formatReviewForAgent,
-  isFileLevel,
   reviewKey,
   useCommentsStore,
 } from "@/stores/comments";
@@ -31,6 +30,7 @@ import { useDiffsStore } from "@/stores/diffs";
 import { workspaceForWorktree } from "@/stores/workspace";
 import { pasteAndSubmit, resolveSendableAgent } from "@/lib/agent";
 import { formatNoteForAgent, formatThreadForAgent } from "@/lib/forge-prompt";
+import { postCommentsToMr } from "@/lib/review-post";
 import { toastError, toastInfo, toastSuccess } from "@/stores/toasts";
 import { asMessage } from "@/lib/errors";
 import { cn } from "@/lib/cn";
@@ -99,7 +99,6 @@ export function ReviewPanel() {
   const replyThread = useForgeStore((s) => s.replyThread);
   const resolveThread = useForgeStore((s) => s.resolveThread);
   const postMrComment = useForgeStore((s) => s.postMrComment);
-  const postReviewComments = useForgeStore((s) => s.postReviewComments);
   const mr = useForgeStore((s) =>
     wsId && branch ? s.mrByBranch[forgeBranchKey(wsId, branch)] : undefined,
   );
@@ -246,30 +245,7 @@ export function ReviewPanel() {
   async function postToMr() {
     if (!wsId || !mr || pending.length === 0) return;
     setBusy(true);
-    // Line comments go up as inline threads, anchored on a range's last
-    // line with the range spelled out in the body; whole-file comments go
-    // up as general MR comments naming the file.
-    const inlineComments = pending.filter((c) => !isFileLevel(c));
-    const fileComments = pending.filter(isFileLevel);
-    let ok =
-      inlineComments.length === 0 ||
-      (await postReviewComments(
-        wsId,
-        mr.number,
-        inlineComments.map((c) => ({
-          filePath: c.filePath,
-          line: c.endLine ?? c.line,
-          removed: c.side === "base",
-          body:
-            c.endLine !== null && c.endLine !== c.line
-              ? `Lines ${c.line}–${c.endLine}:\n\n${c.text}`
-              : c.text,
-        })),
-      ));
-    for (const c of fileComments) {
-      if (!ok) break;
-      ok = await postMrComment(wsId, mr.number, `**${c.filePath}**\n\n${c.text}`);
-    }
+    const ok = await postCommentsToMr(wsId, mr.number, pending);
     if (ok) {
       if (summary.trim()) await postMrComment(wsId, mr.number, summary.trim());
       await resolveMany(pending.map((c) => c.id));

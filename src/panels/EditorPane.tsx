@@ -37,7 +37,8 @@ import {
   useCommentsStore,
   type CommentStatus,
 } from "@/stores/comments";
-import { useForgeStore, forgeBranchKey } from "@/stores/forge";
+import { useForgeStore, forgeBranchKey, useForgeTerms } from "@/stores/forge";
+import { postCommentsToMr } from "@/lib/review-post";
 import { useLspStore } from "@/stores/lsp";
 import { useNavigationStore } from "@/stores/navigation";
 import { useSettingsStore } from "@/stores/settings";
@@ -735,6 +736,7 @@ export function CommentOverlay({
   const mrThreads = useForgeStore((s) =>
     workspace && mr ? s.threadsByMr[`${workspace.id}::mr::${mr.number}`] : undefined,
   );
+  const terms = useForgeTerms(workspace?.id);
 
   useEffect(() => {
     if (workspace && branch && mr === undefined) void findMr(workspace.id, branch);
@@ -1259,6 +1261,26 @@ export function CommentOverlay({
           <CommentComposer
             label={targetLabel(desc.target)}
             canSend={activeAgentId !== null}
+            postTarget={workspace && mr?.state === "open" ? terms.ref(mr.number) : null}
+            onPost={async (text) => {
+              if (!workspace || !mr) return;
+              setComposer(null);
+              const c = await addComment({
+                workspaceRoot,
+                branch,
+                filePath,
+                ...desc.target,
+                text,
+              });
+              if (!c) return;
+              // Posted → it lives on the MR as a thread now; resolve the
+              // local copy, as the batch post does. On failure it stays
+              // pending (the store already toasted) for a later retry.
+              if (await postCommentsToMr(workspace.id, mr.number, [c])) {
+                await resolveComment(c.id);
+                toastSuccess(`Posted to ${terms.ref(mr.number)}`);
+              }
+            }}
             onSave={async (text) => {
               setComposer(null);
               await addComment({
@@ -1808,12 +1830,19 @@ function sendTargetLabel(a: AgentSession): string {
 function CommentComposer({
   label,
   canSend,
+  postTarget,
+  onPost,
   onSave,
   onSaveAndSend,
   onCancel,
 }: {
   /// What the comment will attach to, e.g. "Lines 4–9" or "Whole file".
   label: string;
+  /// The open MR/PR to post straight to ("#12" / "!12"), or null for none —
+  /// then the "Post to" button is hidden and comments only batch locally.
+  postTarget: string | null;
+  /// Post this one comment to the MR/PR now, skipping the Review batch.
+  onPost: (text: string) => void;
   /// Whether the worktree has an active agent. "Save & send" stays
   /// clickable without one (it saves and toasts), but the tooltip says so.
   canSend: boolean;
@@ -1828,10 +1857,11 @@ function CommentComposer({
   const [text, setText] = useState("");
   const empty = text.trim() === "";
 
-  function submit(send: boolean) {
+  function submit(how: "save" | "send" | "post") {
     const t = text.trim();
     if (!t) return;
-    if (send) onSaveAndSend(t);
+    if (how === "send") onSaveAndSend(t);
+    else if (how === "post" && postTarget) onPost(t);
     else onSave(t);
   }
 
@@ -1854,14 +1884,18 @@ function CommentComposer({
             if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
               e.preventDefault();
               if (empty) onCancel();
-              else submit(e.shiftKey);
+              else submit(e.shiftKey ? "send" : e.altKey && postTarget ? "post" : "save");
             } else if (e.key === "Escape") {
               e.preventDefault();
               onCancel();
             }
           }}
           rows={3}
-          placeholder="Leave a review comment for the agent…"
+          placeholder={
+            postTarget
+              ? `Leave a review comment — save it for the agent, or post it to ${postTarget}…`
+              : "Leave a review comment for the agent…"
+          }
           className={cn(reviewInput, "w-full resize-none")}
         />
       </div>
@@ -1871,15 +1905,26 @@ function CommentComposer({
           <kbd className={reviewKbd}>Esc</kbd>
         </button>
         <button
-          onClick={() => submit(false)}
+          onClick={() => submit("save")}
           disabled={empty}
           className={cn(reviewGhostButton, "border border-neutral-700")}
         >
           Save
           <kbd className={reviewKbd}>⌘↵</kbd>
         </button>
+        {postTarget && (
+          <button
+            onClick={() => submit("post")}
+            disabled={empty}
+            title={`Post this comment to ${postTarget} now, outside the Review batch`}
+            className={cn(reviewGhostButton, "border border-emerald-700/70 text-emerald-200")}
+          >
+            Post to {postTarget}
+            <kbd className={reviewKbd}>⌘⌥↵</kbd>
+          </button>
+        )}
         <button
-          onClick={() => submit(true)}
+          onClick={() => submit("send")}
           disabled={empty}
           title={
             canSend
