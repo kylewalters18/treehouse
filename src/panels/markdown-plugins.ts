@@ -132,3 +132,11 @@ export function imageMime(path: string): string {
   const ext = path.slice(path.lastIndexOf(".") + 1).toLowerCase();
   return IMAGE_MIME[ext] ?? "application/octet-stream";
 }
+
+/// True for raster image formats the File view renders as a picture
+/// instead of a "binary file" placeholder. SVG is excluded: it's text,
+/// so it stays editable in Monaco.
+export function isRasterImagePath(path: string): boolean {
+  const ext = path.slice(path.lastIndexOf(".") + 1).toLowerCase();
+  return ext !== "svg" && ext in IMAGE_MIME;
+}

@@ -102,9 +102,15 @@ pub async fn read_worktree_file(
     }
 }
 
-/// Raw bytes of a worktree-relative file, same sandbox + size cap as
+/// Cap for `read_worktree_file_bytes`. Higher than `MAX_READ_BYTES` since
+/// it's a raw binary IPC response (no JSON / UTF-8 decode) and retina
+/// screenshots routinely exceed 4 MB.
+const MAX_READ_RAW_BYTES: u64 = 32 * 1024 * 1024;
+
+/// Raw bytes of a worktree-relative file, same sandbox as
 /// `read_worktree_file`. Used by the markdown preview to load relative
-/// images (`![](docs/shot.png)`), which the webview can't fetch itself.
+/// images (`![](docs/shot.png)`), which the webview can't fetch itself,
+/// and by the File view's image renderer.
 pub async fn read_worktree_file_bytes(
     worktree_id: WorktreeId,
     rel_path: &str,
@@ -121,7 +127,7 @@ pub async fn read_worktree_file_bytes(
     if !meta.is_file() {
         return Err(AppError::Unknown(format!("not a regular file: {rel_path}")));
     }
-    if meta.len() > MAX_READ_BYTES {
+    if meta.len() > MAX_READ_RAW_BYTES {
         return Err(AppError::Unknown(format!("file too large: {rel_path}")));
     }
     Ok(tokio::fs::read(&abs).await?)

@@ -60,6 +60,8 @@ import {
 import { useDiffsStore } from "@/stores/diffs";
 import { useEditorViewStateStore } from "@/stores/editor-view-state";
 import { inferLanguage } from "./editor-language";
+import { ImageView } from "./ImageView";
+import { isRasterImagePath } from "./markdown-plugins";
 import {
   baseLineMapper,
   rangeFromSelection,
@@ -82,6 +84,13 @@ type Props = {
 };
 
 export function EditorPane({ worktreeId, path }: Props) {
+  if (path && isRasterImagePath(path)) {
+    return <ImageView key={path} worktreeId={worktreeId} path={path} />;
+  }
+  return <TextEditorPane worktreeId={worktreeId} path={path} />;
+}
+
+function TextEditorPane({ worktreeId, path }: Props) {
   const [content, setContent] = useState<FileContent | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);

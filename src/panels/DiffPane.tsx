@@ -33,6 +33,7 @@ import { useEditorViewStateStore } from "@/stores/editor-view-state";
 import { FileTree } from "./FileTree";
 import { useIsEditorDirty } from "@/stores/editor-dirty";
 import { MarkdownPreview, isMarkdownPath } from "./MarkdownPreview";
+import { isRasterImagePath } from "./markdown-plugins";
 import { inferLanguage } from "./editor-language";
 import { explorerRow, iconForFile, statusFilenameColor } from "./file-icons";
 import { THEME_NAME } from "./monaco-theme";
@@ -147,17 +148,20 @@ function DiffView({ worktreeId }: { worktreeId: WorktreeId }) {
   // unmounts the editor and silently drops the user's unsaved edits.
   // The editor's own "deleted on disk" banner owns that case.
   const selectedDirty = useIsEditorDirty(worktreeId, selectedFile);
+  // Binary files have no File view, except raster images (ImageView).
+  const fileTabUnusable =
+    ((selected?.binary ?? false) &&
+      !(selectedFile && isRasterImagePath(selectedFile))) ||
+    selected?.status.kind === "deleted";
   useEffect(() => {
     if (!selectedFile) return;
     const inDiff = selected != null;
-    const fileTabUnusable =
-      (selected?.binary ?? false) || selected?.status.kind === "deleted";
     if (view === "file" && fileTabUnusable && inDiff && !selectedDirty) {
       setView(worktreeId, "diff");
     } else if (view === "diff" && !inDiff) {
       setView(worktreeId, "file");
     }
-  }, [selectedFile, selected, view, worktreeId, setView, selectedDirty]);
+  }, [selectedFile, selected, fileTabUnusable, view, worktreeId, setView, selectedDirty]);
 
   if (error) {
     return (
@@ -274,11 +278,7 @@ function DiffView({ worktreeId }: { worktreeId: WorktreeId }) {
           <TabButton
             active={view === "file"}
             onClick={() => setView(worktreeId, "file")}
-            disabled={
-              !selectedFile ||
-              (selected?.binary ?? false) ||
-              selected?.status.kind === "deleted"
-            }
+            disabled={!selectedFile || fileTabUnusable}
           >
             File
           </TabButton>
