@@ -8,7 +8,12 @@ import {
 } from "lucide-react";
 import { DiffEditor, type DiffOnMount } from "@monaco-editor/react";
 import type { editor as MonacoEditor } from "monaco-editor";
-import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
+import {
+  Panel,
+  PanelGroup,
+  PanelResizeHandle,
+  type ImperativePanelHandle,
+} from "react-resizable-panels";
 import { useUiStore } from "@/stores/ui";
 import { useWorktreesStore } from "@/stores/worktrees";
 import { useWorkspaceStore } from "@/stores/workspace";
@@ -27,6 +32,7 @@ import type {
 } from "@/ipc/types";
 import { cn } from "@/lib/cn";
 import { effectiveBaseRef } from "@/lib/base-ref";
+import { usePixelStablePanel } from "@/lib/pixel-stable-panel";
 import { countBadge, iconButton, sectionStrip, sectionTab } from "@/lib/pane-chrome";
 import { CommentOverlay, EditorPane } from "./EditorPane";
 import { useEditorViewStateStore } from "@/stores/editor-view-state";
@@ -87,6 +93,14 @@ function DiffView({ worktreeId }: { worktreeId: WorktreeId }) {
   const setShowIgnored = useUiStore((s) => s.setShowIgnored);
   const sidebarTab = useUiStore((s) => s.diffSidebarTab);
   const setSidebarTab = useUiStore((s) => s.setDiffSidebarTab);
+  const explorerBoxRef = useRef<HTMLDivElement>(null);
+  const explorerPanelRef = useRef<ImperativePanelHandle>(null);
+  const explorer = usePixelStablePanel(
+    "diff-explorer",
+    explorerBoxRef,
+    explorerPanelRef,
+    { minPct: EXPLORER_MIN_PCT, maxPct: EXPLORER_MAX_PCT },
+  );
 
   useEffect(() => {
     fetchDiff(worktreeId);
@@ -176,12 +190,19 @@ function DiffView({ worktreeId }: { worktreeId: WorktreeId }) {
       {workspace && branch && (
         <MrBar workspaceId={workspace.id} worktreeId={worktreeId} branch={branch} />
       )}
+    <div ref={explorerBoxRef} className="flex min-h-0 flex-1">
     <PanelGroup
       direction="horizontal"
       className="flex min-h-0 flex-1"
       autoSaveId="diff-sidebar"
     >
-      <Panel defaultSize={22} minSize={12} maxSize={50}>
+      <Panel
+        ref={explorerPanelRef}
+        defaultSize={22}
+        minSize={EXPLORER_MIN_PCT}
+        maxSize={EXPLORER_MAX_PCT}
+        onResize={explorer.onResize}
+      >
         <aside className="flex h-full flex-col border-r border-neutral-800">
         {/* Changes / Files toggle — one list at a time so each gets
             the full sidebar height. */}
@@ -269,7 +290,10 @@ function DiffView({ worktreeId }: { worktreeId: WorktreeId }) {
         </div>
         </aside>
       </Panel>
-      <PanelResizeHandle className="w-px bg-neutral-800 hover:bg-neutral-700" />
+      <PanelResizeHandle
+        className="w-px bg-neutral-800 hover:bg-neutral-700"
+        onDragging={explorer.onDragging}
+      />
       <Panel defaultSize={78}>
         <section className="flex h-full flex-col overflow-hidden">
         <div className="flex h-[34px] shrink-0 items-center gap-1.5 border-b border-neutral-800 bg-chrome px-2 text-[11px]">
@@ -342,8 +366,12 @@ function DiffView({ worktreeId }: { worktreeId: WorktreeId }) {
       </Panel>
     </PanelGroup>
     </div>
+    </div>
   );
 }
+
+const EXPLORER_MIN_PCT = 12;
+const EXPLORER_MAX_PCT = 50;
 
 /// Path display in the editor tab strip, with a leading "● " when the
 /// editor buffer has unsaved local edits. The dirty flag is published

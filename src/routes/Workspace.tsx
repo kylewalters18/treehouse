@@ -24,6 +24,7 @@ import { AgentBoard, AgentBoardPill } from "@/components/AgentBoard";
 import { PlannerPopup, PlannerPill } from "@/components/Planner";
 import { StatusBar } from "@/components/StatusBar";
 import { effectiveBaseRef } from "@/lib/base-ref";
+import { usePixelStablePanel } from "@/lib/pixel-stable-panel";
 import { Search, X } from "lucide-react";
 
 export function Workspace() {
@@ -55,6 +56,13 @@ export function Workspace() {
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
+  // Same pixel width in both layouts and across window resizes.
+  const sidebarWidth = usePixelStablePanel(
+    "worktree-sidebar",
+    panelBodyRef,
+    sidebarPanelRef,
+    { minPct: SIDEBAR_MIN_PCT },
+  );
   const selectedWorktreeId = useUiStore((s) => s.selectedWorktreeId);
   const worktrees = useWorktreesStore((s) => s.worktrees);
   // Multi-repo: the "active" workspace is whichever owns the selected
@@ -106,16 +114,24 @@ export function Workspace() {
   // The rAF defer is because react-resizable-panels' imperative API doesn't
   // take effect if called before the newly-mounted Panel has registered with
   // its PanelGroup. Running on the next frame ensures registration is done.
+  // A second frame re-pins the pixel width: the fresh Panel (layout swap)
+  // or expand() lands on a percentage, not the width the user dragged to.
   useEffect(() => {
     sidebarPanelReadyRef.current = false;
+    let pinId = 0;
     const id = requestAnimationFrame(() => {
       const panel = sidebarPanelRef.current;
       if (!panel) return;
       if (sidebarCollapsed) panel.collapse();
       else panel.expand();
       sidebarPanelReadyRef.current = true;
+      pinId = requestAnimationFrame(sidebarWidth.pin);
     });
-    return () => cancelAnimationFrame(id);
+    return () => {
+      cancelAnimationFrame(id);
+      cancelAnimationFrame(pinId);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sidebarCollapsed, focusMode]);
 
   // The other direction: dragging the handle past `minSize` collapses
@@ -338,17 +354,21 @@ export function Workspace() {
           >
             <Panel
               ref={sidebarPanelRef}
-              defaultSize={14}
-              minSize={10}
+              defaultSize={18}
+              minSize={SIDEBAR_MIN_PCT}
               collapsible
               collapsedSize={railPct}
               onCollapse={onSidebarCollapse}
               onExpand={onSidebarExpand}
+              onResize={sidebarWidth.onResize}
             >
               <WorktreeSidebar />
             </Panel>
-            <PanelResizeHandle className="w-px bg-neutral-800 hover:bg-neutral-700" />
-            <Panel defaultSize={86}>
+            <PanelResizeHandle
+              className="w-px bg-neutral-800 hover:bg-neutral-700"
+              onDragging={sidebarWidth.onDragging}
+            />
+            <Panel defaultSize={82}>
               <DiffPane />
             </Panel>
           </PanelGroup>
@@ -370,15 +390,19 @@ export function Workspace() {
               order={1}
               ref={sidebarPanelRef}
               defaultSize={18}
-              minSize={14}
+              minSize={SIDEBAR_MIN_PCT}
               collapsible
               collapsedSize={railPct}
               onCollapse={onSidebarCollapse}
               onExpand={onSidebarExpand}
+              onResize={sidebarWidth.onResize}
             >
               <WorktreeSidebar />
             </Panel>
-            <PanelResizeHandle className="w-px bg-neutral-800 hover:bg-neutral-700" />
+            <PanelResizeHandle
+              className="w-px bg-neutral-800 hover:bg-neutral-700"
+              onDragging={sidebarWidth.onDragging}
+            />
             <Panel id="center" order={2} defaultSize={48}>
               <PanelGroup direction="vertical" autoSaveId="center-normal">
                 <Panel
@@ -446,6 +470,8 @@ function SystemFileViewerMount() {
 
 /// Last path segment of a repo root — the breadcrumb shows the repo's
 /// name; the full path lives in the tooltip.
+const SIDEBAR_MIN_PCT = 14;
+
 /// Collapsed worktree rail width, in px.
 const RAIL_PX = 40;
 
