@@ -36,10 +36,6 @@ use crate::util::ids::{AgentSessionId, WorkspaceId, WorktreeId};
 use crate::worktree::git_ops;
 use crate::workspace::Workspace;
 
-/// Recorded as `Worktree::created_by` for worktrees a planner creates, so
-/// the sidebar shows `↳ planner`.
-pub const CREATED_BY: &str = "planner";
-
 /// Tools a planner's Claude can't use: it reads code, it doesn't change it.
 const DISALLOWED_TOOLS: &[&str] = &["Edit", "MultiEdit", "Write", "NotebookEdit"];
 

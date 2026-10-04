@@ -403,7 +403,7 @@ pub async fn create_worktree(
         Some(&app),
         workspace_id,
         &name,
-        CreateOptions { init_submodules, base, created_by: None },
+        CreateOptions { init_submodules, base },
         &state,
     )
     .await?;

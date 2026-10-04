@@ -194,9 +194,9 @@ fn str_arg(args: &Value, k: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-/// The workspace a call targets, and the label new worktrees record as their
-/// creator: the caller's own repo for a worktree agent, the `repo` argument
-/// for the scratch agent.
+/// The workspace a call targets, and a label naming the caller for logs: the
+/// caller's own repo for a worktree agent, the `repo` argument for the
+/// scratch agent.
 fn target_workspace(
     app: &AppHandle,
     caller: McpCaller,
@@ -212,13 +212,13 @@ fn target_workspace(
                 .ok_or("the calling worktree no longer exists")?;
             Ok((parent.workspace_id, parent.branch))
         }
-        CallerScope::Planner(ws) => Ok((ws, crate::planner::CREATED_BY.to_string())),
+        CallerScope::Planner(ws) => Ok((ws, "planner".to_string())),
         CallerScope::Scratch => {
             let repo = str_arg(args, "repo")
                 .ok_or("`repo` is required — call list_repos for the options")?;
             let repos = open_repos(app);
             let i = resolve_repo(&repos, &repo)?;
-            Ok((repos[i].id, crate::scratch::CREATED_BY.to_string()))
+            Ok((repos[i].id, "scratch".to_string()))
         }
     }
 }
@@ -241,7 +241,7 @@ async fn create_worktree(app: &AppHandle, caller: McpCaller, args: &Value) -> Re
         None | Some(Value::Null) => None,
         Some(v) => Some(v.as_u64().ok_or("`issue` must be an issue number")?),
     };
-    let (workspace_id, created_by) = target_workspace(app, caller, args)?;
+    let (workspace_id, caller_label) = target_workspace(app, caller, args)?;
     let state = app.state::<AppState>();
 
     // With an issue, read it up front: a bad number fails before anything is
@@ -271,7 +271,6 @@ async fn create_worktree(app: &AppHandle, caller: McpCaller, args: &Value) -> Re
         CreateOptions {
             init_submodules: settings.init_submodules,
             base,
-            created_by: Some(created_by.clone()),
         },
         &state,
     )
@@ -281,7 +280,7 @@ async fn create_worktree(app: &AppHandle, caller: McpCaller, args: &Value) -> Re
     // `worktrees-changed` fan-out that makes the row appear. No selection
     // change — that's the renderer's call and it deliberately doesn't.
     finish_create(app, workspace_id, &result);
-    tracing::info!(id = %result.worktree.id, parent = %created_by, "mcp: created worktree");
+    tracing::info!(id = %result.worktree.id, caller = %caller_label, "mcp: created worktree");
 
     // Link (never assign — that's the user's call) and seed from the issue;
     // an explicit prompt rides after the issue text.

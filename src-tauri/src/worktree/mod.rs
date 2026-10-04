@@ -29,12 +29,6 @@ pub struct Worktree {
     /// the top of the sidebar with a distinct style; launch / merge /
     /// remove are all refused for this entry.
     pub is_main_clone: bool,
-    /// Branch of the worktree whose agent spawned this one via the treehouse
-    /// MCP server. `None` for human-created / adopted / main-clone entries.
-    /// Persisted in the repo's local git config (`branch.<b>.treehouse-parent`)
-    /// so it survives restarts via reconcile and dies with the branch.
-    #[serde(default)]
-    pub created_by: Option<String>,
 }
 
 pub use manager::{

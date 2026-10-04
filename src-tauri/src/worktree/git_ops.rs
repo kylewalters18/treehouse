@@ -535,23 +535,6 @@ pub async fn merge_squash_and_commit(
     Ok(())
 }
 
-/// Record which branch's agent spawned `branch` (see `Worktree::created_by`).
-/// Local repo config, so it's shared across worktrees and removed along with
-/// the branch's config section by `git branch -D`.
-pub async fn set_parent_branch(repo_root: &Path, branch: &str, parent: &str) -> AppResult<()> {
-    git(repo_root, ["config", &format!("branch.{branch}.treehouse-parent"), parent]).await?;
-    Ok(())
-}
-
-/// Read back `set_parent_branch`. Missing key (or any error) → `None`.
-pub async fn parent_branch(repo_root: &Path, branch: &str) -> Option<String> {
-    git(repo_root, ["config", "--get", &format!("branch.{branch}.treehouse-parent")])
-        .await
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-}
-
 /// `true` if the branch ref (e.g. "foo") exists locally.
 pub async fn branch_exists(repo_root: &Path, branch: &str) -> AppResult<bool> {
     let res = Command::new("git")

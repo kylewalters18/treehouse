@@ -22,10 +22,6 @@ use crate::storage;
 use crate::util::errors::{AppError, AppResult};
 use crate::util::ids::{AgentSessionId, WorktreeId};
 
-/// Recorded as `Worktree::created_by` for worktrees the scratch agent
-/// creates, so the sidebar shows `↳ scratch`.
-pub const CREATED_BY: &str = "scratch";
-
 pub struct ScratchState {
     /// Synthetic owner id for the scratch session. Fresh per app run.
     pub worktree_id: WorktreeId,

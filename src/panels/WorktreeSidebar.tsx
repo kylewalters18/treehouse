@@ -576,11 +576,7 @@ export function WorktreeSidebar() {
         )}
         onClick={() => selectWorktree(w.id)}
         aria-current={selectedId === w.id ? "true" : undefined}
-        title={
-          w.createdBy
-            ? `${w.path}\nCreated by the agent in ${w.createdBy}`
-            : w.path
-        }
+        title={w.path}
       >
         {/* Dim the row CONTENT but not the row itself — `opacity` <1
             creates a stacking context, and applying it to the <li>
@@ -618,13 +614,6 @@ export function WorktreeSidebar() {
                 "group-hover:hidden group-has-[[data-open]]:hidden",
             )}
           >
-            {/* Spawned by another worktree's agent over MCP. Shrinks
-                (and truncates) before the branch name does. */}
-            {w.createdBy && (
-              <span className="min-w-0 max-w-[8rem] shrink truncate font-mono text-[10px] text-neutral-600">
-                ↳ {w.createdBy}
-              </span>
-            )}
             {issueLinks[w.path] != null && (
               <span
                 className="shrink-0 rounded bg-blue-950/50 px-1 font-mono text-[10px] text-blue-300"

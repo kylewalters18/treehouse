@@ -24,7 +24,6 @@ function wt(id: string): Worktree {
     head: "",
     dirty: false,
     isMainClone: false,
-    createdBy: null,
   };
 }
 

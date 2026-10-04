@@ -27,9 +27,6 @@ pub struct CreateOptions {
     /// `None`/empty → `origin/<default_branch>`. Chosen at create time; this is
     /// independent of the Changes-pane diff base.
     pub base: Option<String>,
-    /// Parent worktree's branch when an agent creates this worktree over MCP.
-    /// Recorded in git config and surfaced as `Worktree::created_by`.
-    pub created_by: Option<String>,
 }
 
 /// What `create` returns: the worktree, plus an optional non-fatal warning
@@ -240,14 +237,7 @@ pub async fn create(
         head: head_sha,
         dirty: false,
         is_main_clone: false,
-        created_by: opts.created_by.clone(),
     };
-    if let Some(parent) = &worktree.created_by {
-        // Best-effort: losing the label only costs the sidebar hint.
-        if let Err(e) = git_ops::set_parent_branch(&ws.root, &worktree.branch, parent).await {
-            tracing::warn!(?e, branch = %worktree.branch, "failed to record parent branch");
-        }
-    }
     state.worktrees.insert(worktree.id, worktree.clone());
     tracing::info!(id = %worktree.id, path = %worktree.path.display(), "created worktree");
 
@@ -614,7 +604,6 @@ pub async fn reconcile(workspace_id: WorkspaceId, state: &AppState) -> AppResult
         let base_ref = git_ops::merge_base(&ws.root, &ws.default_branch, &branch)
             .await
             .unwrap_or_else(|_| head.clone());
-        let created_by = git_ops::parent_branch(&ws.root, &branch).await;
         let worktree = Worktree {
             id: WorktreeId::new(),
             workspace_id,
@@ -627,7 +616,6 @@ pub async fn reconcile(workspace_id: WorkspaceId, state: &AppState) -> AppResult
             head,
             dirty: false,
             is_main_clone: false,
-            created_by,
         };
         tracing::info!(id = %worktree.id, path = %worktree.path.display(), "adopted worktree");
         delta.added.push(worktree.id);
@@ -702,7 +690,6 @@ pub async fn register_main_clone(
         head,
         dirty: false,
         is_main_clone: true,
-        created_by: None,
     };
     state.worktrees.insert(worktree.id, worktree.clone());
     tracing::info!(id = %worktree.id, path = %worktree.path.display(), "registered main clone");
@@ -720,30 +707,6 @@ mod tests {
         let state = AppState::new();
         let ws = workspace_fixture(&state, &repo.root);
         (state, ws.id)
-    }
-
-    #[tokio::test]
-    async fn created_by_survives_restart_via_reconcile() {
-        let repo = TempRepo::new();
-        let (state, ws_id) = setup(&repo);
-        let opts = CreateOptions { created_by: Some("parent".into()), ..Default::default() };
-        let wt = create(None, ws_id, "child", opts, &state).await.unwrap().worktree;
-        assert_eq!(wt.created_by.as_deref(), Some("parent"));
-
-        // Fresh state == app restart: reconcile re-adopts from disk and
-        // should read the parent back out of git config.
-        let (state2, ws2) = setup(&repo);
-        reconcile(ws2, &state2).await.unwrap();
-        let adopted = state2
-            .worktrees
-            .iter()
-            .find(|e| e.value().branch == "child")
-            .map(|e| e.value().clone())
-            .expect("child adopted");
-        assert_eq!(adopted.created_by.as_deref(), Some("parent"));
-
-        let plain = create(None, ws_id, "human", CreateOptions::default(), &state).await.unwrap().worktree;
-        assert_eq!(plain.created_by, None);
     }
 
     #[tokio::test]

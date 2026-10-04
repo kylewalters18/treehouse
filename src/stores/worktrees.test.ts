@@ -17,7 +17,6 @@ function wt(partial: Partial<Worktree>): Worktree {
     head: "deadbeef",
     dirty: false,
     isMainClone: false,
-    createdBy: null,
     ...partial,
   } as Worktree;
 }

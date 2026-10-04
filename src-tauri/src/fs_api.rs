@@ -393,7 +393,6 @@ mod tests {
                 head,
                 dirty: false,
                 is_main_clone: true,
-                created_by: None,
             },
         );
         (state, id, repo)

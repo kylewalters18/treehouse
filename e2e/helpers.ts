@@ -95,7 +95,6 @@ export function fakeWorktree(overrides: Partial<Record<string, unknown>> = {}) {
     head: "abc1234",
     dirty: false,
     isMainClone: false,
-    createdBy: null,
     ...overrides,
   };
 }
