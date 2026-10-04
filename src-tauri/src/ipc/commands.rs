@@ -14,12 +14,12 @@ use crate::forge::{
     ForgeThread, IssueStart, ReviewCommentInput,
 };
 use crate::fs_api::{self, FileContent, TreeEntry};
-use crate::lsp::{self, LspConfig, LspEvent, LspServerSession};
-use crate::storage::{self, Comment, RecentWorkspace, Settings};
 use crate::fs_watch;
 use crate::ipc::events;
+use crate::lsp::{self, LspConfig, LspEvent, LspServerSession};
 use crate::pty::{self, PtyEvent, TerminalSession};
 use crate::state::AppState;
+use crate::storage::{self, Comment, RecentWorkspace, Settings};
 use crate::util::errors::{AppError, AppResult};
 use crate::util::ids::{AgentSessionId, LspServerId, TerminalId, WorkspaceId, WorktreeId};
 use crate::workspace::{self, Workspace};
@@ -318,10 +318,7 @@ pub async fn list_comments(app: AppHandle) -> AppResult<Vec<Comment>> {
 /// the resulting list back; the file is small enough that whole-file
 /// rewrites are simpler than diff-based commands.
 #[tauri::command]
-pub async fn save_comments(
-    comments: Vec<Comment>,
-    app: AppHandle,
-) -> AppResult<Vec<Comment>> {
+pub async fn save_comments(comments: Vec<Comment>, app: AppHandle) -> AppResult<Vec<Comment>> {
     storage::save_comments(&app, &comments).await?;
     Ok(comments)
 }
@@ -375,7 +372,10 @@ pub async fn list_workspaces(state: State<'_, AppState>) -> AppResult<Vec<Worksp
     // so newly opened repos slot in alphabetically.
     let mut out: Vec<Workspace> = state.workspaces.iter().map(|e| e.value().clone()).collect();
     out.sort_by_cached_key(|w| {
-        let name = w.root.file_name().map(|n| n.to_string_lossy().to_lowercase());
+        let name = w
+            .root
+            .file_name()
+            .map(|n| n.to_string_lossy().to_lowercase());
         (name, w.root.clone())
     });
     Ok(out)
@@ -406,7 +406,10 @@ pub async fn create_worktree(
         Some(&app),
         workspace_id,
         &name,
-        CreateOptions { init_submodules, base },
+        CreateOptions {
+            init_submodules,
+            base,
+        },
         &state,
     )
     .await?;
@@ -416,7 +419,10 @@ pub async fn create_worktree(
             Ok((f, _)) => workflow::start_from_issue(&app, &f, &result.worktree.path, &start).await,
             Err(e) => forge::IssueStartResult {
                 prompt: None,
-                warnings: vec![format!("couldn't reach the forge for #{}: {e}", start.number)],
+                warnings: vec![format!(
+                    "couldn't reach the forge for #{}: {e}",
+                    start.number
+                )],
             },
         });
     }
@@ -594,7 +600,11 @@ pub async fn forge_status(
     workspace_id: WorkspaceId,
     state: State<'_, AppState>,
 ) -> AppResult<ForgeStatus> {
-    let root = match state.workspaces.get(&workspace_id).map(|e| e.value().root.clone()) {
+    let root = match state
+        .workspaces
+        .get(&workspace_id)
+        .map(|e| e.value().root.clone())
+    {
         Some(r) => r,
         None => return Ok(unknown_status(None)),
     };
@@ -608,7 +618,10 @@ pub async fn forge_status(
 
 fn unknown_status(remote: Option<forge::RemoteInfo>) -> ForgeStatus {
     ForgeStatus {
-        kind: remote.as_ref().map(|r| r.kind).unwrap_or(forge::ForgeKind::Unknown),
+        kind: remote
+            .as_ref()
+            .map(|r| r.kind)
+            .unwrap_or(forge::ForgeKind::Unknown),
         host: remote.map(|r| r.host),
         installed: false,
         authenticated: false,
@@ -1045,17 +1058,14 @@ pub async fn list_agent_activity(
     for w in wts {
         // Read from the event-driven status cache. Miss → zeros, and kick
         // off a one-shot recompute so the next poll returns real numbers.
-        let (ahead, behind, dirty, merged) = match state
-            .worktree_status
-            .get(&w.id)
-            .map(|e| *e.value())
-        {
-            Some(s) => (s.ahead, s.behind, s.dirty, s.merged),
-            None => {
-                crate::worktree::status::spawn_recompute(&app, w.id);
-                (0, 0, false, false)
-            }
-        };
+        let (ahead, behind, dirty, merged) =
+            match state.worktree_status.get(&w.id).map(|e| *e.value()) {
+                Some(s) => (s.ahead, s.behind, s.dirty, s.merged),
+                None => {
+                    crate::worktree::status::spawn_recompute(&app, w.id);
+                    (0, 0, false, false)
+                }
+            };
         out.push(WorktreeActivity {
             worktree_id: w.id,
             activity: state.agents.activity_for_worktree(w.id),
@@ -1104,8 +1114,17 @@ pub async fn open_planner(
                 .get(&id)
                 .map(|e| e.value().clone())
                 .ok_or_else(|| AppError::Unknown(format!("unknown workspace: {id}")))?;
-            crate::planner::open(&app, &state.planners, &state.agents, &ws, resume, cols, rows, channel)
-                .await
+            crate::planner::open(
+                &app,
+                &state.planners,
+                &state.agents,
+                &ws,
+                resume,
+                cols,
+                rows,
+                channel,
+            )
+            .await
         }
     }
 }
@@ -1154,7 +1173,10 @@ pub async fn planner_activities(state: State<'_, AppState>) -> AppResult<Vec<Pla
             .planners
             .activities(&state.agents)
             .into_iter()
-            .map(|(ws, activity)| PlannerActivity { workspace_id: Some(ws), activity }),
+            .map(|(ws, activity)| PlannerActivity {
+                workspace_id: Some(ws),
+                activity,
+            }),
     );
     Ok(out)
 }
@@ -1183,7 +1205,15 @@ pub async fn open_terminal(
         .ok_or_else(|| AppError::Unknown(format!("unknown worktree: {worktree_id}")))?
         .clone();
     let cwd: PathBuf = wt.path;
-    pty::manager::open(&state.terminals, worktree_id, cwd, shell, cols, rows, channel)
+    pty::manager::open(
+        &state.terminals,
+        worktree_id,
+        cwd,
+        shell,
+        cols,
+        rows,
+        channel,
+    )
 }
 
 #[tauri::command]
@@ -1206,10 +1236,7 @@ pub async fn pty_resize(
 }
 
 #[tauri::command]
-pub async fn close_terminal(
-    terminal_id: TerminalId,
-    state: State<'_, AppState>,
-) -> AppResult<()> {
+pub async fn close_terminal(terminal_id: TerminalId, state: State<'_, AppState>) -> AppResult<()> {
     pty::manager::close(&state.terminals, terminal_id);
     Ok(())
 }
@@ -1228,7 +1255,10 @@ pub async fn list_terminals_for_worktree(
     worktree_id: WorktreeId,
     state: State<'_, AppState>,
 ) -> AppResult<Vec<TerminalSession>> {
-    Ok(pty::manager::list_for_worktree(&state.terminals, worktree_id))
+    Ok(pty::manager::list_for_worktree(
+        &state.terminals,
+        worktree_id,
+    ))
 }
 
 #[tauri::command]
@@ -1284,9 +1314,11 @@ pub async fn read_blob_at_ref(
         .get(&wt.workspace_id)
         .map(|e| e.value().root.clone())
         .ok_or_else(|| AppError::Unknown("workspace missing".into()))?;
-    Ok(crate::worktree::git_ops::show_blob(&workspace_root, &reference, &path)
-        .await?
-        .unwrap_or_default())
+    Ok(
+        crate::worktree::git_ops::show_blob(&workspace_root, &reference, &path)
+            .await?
+            .unwrap_or_default(),
+    )
 }
 
 #[tauri::command]
@@ -1359,11 +1391,10 @@ pub async fn get_diff(
 
     let wt_path = wt.path.clone();
     let wt_id = wt.id;
-    let computed = tokio::task::spawn_blocking(move || {
-        diff::compute::compute(wt_id, &wt_path, &anchor)
-    })
-    .await
-    .map_err(|e| AppError::Unknown(format!("diff task join: {e}")))??;
+    let computed =
+        tokio::task::spawn_blocking(move || diff::compute::compute(wt_id, &wt_path, &anchor))
+            .await
+            .map_err(|e| AppError::Unknown(format!("diff task join: {e}")))??;
 
     if matches!(mode, DiffMode::Branch) {
         state.diffs.insert(worktree_id, computed.clone());
@@ -1400,9 +1431,7 @@ pub async fn lsp_ensure(
     // loading the global config.
     let config = lsp::overrides::resolve(&app, &ws.root, &wt.path, &language_id)
         .await?
-        .ok_or_else(|| {
-            AppError::Unknown(format!("lsp language not enabled: {language_id}"))
-        })?;
+        .ok_or_else(|| AppError::Unknown(format!("lsp language not enabled: {language_id}")))?;
 
     let file_abs = std::path::PathBuf::from(&file_path);
     let root = lsp::root::resolve(&file_abs, &wt.path, &config.root_markers);
@@ -1433,7 +1462,12 @@ pub async fn lsp_kill(
         .list()
         .into_iter()
         .find(|s| s.id == server_id)
-        .and_then(|s| state.worktrees.get(&s.worktree_id).map(|w| w.value().workspace_id));
+        .and_then(|s| {
+            state
+                .worktrees
+                .get(&s.worktree_id)
+                .map(|w| w.value().workspace_id)
+        });
     lsp::supervisor::kill(&state.lsp, server_id);
     if let Some(ws_id) = workspace_id {
         let _ = app.emit(&events::lsp_servers_changed(ws_id), ());
@@ -1569,7 +1603,10 @@ pub async fn agent_profiles_list(
     app: AppHandle,
 ) -> AppResult<Vec<crate::user_config::AgentProfile>> {
     let cfg = crate::user_config::load(&app).await?;
-    Ok(crate::user_config::profiles_for(&cfg.agent.profiles, &workspace_root))
+    Ok(crate::user_config::profiles_for(
+        &cfg.agent.profiles,
+        &workspace_root,
+    ))
 }
 
 /// Insert or replace one launch profile, matched by `(workspace, name)`.
@@ -1687,7 +1724,9 @@ pub async fn agent_patterns_set(
     state: State<'_, AppState>,
 ) -> AppResult<AgentPatternsView> {
     crate::user_config::upsert_agent_backend(&app, backend_key(backend), &patterns).await?;
-    state.agents.set_patterns(agent::patterns::load(&app).await?);
+    state
+        .agents
+        .set_patterns(agent::patterns::load(&app).await?);
     agent_patterns_view(&app).await
 }
 
@@ -1700,7 +1739,9 @@ pub async fn agent_patterns_reset(
     state: State<'_, AppState>,
 ) -> AppResult<AgentPatternsView> {
     crate::user_config::remove_agent_backend(&app, backend_key(backend)).await?;
-    state.agents.set_patterns(agent::patterns::load(&app).await?);
+    state
+        .agents
+        .set_patterns(agent::patterns::load(&app).await?);
     agent_patterns_view(&app).await
 }
 
@@ -1726,8 +1767,7 @@ pub async fn worktree_setup_steps(
         .get(&wt.workspace_id)
         .ok_or_else(|| AppError::Unknown(format!("unknown workspace: {}", wt.workspace_id)))?
         .clone();
-    let steps =
-        worktree::setup::resolve(&app, &ws.root, worktree::setup::Hook::OnCreate).await?;
+    let steps = worktree::setup::resolve(&app, &ws.root, worktree::setup::Hook::OnCreate).await?;
     let name = wt
         .path
         .file_name()
@@ -1760,11 +1800,7 @@ pub async fn worktree_mark_setup_ran(
 /// One of the system files we let the renderer surface in-app.
 /// `kind` is a flat string so the IPC stays JSON-friendly; the
 /// renderer just passes one of these literals.
-fn resolve_app_file(
-    app: &AppHandle,
-    kind: &str,
-    file: Option<&str>,
-) -> AppResult<PathBuf> {
+fn resolve_app_file(app: &AppHandle, kind: &str, file: Option<&str>) -> AppResult<PathBuf> {
     match kind {
         "log" => {
             let dir = log_dir().ok_or_else(|| AppError::Unknown("HOME not set".into()))?;
@@ -1808,7 +1844,11 @@ fn latest_log(dir: &std::path::Path) -> AppResult<PathBuf> {
         if !name_s.starts_with("treehouse.log") {
             continue;
         }
-        if latest.as_deref().map(|l| name_s.as_str() > l).unwrap_or(true) {
+        if latest
+            .as_deref()
+            .map(|l| name_s.as_str() > l)
+            .unwrap_or(true)
+        {
             latest = Some(name_s);
         }
     }
@@ -1865,11 +1905,7 @@ pub async fn read_app_text_file(
 /// save after a fresh install doesn't fail on a non-existent
 /// `Application Support/com.treehouse.app/`.
 #[tauri::command]
-pub async fn write_app_text_file(
-    kind: String,
-    content: String,
-    app: AppHandle,
-) -> AppResult<()> {
+pub async fn write_app_text_file(kind: String, content: String, app: AppHandle) -> AppResult<()> {
     let path = match kind.as_str() {
         "treehouseConfig" => crate::user_config::config_path(&app)?,
         "log" => {
@@ -1880,9 +1916,9 @@ pub async fn write_app_text_file(
         other => return Err(AppError::Unknown(format!("unknown app file kind: {other}"))),
     };
     if let Some(dir) = path.parent() {
-        tokio::fs::create_dir_all(dir).await.map_err(|e| {
-            AppError::Io(format!("mkdir -p {}: {e}", dir.display()))
-        })?;
+        tokio::fs::create_dir_all(dir)
+            .await
+            .map_err(|e| AppError::Io(format!("mkdir -p {}: {e}", dir.display())))?;
     }
     tokio::fs::write(&path, content.as_bytes())
         .await
@@ -1924,8 +1960,7 @@ pub async fn list_log_files() -> AppResult<Vec<String>> {
 /// `open` against a missing path.
 #[tauri::command]
 pub async fn open_logs_folder() -> AppResult<()> {
-    let home = std::env::var_os("HOME")
-        .ok_or_else(|| AppError::Unknown("HOME not set".into()))?;
+    let home = std::env::var_os("HOME").ok_or_else(|| AppError::Unknown("HOME not set".into()))?;
     let dir = std::path::PathBuf::from(home).join("Library/Logs/com.treehouse.app");
     if !dir.exists() {
         return Err(AppError::Unknown(format!(
@@ -1951,10 +1986,7 @@ pub async fn open_logs_folder() -> AppResult<()> {
 /// the next file open / worktree create / language toggle picks up
 /// the new values automatically.
 #[tauri::command]
-pub async fn treehouse_config_reload(
-    app: AppHandle,
-    state: State<'_, AppState>,
-) -> AppResult<()> {
+pub async fn treehouse_config_reload(app: AppHandle, state: State<'_, AppState>) -> AppResult<()> {
     let p = agent::patterns::load(&app).await?;
     state.agents.set_patterns(p);
     Ok(())

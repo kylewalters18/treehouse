@@ -218,7 +218,10 @@ mod tests {
             split_command(r#"claude --agent "code reviewer"  -x"#),
             vec!["claude", "--agent", "code reviewer", "-x"]
         );
-        assert_eq!(split_command(r#"a "b\"c" 'd\e' f\ g"#), vec!["a", "b\"c", "d\\e", "f g"]);
+        assert_eq!(
+            split_command(r#"a "b\"c" 'd\e' f\ g"#),
+            vec!["a", "b\"c", "d\\e", "f g"]
+        );
         assert_eq!(split_command(r#"a "" b"#), vec!["a", "", "b"]);
         assert!(split_command("   ").is_empty());
     }

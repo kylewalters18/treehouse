@@ -201,12 +201,7 @@ pub fn write(registry: &TerminalRegistry, id: TerminalId, data: &[u8]) -> AppRes
     Ok(())
 }
 
-pub fn resize(
-    registry: &TerminalRegistry,
-    id: TerminalId,
-    cols: u16,
-    rows: u16,
-) -> AppResult<()> {
+pub fn resize(registry: &TerminalRegistry, id: TerminalId, cols: u16, rows: u16) -> AppResult<()> {
     let handle = registry
         .inner
         .get(&id)

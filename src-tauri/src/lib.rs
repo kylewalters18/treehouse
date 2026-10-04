@@ -7,8 +7,8 @@ mod fs_watch;
 mod ipc;
 mod lsp;
 mod mcp;
-mod pty;
 mod planner;
+mod pty;
 mod scratch;
 mod state;
 mod storage;
@@ -211,7 +211,9 @@ pub fn run() {
         })
         .invoke_handler(move |invoke| {
             if browser::is_preview(invoke.message.webview_ref()) {
-                invoke.resolver.reject("IPC is not available to preview pages");
+                invoke
+                    .resolver
+                    .reject("IPC is not available to preview pages");
                 return true;
             }
             commands(invoke)
@@ -245,8 +247,7 @@ pub fn run() {
                 }
                 match agent::patterns::load(&handle_for_config).await {
                     Ok(p) => {
-                        let state: tauri::State<AppState> =
-                            handle_for_config.state();
+                        let state: tauri::State<AppState> = handle_for_config.state();
                         state.agents.set_patterns(p);
                     }
                     Err(e) => {

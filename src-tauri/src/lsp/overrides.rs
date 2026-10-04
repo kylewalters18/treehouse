@@ -73,9 +73,11 @@ pub async fn find_for(
 ) -> AppResult<Option<LspOverride>> {
     let cfg = crate::user_config::load(app).await?;
     let target = canonicalize(workspace_path);
-    Ok(cfg.lsp.overrides.into_iter().find(|o| {
-        o.language == language_id && canonicalize(Path::new(&o.workspace)) == target
-    }))
+    Ok(cfg
+        .lsp
+        .overrides
+        .into_iter()
+        .find(|o| o.language == language_id && canonicalize(Path::new(&o.workspace)) == target))
 }
 
 /// Best-effort canonicalization. If the path doesn't exist (rare for
@@ -151,11 +153,7 @@ pub async fn resolve(
     };
     config.command = sub(&config.command);
     config.args = config.args.into_iter().map(|a| sub(&a)).collect();
-    config.env = config
-        .env
-        .into_iter()
-        .map(|(k, v)| (k, sub(&v)))
-        .collect();
+    config.env = config.env.into_iter().map(|(k, v)| (k, sub(&v))).collect();
 
     if let Some(pm) = config.path_mapping.as_mut() {
         pm.remote_root = sub(&pm.remote_root);

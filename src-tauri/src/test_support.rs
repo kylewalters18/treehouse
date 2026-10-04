@@ -77,7 +77,11 @@ fn run_git(root: &Path, args: &[&str]) {
         .args(args)
         .status()
         .expect("spawn git");
-    assert!(status.success(), "git {args:?} failed in {}", root.display());
+    assert!(
+        status.success(),
+        "git {args:?} failed in {}",
+        root.display()
+    );
 }
 
 /// Register a fake workspace pointing at `root` into the given AppState, using

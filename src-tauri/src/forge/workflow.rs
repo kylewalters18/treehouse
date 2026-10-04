@@ -147,8 +147,16 @@ pub async fn create_pr(
     };
 
     if let Some(w) = &wt {
-        let base = if w.base_ref.is_empty() { &target } else { &w.base_ref };
-        if git_ops::commits_ahead(root, base, branch).await.unwrap_or(1) == 0 {
+        let base = if w.base_ref.is_empty() {
+            &target
+        } else {
+            &w.base_ref
+        };
+        if git_ops::commits_ahead(root, base, branch)
+            .await
+            .unwrap_or(1)
+            == 0
+        {
             let dirty = git_ops::has_changes(&w.path).await.unwrap_or(false);
             return Err(AppError::Forge(if dirty {
                 format!("{branch} has no commits ahead of {target} — commit the uncommitted changes first")
@@ -168,7 +176,9 @@ pub async fn create_pr(
     };
 
     git_ops::push_branch(root, branch).await?;
-    let mr = forge.create_mr(branch, &target, title, &body, draft).await?;
+    let mr = forge
+        .create_mr(branch, &target, title, &body, draft)
+        .await?;
     let _ = app.emit(&events::mr_changed(workspace_id), branch.to_string());
     Ok(mr)
 }
@@ -201,7 +211,11 @@ mod tests {
 
     #[test]
     fn issue_prompt_omits_empty_body_and_labels() {
-        let i = ForgeIssue { body: " ".into(), labels: vec![], ..issue() };
+        let i = ForgeIssue {
+            body: " ".into(),
+            labels: vec![],
+            ..issue()
+        };
         assert_eq!(
             issue_prompt(&i),
             "Work on issue #57: Diff pane loses scroll\n\nhttps://github.com/o/r/issues/57\n"
@@ -211,7 +225,10 @@ mod tests {
     #[test]
     fn closes_line_added_once() {
         assert_eq!(with_closes_line("", 7, true), "Closes #7");
-        assert_eq!(with_closes_line("Fixes the thing.", 7, true), "Closes #7\n\nFixes the thing.");
+        assert_eq!(
+            with_closes_line("Fixes the thing.", 7, true),
+            "Closes #7\n\nFixes the thing."
+        );
         assert_eq!(
             with_closes_line("Fixes the thing.\n\ncloses #7", 7, true),
             "Fixes the thing.\n\ncloses #7"
@@ -220,7 +237,10 @@ mod tests {
 
     #[test]
     fn closes_line_removed_when_not_closing() {
-        assert_eq!(with_closes_line("Closes #7\n\nFixes it.", 7, false), "Fixes it.");
+        assert_eq!(
+            with_closes_line("Closes #7\n\nFixes it.", 7, false),
+            "Fixes it."
+        );
         // Another issue's line is the user's business.
         assert_eq!(with_closes_line("Closes #8", 7, false), "Closes #8");
     }

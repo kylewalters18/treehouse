@@ -69,7 +69,13 @@ pub async fn recompute(app: &AppHandle, worktree_id: WorktreeId) -> WorktreeStat
             Some(e) => e.value().clone(),
             None => return WorktreeStatus::default(),
         };
-        (ws.root, ws.default_branch, wt.branch, wt.path, wt.is_main_clone)
+        (
+            ws.root,
+            ws.default_branch,
+            wt.branch,
+            wt.path,
+            wt.is_main_clone,
+        )
     };
 
     if is_main_clone {

@@ -27,7 +27,11 @@ pub struct GitlabForge {
 /// Process-wide HTTP client (connection pooling).
 fn client() -> &'static reqwest::Client {
     static C: OnceLock<reqwest::Client> = OnceLock::new();
-    C.get_or_init(|| reqwest::Client::builder().build().expect("build reqwest client"))
+    C.get_or_init(|| {
+        reqwest::Client::builder()
+            .build()
+            .expect("build reqwest client")
+    })
 }
 
 impl GitlabForge {
@@ -135,17 +139,32 @@ impl GitlabForge {
 
     pub async fn create_issue(&self, title: &str, body: &str) -> AppResult<ForgeIssue> {
         let path = format!("projects/{}/issues", self.pid());
-        let form = [("title", title.to_string()), ("description", body.to_string())];
-        let raw: GlIssue =
-            Self::parse("create_issue", &self.send(reqwest::Method::POST, &path, &form).await?)?;
+        let form = [
+            ("title", title.to_string()),
+            ("description", body.to_string()),
+        ];
+        let raw: GlIssue = Self::parse(
+            "create_issue",
+            &self.send(reqwest::Method::POST, &path, &form).await?,
+        )?;
         Ok(raw.normalize())
     }
 
-    pub async fn update_issue(&self, number: u64, title: &str, body: &str) -> AppResult<ForgeIssue> {
+    pub async fn update_issue(
+        &self,
+        number: u64,
+        title: &str,
+        body: &str,
+    ) -> AppResult<ForgeIssue> {
         let path = format!("projects/{}/issues/{}", self.pid(), number);
-        let form = [("title", title.to_string()), ("description", body.to_string())];
-        let raw: GlIssue =
-            Self::parse("update_issue", &self.send(reqwest::Method::PUT, &path, &form).await?)?;
+        let form = [
+            ("title", title.to_string()),
+            ("description", body.to_string()),
+        ];
+        let raw: GlIssue = Self::parse(
+            "update_issue",
+            &self.send(reqwest::Method::PUT, &path, &form).await?,
+        )?;
         Ok(raw.normalize())
     }
 
@@ -211,18 +230,25 @@ impl GitlabForge {
             ("description", body.to_string()),
             ("remove_source_branch", "true".to_string()),
         ];
-        let mr: GlMr = Self::parse("create_mr", &self.send(reqwest::Method::POST, &path, &form).await?)?;
+        let mr: GlMr = Self::parse(
+            "create_mr",
+            &self.send(reqwest::Method::POST, &path, &form).await?,
+        )?;
         Ok(mr.normalize())
     }
 
     pub async fn approve_mr(&self, iid: u64) -> AppResult<()> {
         let path = format!("projects/{}/merge_requests/{}/approve", self.pid(), iid);
-        self.send(reqwest::Method::POST, &path, &[]).await.map(|_| ())
+        self.send(reqwest::Method::POST, &path, &[])
+            .await
+            .map(|_| ())
     }
 
     pub async fn unapprove_mr(&self, iid: u64) -> AppResult<()> {
         let path = format!("projects/{}/merge_requests/{}/unapprove", self.pid(), iid);
-        self.send(reqwest::Method::POST, &path, &[]).await.map(|_| ())
+        self.send(reqwest::Method::POST, &path, &[])
+            .await
+            .map(|_| ())
     }
 
     pub async fn approval_state(&self, iid: u64) -> AppResult<ForgeApproval> {
@@ -250,7 +276,9 @@ impl GitlabForge {
         } else {
             &[]
         };
-        self.send(reqwest::Method::PUT, &path, form).await.map(|_| ())
+        self.send(reqwest::Method::PUT, &path, form)
+            .await
+            .map(|_| ())
     }
 
     // --- comments / review threads ---
@@ -344,9 +372,13 @@ impl GitlabForge {
             iid,
             discussion_id
         );
-        self.send(reqwest::Method::PUT, &path, &[("resolved", resolved.to_string())])
-            .await
-            .map(|_| ())
+        self.send(
+            reqwest::Method::PUT,
+            &path,
+            &[("resolved", resolved.to_string())],
+        )
+        .await
+        .map(|_| ())
     }
 
     async fn diff_refs(&self, iid: u64) -> AppResult<GlDiffRefs> {
@@ -386,12 +418,16 @@ impl GitlabForge {
 
     pub async fn retry_pipeline(&self, pipeline_id: u64) -> AppResult<()> {
         let path = format!("projects/{}/pipelines/{}/retry", self.pid(), pipeline_id);
-        self.send(reqwest::Method::POST, &path, &[]).await.map(|_| ())
+        self.send(reqwest::Method::POST, &path, &[])
+            .await
+            .map(|_| ())
     }
 
     pub async fn retry_job(&self, job_id: u64) -> AppResult<()> {
         let path = format!("projects/{}/jobs/{}/retry", self.pid(), job_id);
-        self.send(reqwest::Method::POST, &path, &[]).await.map(|_| ())
+        self.send(reqwest::Method::POST, &path, &[])
+            .await
+            .map(|_| ())
     }
 }
 

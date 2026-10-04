@@ -87,11 +87,7 @@ impl WorkspaceWatchRegistry {
 /// from `AppState` on each debounce flush, so later mutations (e.g. after
 /// sync or merge-back advance it) take effect for subsequent recomputes.
 /// Safe to call twice for the same id — the second call replaces the first.
-pub fn start(
-    app: AppHandle,
-    worktree_id: WorktreeId,
-    worktree_path: PathBuf,
-) -> AppResult<()> {
+pub fn start(app: AppHandle, worktree_id: WorktreeId, worktree_path: PathBuf) -> AppResult<()> {
     let state = app.state::<AppState>();
     let registry = state.watchers.clone();
 
@@ -142,10 +138,7 @@ pub fn start(
             // Recompute + cache + emit.
             tracing::debug!(worktree_id = %worktree_id, "fs batch: recomputing diff");
             let state = app_for_events.state::<AppState>();
-            let wt_snapshot = state
-                .worktrees
-                .get(&worktree_id)
-                .map(|e| e.value().clone());
+            let wt_snapshot = state.worktrees.get(&worktree_id).map(|e| e.value().clone());
             let Some(wt) = wt_snapshot else {
                 tracing::warn!(%worktree_id, "worktree vanished during debounce");
                 return;
@@ -290,8 +283,7 @@ pub fn start_workspace(
                     }
                 }
                 if !delta.added.is_empty() {
-                    crate::worktree::status::recompute_all_for_workspace(&app, workspace_id)
-                        .await;
+                    crate::worktree::status::recompute_all_for_workspace(&app, workspace_id).await;
                 }
                 tracing::info!(
                     %workspace_id,
@@ -445,11 +437,7 @@ pub fn recompute_and_emit(app: &AppHandle, worktree_id: WorktreeId) {
     let app_clone = app.clone();
     tauri::async_runtime::spawn(async move {
         let state = app_clone.state::<AppState>();
-        let Some(wt) = state
-            .worktrees
-            .get(&worktree_id)
-            .map(|e| e.value().clone())
-        else {
+        let Some(wt) = state.worktrees.get(&worktree_id).map(|e| e.value().clone()) else {
             return;
         };
         let ws = state

@@ -205,11 +205,7 @@ pub fn attach(
     Ok(session)
 }
 
-pub fn write_stdin(
-    registry: &LspRegistry,
-    id: LspServerId,
-    data: &[u8],
-) -> AppResult<()> {
+pub fn write_stdin(registry: &LspRegistry, id: LspServerId, data: &[u8]) -> AppResult<()> {
     let handle = registry
         .inner
         .get(&id)

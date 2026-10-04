@@ -42,7 +42,10 @@ pub fn start(app: &AppHandle) {
         let listener = match tokio::net::TcpListener::bind(("127.0.0.1", 0)).await {
             Ok(l) => l,
             Err(e) => {
-                tracing::warn!(?e, "mcp: bind failed; agents will run without treehouse tools");
+                tracing::warn!(
+                    ?e,
+                    "mcp: bind failed; agents will run without treehouse tools"
+                );
                 return;
             }
         };
@@ -71,7 +74,11 @@ async fn no_stream() -> StatusCode {
 
 async fn handle(State(app): State<AppHandle>, headers: HeaderMap, body: Json<Value>) -> Response {
     let Some(caller) = authenticate(&app, &headers) else {
-        return (StatusCode::UNAUTHORIZED, "invalid or expired treehouse token").into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            "invalid or expired treehouse token",
+        )
+            .into_response();
     };
     let Json(body) = body;
     let responses: Vec<Value> = match body {

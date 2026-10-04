@@ -284,7 +284,10 @@ fn remove_agent_profile_in(doc: &mut toml_edit::DocumentMut, workspace: Option<&
     let Some(agent) = root.get_mut("agent").and_then(Item::as_table_mut) else {
         return;
     };
-    if let Some(arr) = agent.get_mut("profile").and_then(Item::as_array_of_tables_mut) {
+    if let Some(arr) = agent
+        .get_mut("profile")
+        .and_then(Item::as_array_of_tables_mut)
+    {
         arr.retain(|t| {
             !(t.get("name").and_then(|v| v.as_str()) == Some(name)
                 && norm(t.get("workspace").and_then(|v| v.as_str())) == want)
@@ -466,7 +469,10 @@ pub async fn upsert_agent_backend(
     backend_key: &str,
     patterns: &BackendPatterns,
 ) -> AppResult<()> {
-    write_edited(app, |doc| upsert_agent_backend_in(doc, backend_key, patterns)).await
+    write_edited(app, |doc| {
+        upsert_agent_backend_in(doc, backend_key, patterns)
+    })
+    .await
 }
 
 /// Drop the `[agent.status.<backend>]` table so [`agent::patterns::load`]
@@ -932,7 +938,8 @@ mod tests {
             .unwrap();
         upsert_agent_profile_in(&mut doc, &profile(Some("/r"), "Rev", "claude --agent a")).unwrap();
         upsert_agent_profile_in(&mut doc, &profile(None, "Rev", "claude")).unwrap();
-        upsert_agent_profile_in(&mut doc, &profile(Some("/r/"), "Rev", "claude --agent b")).unwrap();
+        upsert_agent_profile_in(&mut doc, &profile(Some("/r/"), "Rev", "claude --agent b"))
+            .unwrap();
         let out = doc.to_string();
         assert!(out.contains("# keep me"));
         assert!(out.contains("[[agent.profile]]"));
@@ -946,7 +953,8 @@ mod tests {
     #[test]
     fn remove_profile_matches_workspace_and_name() {
         let mut doc = "# keep me\n".parse::<toml_edit::DocumentMut>().unwrap();
-        upsert_agent_profile_in(&mut doc, &profile(Some("/r/"), "Rev", "claude --agent a")).unwrap();
+        upsert_agent_profile_in(&mut doc, &profile(Some("/r/"), "Rev", "claude --agent a"))
+            .unwrap();
         upsert_agent_profile_in(&mut doc, &profile(None, "Rev", "claude")).unwrap();
         remove_agent_profile_in(&mut doc, Some("/r"), "Rev");
         let parsed: TreehouseConfig = toml::from_str(&doc.to_string()).unwrap();

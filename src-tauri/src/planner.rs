@@ -33,8 +33,8 @@ use crate::agent::{AgentActivity, AgentBackendKind, AgentEvent, AgentSession};
 use crate::storage;
 use crate::util::errors::{AppError, AppResult};
 use crate::util::ids::{AgentSessionId, WorkspaceId, WorktreeId};
-use crate::worktree::git_ops;
 use crate::workspace::Workspace;
+use crate::worktree::git_ops;
 
 /// Tools a planner's Claude can't use: it reads code, it doesn't change it.
 const DISALLOWED_TOOLS: &[&str] = &["Edit", "MultiEdit", "Write", "NotebookEdit"];
@@ -92,7 +92,12 @@ impl Planners {
         self.by_workspace
             .iter()
             .filter(|e| e.value().agent.lock().is_some())
-            .map(|e| (*e.key(), agents.activity_for_worktree(e.value().worktree_id)))
+            .map(|e| {
+                (
+                    *e.key(),
+                    agents.activity_for_worktree(e.value().worktree_id),
+                )
+            })
             .collect()
     }
 
@@ -166,7 +171,10 @@ pub async fn open(
     )?;
     *planner.agent.lock() = Some(session.id);
     *planner.checkout.lock() = Some(checkout.clone());
-    Ok(PlannerOpened { session, checkout: Some(checkout) })
+    Ok(PlannerOpened {
+        session,
+        checkout: Some(checkout),
+    })
 }
 
 fn repo_name(root: &Path) -> String {
@@ -206,8 +214,13 @@ async fn refresh_checkout(
     let (source_ref, base_ref) = if git_ops::rev_parse(repo_root, &remote_ref).await.is_ok() {
         (remote_ref, format!("origin/{default_branch}"))
     } else {
-        warning = Some(format!("no origin/{default_branch} — reading local {default_branch}"));
-        (format!("refs/heads/{default_branch}"), default_branch.to_string())
+        warning = Some(format!(
+            "no origin/{default_branch} — reading local {default_branch}"
+        ));
+        (
+            format!("refs/heads/{default_branch}"),
+            default_branch.to_string(),
+        )
     };
 
     if !dir.join(".git").exists() {
@@ -240,13 +253,21 @@ async fn refresh_checkout(
         ],
     )
     .await?;
-    git_ops::git(dir, ["checkout", "--quiet", "--force", "--detach", "FETCH_HEAD"]).await?;
+    git_ops::git(
+        dir,
+        ["checkout", "--quiet", "--force", "--detach", "FETCH_HEAD"],
+    )
+    .await?;
     git_ops::git(dir, ["clean", "-fdq"]).await?;
     let sha = git_ops::git(dir, ["rev-parse", "--short", "HEAD"])
         .await?
         .trim()
         .to_string();
-    Ok(PlannerCheckout { base_ref, sha, warning })
+    Ok(PlannerCheckout {
+        base_ref,
+        sha,
+        warning,
+    })
 }
 
 /// Extra Claude flags for a planner: no edit tools, and a system prompt
@@ -287,7 +308,9 @@ mod tests {
         let repo = crate::test_support::TempRepo::new();
         let state = crate::state::AppState::new();
         let ws_id = crate::test_support::workspace_fixture(&state, &repo.root).id;
-        refresh_checkout(&repo.root, "main", &checkout_dir(&repo.root)).await.unwrap();
+        refresh_checkout(&repo.root, "main", &checkout_dir(&repo.root))
+            .await
+            .unwrap();
         crate::worktree::reconcile(ws_id, &state).await.unwrap();
         assert!(state
             .worktrees
@@ -297,9 +320,22 @@ mod tests {
 
     #[test]
     fn planner_flags_disable_edits_and_end_on_an_option_value() {
-        let c = PlannerCheckout { base_ref: "origin/main".into(), sha: "84ae864".into(), warning: None };
+        let c = PlannerCheckout {
+            base_ref: "origin/main".into(),
+            sha: "84ae864".into(),
+            warning: None,
+        };
         let flags = claude_planner_flags("treehouse", &c);
-        assert_eq!(&flags[..5], ["--disallowedTools", "Edit", "MultiEdit", "Write", "NotebookEdit"]);
+        assert_eq!(
+            &flags[..5],
+            [
+                "--disallowedTools",
+                "Edit",
+                "MultiEdit",
+                "Write",
+                "NotebookEdit"
+            ]
+        );
         assert_eq!(flags[5], "--append-system-prompt");
         assert!(flags[6].contains("origin/main at 84ae864"));
         assert_eq!(flags.len(), 7);

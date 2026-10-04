@@ -185,11 +185,15 @@ impl AgentHistory {
     /// Write-then-rename so a crash mid-write can't truncate the file.
     /// Best-effort: a failed save only costs history.
     fn save(&self, records: &[Record]) {
-        let Some(path) = self.path.lock().clone() else { return };
+        let Some(path) = self.path.lock().clone() else {
+            return;
+        };
         let file = HistoryFile {
             items: records.to_vec(),
         };
-        let Ok(bytes) = serde_json::to_vec_pretty(&file) else { return };
+        let Ok(bytes) = serde_json::to_vec_pretty(&file) else {
+            return;
+        };
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
@@ -293,8 +297,24 @@ mod tests {
     #[test]
     fn first_prompt_sticks_and_last_message_updates() {
         let mut r = Vec::new();
-        upsert(&mut r, &wt(), None, "s1", Some("fix the bug"), &turn(Some("fix the bug"), None), 1);
-        upsert(&mut r, &wt(), None, "s1", Some("now add tests"), &turn(Some("now add tests"), Some("done")), 2);
+        upsert(
+            &mut r,
+            &wt(),
+            None,
+            "s1",
+            Some("fix the bug"),
+            &turn(Some("fix the bug"), None),
+            1,
+        );
+        upsert(
+            &mut r,
+            &wt(),
+            None,
+            "s1",
+            Some("now add tests"),
+            &turn(Some("now add tests"), Some("done")),
+            2,
+        );
         assert_eq!(r.len(), 1);
         assert_eq!(r[0].title.as_deref(), Some("fix the bug"));
         assert_eq!(r[0].last_prompt.as_deref(), Some("now add tests"));
@@ -305,8 +325,24 @@ mod tests {
     #[test]
     fn resume_with_new_id_rekeys_the_record() {
         let mut r = Vec::new();
-        upsert(&mut r, &wt(), None, "s1", Some("fix the bug"), &turn(Some("fix the bug"), Some("ok")), 1);
-        upsert(&mut r, &wt(), Some("s1"), "s2", Some("keep going"), &turn(Some("keep going"), None), 5);
+        upsert(
+            &mut r,
+            &wt(),
+            None,
+            "s1",
+            Some("fix the bug"),
+            &turn(Some("fix the bug"), Some("ok")),
+            1,
+        );
+        upsert(
+            &mut r,
+            &wt(),
+            Some("s1"),
+            "s2",
+            Some("keep going"),
+            &turn(Some("keep going"), None),
+            5,
+        );
         assert_eq!(r.len(), 1);
         assert_eq!(r[0].claude_session_id, "s2");
         assert_eq!(r[0].title.as_deref(), Some("fix the bug"));
@@ -319,7 +355,15 @@ mod tests {
         let other = PathBuf::from("/r__worktrees/b");
         upsert(&mut r, &other, None, "other", None, &LastTurn::default(), 0);
         for i in 0..(PER_WORKTREE_MAX as u64 + 3) {
-            upsert(&mut r, &wt(), None, &format!("s{i}"), None, &LastTurn::default(), i + 1);
+            upsert(
+                &mut r,
+                &wt(),
+                None,
+                &format!("s{i}"),
+                None,
+                &LastTurn::default(),
+                i + 1,
+            );
         }
         let ids: Vec<_> = r.iter().filter(|x| x.worktree_path == wt()).collect();
         assert_eq!(ids.len(), PER_WORKTREE_MAX);
@@ -331,7 +375,10 @@ mod tests {
     fn loads_records_written_before_last_prompt_and_title() {
         let json = r#"{"items":[{"claudeSessionId":"s1","worktreePath":"/r__worktrees/a","title":"t","lastMessage":null,"startedAt":1,"lastActiveAt":1}]}"#;
         let file: HistoryFile = serde_json::from_str(json).unwrap();
-        assert_eq!((&file.items[0].last_prompt, &file.items[0].ai_title), (&None, &None));
+        assert_eq!(
+            (&file.items[0].last_prompt, &file.items[0].ai_title),
+            (&None, &None)
+        );
     }
 
     #[test]
@@ -366,13 +413,23 @@ mod tests {
     #[test]
     fn list_title_falls_back_to_first_prompt() {
         let h = AgentHistory::default();
-        h.observe(&wt(), None, "s1", Some("fix the bug"), &LastTurn::default(), 1);
+        h.observe(
+            &wt(),
+            None,
+            "s1",
+            Some("fix the bug"),
+            &LastTurn::default(),
+            1,
+        );
         assert_eq!(h.list_for(&wt())[0].title.as_deref(), Some("fix the bug"));
         let named = LastTurn {
             ai_title: Some("Login redirect loop".into()),
             ..LastTurn::default()
         };
         h.observe(&wt(), None, "s1", None, &named, 2);
-        assert_eq!(h.list_for(&wt())[0].title.as_deref(), Some("Login redirect loop"));
+        assert_eq!(
+            h.list_for(&wt())[0].title.as_deref(),
+            Some("Login redirect loop")
+        );
     }
 }

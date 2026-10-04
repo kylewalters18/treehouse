@@ -180,10 +180,7 @@ pub async fn list_tree(
         .clone();
 
     let root = wt.path.clone();
-    let sub = resolve_sandboxed(
-        &root,
-        if dir.is_empty() { "." } else { dir },
-    )?;
+    let sub = resolve_sandboxed(&root, if dir.is_empty() { "." } else { dir })?;
 
     let gi = build_ignore(&root)?;
     let mut entries: Vec<TreeEntry> = Vec::new();
@@ -259,7 +256,7 @@ pub async fn list_files(
     let root_for_walk = root.clone();
     let files = tokio::task::spawn_blocking(move || -> Vec<String> {
         let walker = WalkBuilder::new(&root_for_walk)
-            .hidden(false)      // surface dotfiles like `.kiro`, `.claude`
+            .hidden(false) // surface dotfiles like `.kiro`, `.claude`
             .git_ignore(!show_ignored)
             .git_global(!show_ignored)
             .git_exclude(!show_ignored)
@@ -402,7 +399,9 @@ mod tests {
     async fn write_then_read_round_trips() {
         let (state, id, repo) = fixture();
         let body = "hello\nworld\n";
-        write_worktree_file(id, "README.md", body, &state).await.unwrap();
+        write_worktree_file(id, "README.md", body, &state)
+            .await
+            .unwrap();
         let on_disk = std::fs::read_to_string(repo.root.join("README.md")).unwrap();
         assert_eq!(on_disk, body);
         let round = read_worktree_file(id, "README.md", &state).await.unwrap();
@@ -439,7 +438,9 @@ mod tests {
     async fn write_recreates_deleted_file_when_parent_intact() {
         let (state, id, repo) = fixture();
         std::fs::remove_file(repo.root.join("README.md")).unwrap();
-        write_worktree_file(id, "README.md", "back\n", &state).await.unwrap();
+        write_worktree_file(id, "README.md", "back\n", &state)
+            .await
+            .unwrap();
         assert_eq!(
             std::fs::read_to_string(repo.root.join("README.md")).unwrap(),
             "back\n"

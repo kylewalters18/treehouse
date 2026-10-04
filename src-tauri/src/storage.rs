@@ -231,7 +231,9 @@ pub async fn set_pinned(
     let dir = config_dir(app)?;
     let _ = tokio::fs::create_dir_all(&dir).await;
     let path = pinned_worktrees_path(app)?;
-    let file = PinnedWorktreesFile { items: items.clone() };
+    let file = PinnedWorktreesFile {
+        items: items.clone(),
+    };
     let bytes = serde_json::to_vec_pretty(&file)
         .map_err(|e| AppError::Unknown(format!("serialize pinned worktrees: {e}")))?;
     tokio::fs::write(&path, bytes)
@@ -409,9 +411,7 @@ pub async fn load_settings(app: &AppHandle) -> AppResult<Settings> {
     let path = settings_path(app)?;
     let bytes = match tokio::fs::read(&path).await {
         Ok(b) => b,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(Settings::default())
-        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Settings::default()),
         Err(e) => return Err(AppError::Io(format!("read {}: {e}", path.display()))),
     };
     // Tolerant: bad JSON falls back to defaults instead of bricking the app.

@@ -83,15 +83,16 @@ fn main_window<R: Runtime>(app: &AppHandle<R>) -> AppResult<Window<R>> {
 }
 
 fn previews<R: Runtime>(app: &AppHandle<R>) -> impl Iterator<Item = Webview<R>> {
-    app.webviews()
-        .into_values()
-        .filter(is_preview)
+    app.webviews().into_values().filter(is_preview)
 }
 
 /// `bounds` in window coordinates, plus the page zoom for the preview.
 fn placement<R: Runtime>(window: &Window<R>, b: BrowserBounds) -> AppResult<(Rect, f64)> {
     let scale = window.scale_factor().map_err(tauri_err)?;
-    let inner = window.inner_size().map_err(tauri_err)?.to_logical::<f64>(scale);
+    let inner = window
+        .inner_size()
+        .map_err(tauri_err)?
+        .to_logical::<f64>(scale);
     let zoom = if b.viewport_width > 0.0 {
         inner.width / b.viewport_width
     } else {
@@ -165,7 +166,11 @@ pub fn hide_all<R: Runtime>(app: &AppHandle<R>) {
 
 /// Point an existing preview at `url`. No-op if the worktree has no
 /// preview yet — the next [`show`] creates it at the renderer's URL.
-pub fn navigate<R: Runtime>(app: &AppHandle<R>, worktree_id: WorktreeId, url: &str) -> AppResult<()> {
+pub fn navigate<R: Runtime>(
+    app: &AppHandle<R>,
+    worktree_id: WorktreeId,
+    url: &str,
+) -> AppResult<()> {
     let url = parse_url(url)?;
     if let Some(webview) = app.get_webview(&label(worktree_id)) {
         webview.navigate(url).map_err(tauri_err)?;

@@ -63,9 +63,18 @@ mod tests {
 
     #[test]
     fn picks_per_host_token() {
-        assert_eq!(parse_token(SAMPLE, "gitlab.com").as_deref(), Some("glpat-aaa"));
-        assert_eq!(parse_token(SAMPLE, "gitlab.acme.io").as_deref(), Some("glpat-bbb"));
-        assert_eq!(parse_token(SAMPLE, "github.com").as_deref(), Some("ghp-zzz"));
+        assert_eq!(
+            parse_token(SAMPLE, "gitlab.com").as_deref(),
+            Some("glpat-aaa")
+        );
+        assert_eq!(
+            parse_token(SAMPLE, "gitlab.acme.io").as_deref(),
+            Some("glpat-bbb")
+        );
+        assert_eq!(
+            parse_token(SAMPLE, "github.com").as_deref(),
+            Some("ghp-zzz")
+        );
     }
 
     #[test]
@@ -76,6 +85,9 @@ mod tests {
 
     #[test]
     fn case_insensitive_host() {
-        assert_eq!(parse_token(SAMPLE, "GitLab.com").as_deref(), Some("glpat-aaa"));
+        assert_eq!(
+            parse_token(SAMPLE, "GitLab.com").as_deref(),
+            Some("glpat-aaa")
+        );
     }
 }

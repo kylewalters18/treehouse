@@ -266,7 +266,10 @@ impl AgentRegistry {
         if !matches!(h.session.backend, AgentBackendKind::ClaudeCode) {
             return (Self::classify(h.session.backend, sh, now), None);
         }
-        let Some(hook) = self.hook_sessions.get(&h.session.id).map(|e| e.value().clone())
+        let Some(hook) = self
+            .hook_sessions
+            .get(&h.session.id)
+            .map(|e| e.value().clone())
         else {
             return (AgentActivity::Idle, None);
         };
@@ -298,7 +301,8 @@ impl AgentRegistry {
     ) -> Vec<AgentOverview> {
         let now = Instant::now();
         let now_ms = now_millis();
-        let at_ms = |t: Instant| now_ms.saturating_sub(now.saturating_duration_since(t).as_millis() as u64);
+        let at_ms =
+            |t: Instant| now_ms.saturating_sub(now.saturating_duration_since(t).as_millis() as u64);
         let mut out = Vec::new();
         for e in self.inner.iter() {
             let h = e.value();
@@ -383,7 +387,9 @@ impl AgentRegistry {
             // matching chunk, so `attn >= any` means "nothing since the prompt"
             // (still blocked). Once a turn flows work output past the prompt and
             // finishes, `any > attn` → Idle, not stuck amber.
-            let blocked_on_prompt = sh.last_attention_match.is_some_and(|t| t >= sh.last_any_output);
+            let blocked_on_prompt = sh
+                .last_attention_match
+                .is_some_and(|t| t >= sh.last_any_output);
             if since_any < WORKING_WINDOW {
                 AgentActivity::Working
             } else if blocked_on_prompt {
@@ -481,7 +487,9 @@ pub fn launch(
             ));
         }
         if !history::is_valid_session_id(id) {
-            return Err(AppError::Unknown(format!("invalid Claude session id: {id}")));
+            return Err(AppError::Unknown(format!(
+                "invalid Claude session id: {id}"
+            )));
         }
     }
     // Install Claude Code hooks in the worktree *before* spawning the
@@ -708,11 +716,7 @@ pub fn attach(
     Ok(session)
 }
 
-pub fn write_stdin(
-    registry: &AgentRegistry,
-    id: AgentSessionId,
-    data: &[u8],
-) -> AppResult<()> {
+pub fn write_stdin(registry: &AgentRegistry, id: AgentSessionId, data: &[u8]) -> AppResult<()> {
     let handle = registry
         .inner
         .get(&id)
@@ -762,7 +766,9 @@ fn report_len(d: &[u8]) -> Option<usize> {
                 // SGR mouse: CSI < b ; x ; y M|m
                 b'M' | b'm' => params.first() == Some(&b'<'),
                 // Cursor position report: CSI row ; col R
-                b'R' => !params.is_empty() && params.iter().all(|b| b.is_ascii_digit() || *b == b';'),
+                b'R' => {
+                    !params.is_empty() && params.iter().all(|b| b.is_ascii_digit() || *b == b';')
+                }
                 // Device attributes: CSI ? … c / CSI > … c
                 b'c' => matches!(params.first(), Some(b'?' | b'>')),
                 // Mode report (DECRPM): CSI ? … $ y
@@ -825,12 +831,7 @@ pub fn respond_permission(
     Ok(())
 }
 
-pub fn resize(
-    registry: &AgentRegistry,
-    id: AgentSessionId,
-    cols: u16,
-    rows: u16,
-) -> AppResult<()> {
+pub fn resize(registry: &AgentRegistry, id: AgentSessionId, cols: u16, rows: u16) -> AppResult<()> {
     let handle = registry
         .inner
         .get(&id)
@@ -1078,8 +1079,8 @@ fn parse_kiro_agents(text: &str) -> Vec<super::BackendAgent> {
     let stripped = strip_ansi(text);
     let mut out = Vec::new();
     for line in stripped.lines() {
-        let is_agent_row = line.starts_with("* ")
-            || (line.starts_with("  ") && !line.starts_with("   "));
+        let is_agent_row =
+            line.starts_with("* ") || (line.starts_with("  ") && !line.starts_with("   "));
         if !is_agent_row {
             continue;
         }
@@ -1101,8 +1102,8 @@ fn parse_kiro_agents(text: &str) -> Vec<super::BackendAgent> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::patterns::{AgentPatterns, Which};
+    use super::*;
 
     #[test]
     fn terminal_reports_are_not_user_input() {
@@ -1140,8 +1141,22 @@ mod tests {
     fn spawn_argv_puts_prompt_after_variadic_mcp_config() {
         let argv = vec!["claude".to_string(), "--agent".into(), "x".into()];
         assert_eq!(
-            build_spawn_argv(AgentBackendKind::ClaudeCode, &argv, Some("{}"), None, Some("  do it  ")),
-            vec!["claude", "--agent", "x", "--mcp-config", "{}", "--", "do it"]
+            build_spawn_argv(
+                AgentBackendKind::ClaudeCode,
+                &argv,
+                Some("{}"),
+                None,
+                Some("  do it  ")
+            ),
+            vec![
+                "claude",
+                "--agent",
+                "x",
+                "--mcp-config",
+                "{}",
+                "--",
+                "do it"
+            ]
         );
         // No extras → argv untouched; blank prompt ignored.
         assert_eq!(
@@ -1150,7 +1165,13 @@ mod tests {
         );
         // Kiro has no verified positional-prompt form.
         assert_eq!(
-            build_spawn_argv(AgentBackendKind::Kiro, &["kiro-cli".into()], None, None, Some("hi")),
+            build_spawn_argv(
+                AgentBackendKind::Kiro,
+                &["kiro-cli".into()],
+                None,
+                None,
+                Some("hi")
+            ),
             vec!["kiro-cli"]
         );
     }
@@ -1188,7 +1209,9 @@ mod tests {
     fn clock() -> (Instant, impl Fn(u64) -> Instant) {
         let base = Instant::now();
         let now = base + Duration::from_secs(10_000);
-        (now, move |secs: u64| base + Duration::from_secs(10_000 - secs))
+        (now, move |secs: u64| {
+            base + Duration::from_secs(10_000 - secs)
+        })
     }
 
     fn shared(
@@ -1213,14 +1236,20 @@ mod tests {
     fn kiro_streaming_is_working() {
         let (now, ago) = clock();
         let s = shared(ago(0), ago(0), None, None); // bytes just now
-        assert_eq!(AgentRegistry::classify(AgentBackendKind::Kiro, &s, now), AgentActivity::Working);
+        assert_eq!(
+            AgentRegistry::classify(AgentBackendKind::Kiro, &s, now),
+            AgentActivity::Working
+        );
     }
 
     #[test]
     fn kiro_quiet_with_no_prompt_is_idle() {
         let (now, ago) = clock();
         let s = shared(ago(5), ago(5), None, None); // quiet 5s, never prompted
-        assert_eq!(AgentRegistry::classify(AgentBackendKind::Kiro, &s, now), AgentActivity::Idle);
+        assert_eq!(
+            AgentRegistry::classify(AgentBackendKind::Kiro, &s, now),
+            AgentActivity::Idle
+        );
     }
 
     #[test]
@@ -1228,7 +1257,10 @@ mod tests {
         // The approval prompt was the last thing emitted (attn == any), quiet since.
         let (now, ago) = clock();
         let s = shared(ago(5), ago(5), Some(ago(5)), None);
-        assert_eq!(AgentRegistry::classify(AgentBackendKind::Kiro, &s, now), AgentActivity::NeedsAttention);
+        assert_eq!(
+            AgentRegistry::classify(AgentBackendKind::Kiro, &s, now),
+            AgentActivity::NeedsAttention
+        );
     }
 
     #[test]
@@ -1237,7 +1269,10 @@ mod tests {
         // be stuck amber — byte activity wins.
         let (now, ago) = clock();
         let s = shared(ago(0), ago(0), Some(ago(3)), None);
-        assert_eq!(AgentRegistry::classify(AgentBackendKind::Kiro, &s, now), AgentActivity::Working);
+        assert_eq!(
+            AgentRegistry::classify(AgentBackendKind::Kiro, &s, now),
+            AgentActivity::Working
+        );
     }
 
     #[test]
@@ -1246,7 +1281,10 @@ mod tests {
         // now quiet → Idle, NOT stuck NeedsAttention.
         let (now, ago) = clock();
         let s = shared(ago(5), ago(5), Some(ago(30)), None);
-        assert_eq!(AgentRegistry::classify(AgentBackendKind::Kiro, &s, now), AgentActivity::Idle);
+        assert_eq!(
+            AgentRegistry::classify(AgentBackendKind::Kiro, &s, now),
+            AgentActivity::Idle
+        );
     }
 
     #[test]
@@ -1293,8 +1331,7 @@ mod tests {
         // phrase. scan_chunk de-escapes first, so the phrase reassembles.
         let p = AgentPatterns::defaults();
         let mut tail = String::new();
-        let chunk =
-            b"\x1b[1m\x1b[38;5;208mrequires\x1b[0m \x1b[2mapproval\x1b[0m to run";
+        let chunk = b"\x1b[1m\x1b[38;5;208mrequires\x1b[0m \x1b[2mapproval\x1b[0m to run";
         let (att, _idle) = scan_chunk(&p, AgentBackendKind::Kiro, &mut tail, chunk);
         assert!(att, "attention phrase split by color codes should match");
         // Sanity: the same bytes do NOT match without de-escaping, which is
@@ -1316,8 +1353,7 @@ mod tests {
             b"\x1b[2K\rfile write requires ap",
         );
         assert!(!a1, "first half alone shouldn't match");
-        let (a2, _i2) =
-            scan_chunk(&p, AgentBackendKind::Kiro, &mut tail, b"proval to run\r\n");
+        let (a2, _i2) = scan_chunk(&p, AgentBackendKind::Kiro, &mut tail, b"proval to run\r\n");
         assert!(a2, "phrase completed on the second read should match");
     }
 
@@ -1331,8 +1367,7 @@ mod tests {
         // One full window of unrelated output trims the phrase out of `tail`.
         let filler = vec![b'x'; SCAN_WINDOW + 64];
         scan_chunk(&p, AgentBackendKind::Kiro, &mut tail, &filler);
-        let (att, _idle) =
-            scan_chunk(&p, AgentBackendKind::Kiro, &mut tail, b"more output\n");
+        let (att, _idle) = scan_chunk(&p, AgentBackendKind::Kiro, &mut tail, b"more output\n");
         assert!(!att, "stale phrase should have scrolled out of the window");
     }
 

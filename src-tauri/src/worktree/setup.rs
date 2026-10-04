@@ -69,27 +69,19 @@ struct WorkspaceSetup {
 /// `[[worktree.on_create]]` / `[[worktree.on_destroy]]` entries in
 /// `treehouse.toml`. Returns an empty list if neither layer has
 /// anything — opt-in by design.
-pub async fn resolve(
-    app: &AppHandle,
-    repo_root: &Path,
-    hook: Hook,
-) -> AppResult<Vec<HookStep>> {
+pub async fn resolve(app: &AppHandle, repo_root: &Path, hook: Hook) -> AppResult<Vec<HookStep>> {
     if let Some(steps) = read_repo(repo_root, hook).await? {
         return Ok(steps);
     }
     read_user(app, repo_root, hook).await
 }
 
-async fn read_repo(
-    repo_root: &Path,
-    hook: Hook,
-) -> AppResult<Option<Vec<HookStep>>> {
+async fn read_repo(repo_root: &Path, hook: Hook) -> AppResult<Option<Vec<HookStep>>> {
     let path = repo_root.join(REPO_FILE);
     match tokio::fs::read_to_string(&path).await {
         Ok(s) => {
-            let f: WorkspaceSetup = toml::from_str(&s).map_err(|e| {
-                AppError::Unknown(format!("parse {}: {e}", path.display()))
-            })?;
+            let f: WorkspaceSetup = toml::from_str(&s)
+                .map_err(|e| AppError::Unknown(format!("parse {}: {e}", path.display())))?;
             // In-repo file decides priority for the WHOLE config —
             // i.e. once the file exists at all, we stop falling
             // through to user-level even for the not-asked-for hook.
@@ -110,11 +102,7 @@ async fn read_repo(
     }
 }
 
-async fn read_user(
-    app: &AppHandle,
-    repo_root: &Path,
-    hook: Hook,
-) -> AppResult<Vec<HookStep>> {
+async fn read_user(app: &AppHandle, repo_root: &Path, hook: Hook) -> AppResult<Vec<HookStep>> {
     let cfg = crate::user_config::load(app).await?;
     let target = canonicalize(repo_root);
     let entries = match hook {
@@ -167,11 +155,7 @@ pub fn apply_templates(
             name: sub(&st.name),
             command: sub(&st.command),
             args: st.args.iter().map(|a| sub(a)).collect(),
-            env: st
-                .env
-                .into_iter()
-                .map(|(k, v)| (k, sub(&v)))
-                .collect(),
+            env: st.env.into_iter().map(|(k, v)| (k, sub(&v))).collect(),
         })
         .collect()
 }
@@ -250,12 +234,7 @@ pub async fn run_inline(
                 continue;
             }
         };
-        let result = match tokio::time::timeout(
-            timeout_per_step,
-            child.wait_with_output(),
-        )
-        .await
-        {
+        let result = match tokio::time::timeout(timeout_per_step, child.wait_with_output()).await {
             Ok(r) => r,
             Err(_) => {
                 // On timeout the `wait_with_output` future is dropped

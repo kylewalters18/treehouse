@@ -8,9 +8,7 @@ use git2::{Delta, DiffFindOptions, DiffFormat, DiffOptions, Repository};
 use crate::util::errors::AppResult;
 use crate::util::ids::WorktreeId;
 
-use super::{
-    DiffLine, DiffSet, DiffStats, FileDiff, FileStatus, Hunk, MAX_FILES, MAX_LINES,
-};
+use super::{DiffLine, DiffSet, DiffStats, FileDiff, FileStatus, Hunk, MAX_FILES, MAX_LINES};
 
 /// Compute a fresh DiffSet for the given worktree against `base_ref`.
 /// Compares the workdir (index + unstaged) against the tree at `base_ref`.
@@ -97,11 +95,7 @@ pub fn compute(
         if let Some(h) = hunk_opt {
             let fd = &mut files[file_idx];
             let header = std::str::from_utf8(h.header()).unwrap_or("").to_string();
-            let hunk_exists = fd
-                .hunks
-                .last()
-                .map(|x| x.header == header)
-                .unwrap_or(false);
+            let hunk_exists = fd.hunks.last().map(|x| x.header == header).unwrap_or(false);
             if !hunk_exists {
                 fd.hunks.push(Hunk {
                     id: fnv_id(&header),

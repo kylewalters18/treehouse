@@ -37,7 +37,10 @@ pub async fn list(app: &AppHandle) -> AppResult<Vec<LspConfig>> {
 /// distinguish "carry forward as a custom" from "this is just the
 /// seeded copy and we'll re-seed it in code anyway."
 pub fn builtin_ids() -> BTreeSet<&'static str> {
-    seeded().into_iter().map(|c| string_to_static(c.id)).collect()
+    seeded()
+        .into_iter()
+        .map(|c| string_to_static(c.id))
+        .collect()
 }
 
 /// Helper: leaks the String into a &'static str. Only called once at
@@ -84,7 +87,12 @@ fn seeded() -> Vec<LspConfig> {
             "TypeScript / JavaScript (typescript-language-server)",
             "typescript-language-server",
             &["--stdio"],
-            &["typescript", "typescriptreact", "javascript", "javascriptreact"],
+            &[
+                "typescript",
+                "typescriptreact",
+                "javascript",
+                "javascriptreact",
+            ],
             &["tsconfig.json", "jsconfig.json", "package.json"],
             "npm i -g typescript-language-server",
         ),

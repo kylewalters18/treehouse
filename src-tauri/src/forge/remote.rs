@@ -108,7 +108,12 @@ mod tests {
     fn ssh_scp_github() {
         assert_eq!(
             parse_remote("git@github.com:kylewalters18/treehouse.git"),
-            Some(ri("github.com", "kylewalters18", "treehouse", ForgeKind::Github))
+            Some(ri(
+                "github.com",
+                "kylewalters18",
+                "treehouse",
+                ForgeKind::Github
+            ))
         );
     }
 

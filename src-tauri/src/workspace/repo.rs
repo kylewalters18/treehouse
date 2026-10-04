@@ -29,17 +29,11 @@ pub fn detect_default_branch(root: &Path) -> AppResult<String> {
     }
 
     for candidate in ["main", "master"] {
-        if repo
-            .find_branch(candidate, git2::BranchType::Local)
-            .is_ok()
-        {
+        if repo.find_branch(candidate, git2::BranchType::Local).is_ok() {
             return Ok(candidate.to_string());
         }
     }
 
     let head = repo.head()?;
-    Ok(head
-        .shorthand()
-        .unwrap_or("HEAD")
-        .to_string())
+    Ok(head.shorthand().unwrap_or("HEAD").to_string())
 }

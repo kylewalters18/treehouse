@@ -53,12 +53,24 @@ impl GithubForge {
     }
 
     /// `gh api <path> --input -` with a JSON body on stdin.
-    async fn api_json(&self, method: &str, path: &str, body: &serde_json::Value) -> AppResult<String> {
+    async fn api_json(
+        &self,
+        method: &str,
+        path: &str,
+        body: &serde_json::Value,
+    ) -> AppResult<String> {
         let args: Vec<String> = ["api", "-X", method, path, "--input", "-"]
             .iter()
             .map(|s| s.to_string())
             .collect();
-        cli::run_with_input("gh", &self.cwd, Some(&self.host), &args, Some(&body.to_string())).await
+        cli::run_with_input(
+            "gh",
+            &self.cwd,
+            Some(&self.host),
+            &args,
+            Some(&body.to_string()),
+        )
+        .await
     }
 
     /// `gh api graphql` with `owner`/`name` bound when the query declares them. `vars` are typed
@@ -79,7 +91,12 @@ impl GithubForge {
         // Mutations address nodes by id and don't declare these.
         if query.contains("$owner") {
             let (owner, name) = self.owner_name();
-            args.extend(["-f".into(), format!("owner={owner}"), "-f".into(), format!("name={name}")]);
+            args.extend([
+                "-f".into(),
+                format!("owner={owner}"),
+                "-f".into(),
+                format!("name={name}"),
+            ]);
         }
         for (k, v) in vars {
             args.push("-F".into());
@@ -172,12 +189,20 @@ impl GithubForge {
         ]);
         let out = self.gh(&args).await?;
         let number = number_from_url(&out, "/issues/").ok_or_else(|| {
-            AppError::Forge(format!("couldn't read issue number from gh output: {}", out.trim()))
+            AppError::Forge(format!(
+                "couldn't read issue number from gh output: {}",
+                out.trim()
+            ))
         })?;
         self.get_issue(number).await
     }
 
-    pub async fn update_issue(&self, number: u64, title: &str, body: &str) -> AppResult<ForgeIssue> {
+    pub async fn update_issue(
+        &self,
+        number: u64,
+        title: &str,
+        body: &str,
+    ) -> AppResult<ForgeIssue> {
         let mut args = strs(&["issue", "edit"]);
         args.extend([
             number.to_string(),
@@ -195,7 +220,11 @@ impl GithubForge {
     /// Assign/unassign the current user (`@me`). Unlike GitLab's clear-all,
     /// unassigning only removes you — other assignees are left alone.
     pub async fn set_issue_assignee(&self, number: u64, assign: bool) -> AppResult<()> {
-        let flag = if assign { "--add-assignee" } else { "--remove-assignee" };
+        let flag = if assign {
+            "--add-assignee"
+        } else {
+            "--remove-assignee"
+        };
         let mut args = strs(&["issue", "edit"]);
         args.extend([
             number.to_string(),
@@ -287,14 +316,22 @@ impl GithubForge {
         }
         let out = self.gh(&args).await?;
         let number = number_from_url(&out, "/pull/").ok_or_else(|| {
-            AppError::Forge(format!("couldn't read PR number from gh output: {}", out.trim()))
+            AppError::Forge(format!(
+                "couldn't read PR number from gh output: {}",
+                out.trim()
+            ))
         })?;
         self.get_pr(number).await
     }
 
     pub async fn approve_mr(&self, iid: u64) -> AppResult<()> {
         let mut args = strs(&["pr", "review"]);
-        args.extend([iid.to_string(), "-R".into(), self.repo_arg(), "--approve".into()]);
+        args.extend([
+            iid.to_string(),
+            "-R".into(),
+            self.repo_arg(),
+            "--approve".into(),
+        ]);
         self.gh(&args).await.map(|_| ())
     }
 
@@ -342,8 +379,10 @@ impl GithubForge {
     /// web UI's order: merge commit, squash, rebase. Branch deletion follows
     /// the repo's own "automatically delete head branches" setting.
     pub async fn merge_mr(&self, iid: u64) -> AppResult<()> {
-        let repo: GhRepoSettings =
-            parse("repo", &self.api(&format!("repos/{}", self.project), &[]).await?)?;
+        let repo: GhRepoSettings = parse(
+            "repo",
+            &self.api(&format!("repos/{}", self.project), &[]).await?,
+        )?;
         let method = if repo.allow_merge_commit {
             "merge"
         } else if repo.allow_squash_merge {
@@ -381,8 +420,12 @@ impl GithubForge {
         iid: u64,
         comments: &[ReviewCommentInput],
     ) -> AppResult<()> {
-        let head: GhPrHead =
-            parse("pr", &self.api(&format!("repos/{}/pulls/{}", self.project, iid), &[]).await?)?;
+        let head: GhPrHead = parse(
+            "pr",
+            &self
+                .api(&format!("repos/{}/pulls/{}", self.project, iid), &[])
+                .await?,
+        )?;
         let commit_id = head.head.sha;
         let item = |c: &ReviewCommentInput| {
             json!({
@@ -449,7 +492,12 @@ impl GithubForge {
             pr.comments
                 .nodes
                 .into_iter()
-                .chain(pr.reviews.nodes.into_iter().filter(|r| !r.body.trim().is_empty()))
+                .chain(
+                    pr.reviews
+                        .nodes
+                        .into_iter()
+                        .filter(|r| !r.body.trim().is_empty()),
+                )
                 .map(GqlComment::into_thread),
         );
         threads.sort_by(|a, b| a.notes[0].created_at.cmp(&b.notes[0].created_at));
@@ -478,7 +526,9 @@ impl GithubForge {
         resolved: bool,
     ) -> AppResult<()> {
         if !is_review_thread(discussion_id) {
-            return Err(AppError::Forge("only review threads can be resolved".into()));
+            return Err(AppError::Forge(
+                "only review threads can be resolved".into(),
+            ));
         }
         let mutation = if resolved {
             "mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){clientMutationId}}"
@@ -504,7 +554,10 @@ impl GithubForge {
         let anchor: GhRun = parse(
             "workflow run",
             &self
-                .api(&format!("repos/{}/actions/runs/{run_id}", self.project), &[])
+                .api(
+                    &format!("repos/{}/actions/runs/{run_id}", self.project),
+                    &[],
+                )
                 .await?,
         )?;
         let runs = self.runs(&format!("head_sha={}", anchor.head_sha)).await?;
@@ -515,7 +568,9 @@ impl GithubForge {
     }
 
     pub async fn list_pipelines(&self, branch: &str) -> AppResult<Vec<ForgePipeline>> {
-        let runs = self.runs(&format!("branch={}", percent_encode(branch))).await?;
+        let runs = self
+            .runs(&format!("branch={}", percent_encode(branch)))
+            .await?;
         // Group by head commit, keeping the API's newest-first order.
         let mut groups: Vec<(String, Vec<GhRun>)> = Vec::new();
         for r in runs {
@@ -548,7 +603,11 @@ impl GithubForge {
                     } else {
                         branch_url.clone()
                     },
-                    created_at: runs.iter().map(|r| r.created_at.clone()).min().unwrap_or_default(),
+                    created_at: runs
+                        .iter()
+                        .map(|r| r.created_at.clone())
+                        .min()
+                        .unwrap_or_default(),
                 }
             })
             .collect())
@@ -561,7 +620,10 @@ impl GithubForge {
         let mut set = JoinSet::new();
         for run in runs {
             let (cwd, host) = (self.cwd.clone(), self.host.clone());
-            let path = format!("repos/{}/actions/runs/{}/jobs?per_page=100", self.project, run.id);
+            let path = format!(
+                "repos/{}/actions/runs/{}/jobs?per_page=100",
+                self.project, run.id
+            );
             set.spawn(async move {
                 let out = cli::run("gh", &cwd, Some(&host), &["api".into(), path]).await?;
                 let raw: GhJobs = parse("jobs", &out)?;
@@ -586,7 +648,10 @@ impl GithubForge {
 
     pub async fn job_log(&self, job_id: u64) -> AppResult<String> {
         let raw = self
-            .api(&format!("repos/{}/actions/jobs/{job_id}/logs", self.project), &[])
+            .api(
+                &format!("repos/{}/actions/jobs/{job_id}/logs", self.project),
+                &[],
+            )
             .await?;
         Ok(cli::tail_bounded(&strip_log_timestamps(&raw), 16_000))
     }
@@ -607,7 +672,9 @@ impl GithubForge {
             (failed, "rerun-failed-jobs")
         };
         if targets.is_empty() {
-            return Err(AppError::Forge("nothing to retry — runs are still in progress".into()));
+            return Err(AppError::Forge(
+                "nothing to retry — runs are still in progress".into(),
+            ));
         }
         for r in targets {
             self.api(
@@ -1048,13 +1115,22 @@ mod tests {
 
     #[test]
     fn merge_status_explains_blocked() {
-        assert_eq!(merge_status(Some("CLEAN"), None).as_deref(), Some("mergeable"));
-        assert_eq!(merge_status(Some("DIRTY"), None).as_deref(), Some("conflict"));
+        assert_eq!(
+            merge_status(Some("CLEAN"), None).as_deref(),
+            Some("mergeable")
+        );
+        assert_eq!(
+            merge_status(Some("DIRTY"), None).as_deref(),
+            Some("conflict")
+        );
         assert_eq!(
             merge_status(Some("BLOCKED"), Some("REVIEW_REQUIRED")).as_deref(),
             Some("not_approved")
         );
-        assert_eq!(merge_status(Some("BLOCKED"), None).as_deref(), Some("blocked"));
+        assert_eq!(
+            merge_status(Some("BLOCKED"), None).as_deref(),
+            Some("blocked")
+        );
         assert_eq!(merge_status(Some("UNKNOWN"), None), None);
     }
 
@@ -1065,7 +1141,10 @@ mod tests {
             Some(42)
         );
         assert_eq!(
-            number_from_url("Warning: 1 uncommitted change\nhttps://ghe.acme.io/o/r/pull/7\n", "/pull/"),
+            number_from_url(
+                "Warning: 1 uncommitted change\nhttps://ghe.acme.io/o/r/pull/7\n",
+                "/pull/"
+            ),
             Some(7)
         );
         assert_eq!(
@@ -1089,7 +1168,13 @@ mod tests {
             "reviews":{"nodes":[]}}}}"#;
         let q: GqlThreads = serde_json::from_str(json).unwrap();
         let pr = q.repository.pull_request;
-        let t = pr.review_threads.nodes.into_iter().next().unwrap().normalize();
+        let t = pr
+            .review_threads
+            .nodes
+            .into_iter()
+            .next()
+            .unwrap()
+            .normalize();
         assert!(t.resolvable && !t.resolved);
         let pos = t.notes[0].position.as_ref().unwrap();
         assert_eq!(pos.old_path.as_deref(), Some("src/a.rs"));
@@ -1101,6 +1186,9 @@ mod tests {
     #[test]
     fn strips_actions_log_timestamps() {
         let log = "2024-05-01T12:00:00.1234567Z ##[group]Run tests\n2024-05-01T12:00:01.0000000Z error: boom\nplain line";
-        assert_eq!(strip_log_timestamps(log), "##[group]Run tests\nerror: boom\nplain line");
+        assert_eq!(
+            strip_log_timestamps(log),
+            "##[group]Run tests\nerror: boom\nplain line"
+        );
     }
 }

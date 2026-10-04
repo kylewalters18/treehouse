@@ -136,13 +136,7 @@ pub type HookSessionMap = Arc<DashMap<AgentSessionId, HookSession>>;
 
 /// Fold one hook event into a session's state. Pure apart from its
 /// arguments so the transitions are unit-testable.
-pub fn apply_event(
-    s: &mut HookSession,
-    event: &str,
-    payload: &Value,
-    now_ms: u64,
-    now: Instant,
-) {
+pub fn apply_event(s: &mut HookSession, event: &str, payload: &Value, now_ms: u64, now: Instant) {
     if let Some(id) = payload.get("session_id").and_then(Value::as_str) {
         s.claude_session_id = Some(id.to_string());
     }
@@ -210,7 +204,10 @@ pub fn apply_event(
             s.set_activity(AgentActivity::Idle, now_ms, now);
             s.pending = None;
             s.current_tool = None;
-            if let Some(m) = payload.get("last_assistant_message").and_then(Value::as_str) {
+            if let Some(m) = payload
+                .get("last_assistant_message")
+                .and_then(Value::as_str)
+            {
                 let m = m.trim();
                 if !m.is_empty() {
                     s.last_message = Some(truncate(m, MESSAGE_MAX));
@@ -228,7 +225,9 @@ pub fn apply_event(
 /// newest title seen there (if any) and the offset to resume from next time.
 pub fn scan_ai_title(path: &Path, from: u64) -> (Option<String>, u64) {
     use std::io::{BufRead, BufReader, Seek, SeekFrom};
-    let Ok(mut f) = std::fs::File::open(path) else { return (None, from) };
+    let Ok(mut f) = std::fs::File::open(path) else {
+        return (None, from);
+    };
     if f.metadata().map(|m| m.len() < from).unwrap_or(true) {
         return (None, from);
     }
@@ -249,11 +248,17 @@ pub fn scan_ai_title(path: &Path, from: u64) -> (Option<String>, u64) {
         if !bytes_contain(&line, b"\"ai-title\"") {
             continue;
         }
-        let Ok(v) = serde_json::from_slice::<Value>(&line) else { continue };
+        let Ok(v) = serde_json::from_slice::<Value>(&line) else {
+            continue;
+        };
         if v.get("type").and_then(Value::as_str) != Some("ai-title") {
             continue;
         }
-        if let Some(t) = v.get("aiTitle").and_then(Value::as_str).and_then(|t| first_line(t, TASK_MAX)) {
+        if let Some(t) = v
+            .get("aiTitle")
+            .and_then(Value::as_str)
+            .and_then(|t| first_line(t, TASK_MAX))
+        {
             title = Some(t);
         }
     }
@@ -268,7 +273,10 @@ fn bytes_contain(hay: &[u8], needle: &[u8]) -> bool {
 /// `detail` is the single most identifying input: the command for Bash,
 /// the path for file tools (relative to the session's cwd), and so on.
 fn tool_call(payload: &Value) -> Option<(String, Option<String>)> {
-    let name = payload.get("tool_name").and_then(Value::as_str)?.to_string();
+    let name = payload
+        .get("tool_name")
+        .and_then(Value::as_str)?
+        .to_string();
     let input = payload.get("tool_input");
     let field = |k: &str| input.and_then(|i| i.get(k)).and_then(Value::as_str);
     let detail = match name.as_str() {
@@ -404,7 +412,9 @@ fn install_into(state_dir: &Path, worktree_path: &Path) -> AppResult<()> {
 /// Delete a finished session's state files. Best-effort.
 pub fn remove_session_files(app: &AppHandle, id: AgentSessionId) {
     let Ok(dir) = hook_state_dir(app) else { return };
-    let Ok(entries) = std::fs::read_dir(&dir) else { return };
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return;
+    };
     let prefix = format!("{FILE_PREFIX}{id}.");
     for e in entries.flatten() {
         if e.file_name().to_string_lossy().starts_with(&prefix) {
@@ -463,15 +473,22 @@ pub fn start_watcher(
                 .collect();
             stamped.sort_by_key(|(t, _)| *t);
             for (_, path) in stamped {
-                let Some((id, event)) = parse_file_name(&path) else { continue };
-                let Ok(bytes) = std::fs::read(&path) else { continue };
+                let Some((id, event)) = parse_file_name(&path) else {
+                    continue;
+                };
+                let Ok(bytes) = std::fs::read(&path) else {
+                    continue;
+                };
                 let payload: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
                 let (now_ms, now) = (now_millis(), Instant::now());
                 let mut entry = sessions
                     .entry(id)
                     .or_insert_with(|| HookSession::new(now_ms, now));
                 apply_event(&mut entry, &event, &payload, now_ms, now);
-                let transcript = entry.transcript.clone().map(|t| (t, entry.transcript_scanned));
+                let transcript = entry
+                    .transcript
+                    .clone()
+                    .map(|t| (t, entry.transcript_scanned));
                 drop(entry);
                 // Transcript I/O stays outside the map lock the board polls.
                 if let Some((path, from)) = transcript {
@@ -485,7 +502,9 @@ pub fn start_watcher(
                         }
                     }
                 }
-                let Some(snapshot) = sessions.get(&id).map(|e| e.clone()) else { continue };
+                let Some(snapshot) = sessions.get(&id).map(|e| e.clone()) else {
+                    continue;
+                };
                 on_event(id, &event, &snapshot);
             }
         },
@@ -517,7 +536,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("t.jsonl");
         let line = |t: &str| format!("{}\n", json!({ "type": "ai-title", "aiTitle": t }));
-        let user = format!("{}\n", json!({ "type": "user", "message": "ai-title in a prompt" }));
+        let user = format!(
+            "{}\n",
+            json!({ "type": "user", "message": "ai-title in a prompt" })
+        );
         std::fs::write(&path, format!("{user}{}{}", line("Old"), line("Fix login"))).unwrap();
         let (title, off) = scan_ai_title(&path, 0);
         assert_eq!(title.as_deref(), Some("Fix login"));
@@ -528,7 +550,11 @@ mod tests {
 
         // A half-written line is left for the next scan.
         let partial = r#"{"type":"ai-title","aiTitle":"Ne"#;
-        std::fs::write(&path, format!("{user}{}{}{partial}", line("Old"), line("Fix login"))).unwrap();
+        std::fs::write(
+            &path,
+            format!("{user}{}{}{partial}", line("Old"), line("Fix login")),
+        )
+        .unwrap();
         assert_eq!(scan_ai_title(&path, off), (None, off));
 
         assert_eq!(scan_ai_title(&dir.path().join("missing"), 0), (None, 0));
@@ -537,19 +563,42 @@ mod tests {
     #[test]
     fn transcript_path_change_restarts_the_scan() {
         let mut s = fresh();
-        apply(&mut s, "UserPromptSubmit", json!({ "transcript_path": "/a.jsonl" }), 1);
+        apply(
+            &mut s,
+            "UserPromptSubmit",
+            json!({ "transcript_path": "/a.jsonl" }),
+            1,
+        );
         s.transcript_scanned = 500;
         apply(&mut s, "Stop", json!({ "transcript_path": "/a.jsonl" }), 2);
         assert_eq!(s.transcript_scanned, 500);
-        apply(&mut s, "UserPromptSubmit", json!({ "transcript_path": "/b.jsonl" }), 3);
-        assert_eq!((s.transcript.as_deref(), s.transcript_scanned), (Some(Path::new("/b.jsonl")), 0));
+        apply(
+            &mut s,
+            "UserPromptSubmit",
+            json!({ "transcript_path": "/b.jsonl" }),
+            3,
+        );
+        assert_eq!(
+            (s.transcript.as_deref(), s.transcript_scanned),
+            (Some(Path::new("/b.jsonl")), 0)
+        );
     }
 
     #[test]
     fn captures_claude_session_id_and_first_prompt() {
         let mut s = fresh();
-        apply(&mut s, "UserPromptSubmit", json!({ "session_id": "abc", "prompt": "First" }), 1);
-        apply(&mut s, "UserPromptSubmit", json!({ "session_id": "abc", "prompt": "Second" }), 2);
+        apply(
+            &mut s,
+            "UserPromptSubmit",
+            json!({ "session_id": "abc", "prompt": "First" }),
+            1,
+        );
+        apply(
+            &mut s,
+            "UserPromptSubmit",
+            json!({ "session_id": "abc", "prompt": "Second" }),
+            2,
+        );
         assert_eq!(s.claude_session_id.as_deref(), Some("abc"));
         assert_eq!(s.first_prompt.as_deref(), Some("First"));
         assert_eq!(s.task.as_deref(), Some("Second"));
@@ -558,7 +607,12 @@ mod tests {
     #[test]
     fn turn_lifecycle() {
         let mut s = fresh();
-        apply(&mut s, "UserPromptSubmit", json!({ "prompt": "\n  Fix the flaky test\nmore" }), 10);
+        apply(
+            &mut s,
+            "UserPromptSubmit",
+            json!({ "prompt": "\n  Fix the flaky test\nmore" }),
+            10,
+        );
         assert_eq!(s.activity, AgentActivity::Working);
         assert_eq!(s.task.as_deref(), Some("Fix the flaky test"));
         assert_eq!(s.changed_at, 10);
@@ -573,14 +627,24 @@ mod tests {
         // Still working: the state's start time doesn't move per tool.
         assert_eq!(s.changed_at, 10);
 
-        apply(&mut s, "Stop", json!({ "last_assistant_message": "  Done. Tests pass.  " }), 30);
+        apply(
+            &mut s,
+            "Stop",
+            json!({ "last_assistant_message": "  Done. Tests pass.  " }),
+            30,
+        );
         assert_eq!(s.activity, AgentActivity::Idle);
         assert_eq!(s.last_message.as_deref(), Some("Done. Tests pass."));
         assert_eq!(s.current_tool, None);
         assert_eq!(s.changed_at, 30);
 
         // The next turn drops the previous turn's reply.
-        apply(&mut s, "UserPromptSubmit", json!({ "prompt": "Now the docs" }), 40);
+        apply(
+            &mut s,
+            "UserPromptSubmit",
+            json!({ "prompt": "Now the docs" }),
+            40,
+        );
         assert_eq!(s.last_message, None);
         assert_eq!(s.task.as_deref(), Some("Now the docs"));
     }
@@ -634,11 +698,18 @@ mod tests {
     #[test]
     fn other_notification_asks_for_input() {
         let mut s = fresh();
-        apply(&mut s, "Notification", json!({ "message": "Pick an option" }), 1);
+        apply(
+            &mut s,
+            "Notification",
+            json!({ "message": "Pick an option" }),
+            1,
+        );
         assert_eq!(s.activity, AgentActivity::NeedsAttention);
         assert_eq!(
             s.pending,
-            Some(PendingPrompt::Input { message: Some("Pick an option".into()) })
+            Some(PendingPrompt::Input {
+                message: Some("Pick an option".into())
+            })
         );
     }
 
@@ -647,9 +718,18 @@ mod tests {
         let id = AgentSessionId::new();
         let p = PathBuf::from(format!("/x/session-{id}.PreToolUse.json"));
         assert_eq!(parse_file_name(&p), Some((id, "PreToolUse".into())));
-        assert_eq!(parse_file_name(&PathBuf::from(format!("/x/session-{id}.Stop.tmp"))), None);
-        assert_eq!(parse_file_name(&PathBuf::from("/x/session-none.Stop.json")), None);
-        assert_eq!(parse_file_name(&PathBuf::from(format!("/x/{id}.state"))), None);
+        assert_eq!(
+            parse_file_name(&PathBuf::from(format!("/x/session-{id}.Stop.tmp"))),
+            None
+        );
+        assert_eq!(
+            parse_file_name(&PathBuf::from("/x/session-none.Stop.json")),
+            None
+        );
+        assert_eq!(
+            parse_file_name(&PathBuf::from(format!("/x/{id}.state"))),
+            None
+        );
     }
 
     #[test]
@@ -670,8 +750,13 @@ mod tests {
                 .unwrap();
         assert_eq!(v["permissions"]["allow"][0], "Bash(ls)");
         for (event, _) in HOOKED_EVENTS {
-            let cmd = v["hooks"][event][0]["hooks"][0]["command"].as_str().unwrap();
-            assert!(cmd.contains(&format!("${SESSION_ENV}.{event}\"")), "{event}: {cmd}");
+            let cmd = v["hooks"][event][0]["hooks"][0]["command"]
+                .as_str()
+                .unwrap();
+            assert!(
+                cmd.contains(&format!("${SESSION_ENV}.{event}\"")),
+                "{event}: {cmd}"
+            );
         }
     }
 
@@ -692,7 +777,12 @@ mod tests {
             c.stdin(std::process::Stdio::piped());
             let mut child = c.spawn().unwrap();
             use std::io::Write as _;
-            child.stdin.take().unwrap().write_all(br#"{"a":1}"#).unwrap();
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(br#"{"a":1}"#)
+                .unwrap();
             assert!(child.wait().unwrap().success());
         };
 

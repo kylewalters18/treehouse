@@ -33,7 +33,11 @@ pub async fn run_with_input(
         .args(args)
         // Never block on an interactive prompt — there's no TTY to answer it.
         .env("GH_PROMPT_DISABLED", "1")
-        .stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() })
+        .stdin(if input.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     if let Some(h) = host {
@@ -91,6 +95,9 @@ pub fn tail_bounded(s: &str, max_bytes: usize) -> String {
         return s.to_string();
     }
     let start = s.len() - max_bytes;
-    let cut = s[start..].find('\n').map(|i| start + i + 1).unwrap_or(start);
+    let cut = s[start..]
+        .find('\n')
+        .map(|i| start + i + 1)
+        .unwrap_or(start);
     format!("…(log truncated to last {max_bytes} bytes)…\n{}", &s[cut..])
 }

@@ -110,11 +110,7 @@ fn parse_porcelain(s: &str) -> Vec<WorktreeListEntry> {
             if let Some(rest) = line.strip_prefix("HEAD ") {
                 c.head = rest.to_string();
             } else if let Some(rest) = line.strip_prefix("branch ") {
-                c.branch = Some(
-                    rest.strip_prefix("refs/heads/")
-                        .unwrap_or(rest)
-                        .to_string(),
-                );
+                c.branch = Some(rest.strip_prefix("refs/heads/").unwrap_or(rest).to_string());
             } else if line == "bare" {
                 c.bare = true;
             } else if line == "detached" {
@@ -347,12 +343,7 @@ pub async fn resolve_default_base(repo_root: &Path, default_branch: &str) -> Str
     let origin_is_ancestor_of_local = Command::new("git")
         .arg("-C")
         .arg(repo_root)
-        .args([
-            "merge-base",
-            "--is-ancestor",
-            &remote_ref,
-            default_branch,
-        ])
+        .args(["merge-base", "--is-ancestor", &remote_ref, default_branch])
         .output()
         .await
         .map(|o| o.status.success())
@@ -367,11 +358,7 @@ pub async fn resolve_default_base(repo_root: &Path, default_branch: &str) -> Str
 /// Single-call ahead/behind using `git rev-list --left-right --count
 /// base...branch`. Returns `(ahead, behind)` where `ahead` is commits on
 /// `branch` not on `base` and `behind` is commits on `base` not on `branch`.
-pub async fn ahead_behind(
-    repo_root: &Path,
-    base: &str,
-    branch: &str,
-) -> AppResult<(u32, u32)> {
+pub async fn ahead_behind(repo_root: &Path, base: &str, branch: &str) -> AppResult<(u32, u32)> {
     let stdout = git(
         repo_root,
         [
@@ -398,17 +385,9 @@ pub async fn current_branch(repo_root: &Path) -> AppResult<String> {
 /// Perform a non-ff merge of `branch` into the current HEAD. Returns `Ok(())`
 /// on clean merge, `Err(GitError(..))` on any failure (conflict included).
 pub async fn merge_no_ff(repo_root: &Path, branch: &str) -> AppResult<()> {
-    git(
-        repo_root,
-        [
-            "merge",
-            "--no-ff",
-            "--no-edit",
-            branch,
-        ],
-    )
-    .await
-    .map(|_| ())
+    git(repo_root, ["merge", "--no-ff", "--no-edit", branch])
+        .await
+        .map(|_| ())
 }
 
 /// Abort an in-progress merge (used to roll back on conflict).
@@ -420,12 +399,9 @@ pub async fn merge_abort(repo_root: &Path) -> AppResult<()> {
 /// sync-from-default. Treat git's exit code as the success/failure signal;
 /// caller distinguishes "conflict" by inspecting the error body.
 pub async fn merge_into_current(repo_root: &Path, branch: &str) -> AppResult<()> {
-    git(
-        repo_root,
-        ["merge", "--no-edit", branch],
-    )
-    .await
-    .map(|_| ())
+    git(repo_root, ["merge", "--no-edit", branch])
+        .await
+        .map(|_| ())
 }
 
 /// `git rebase <upstream>` in the given workdir. On any failure (typically a
@@ -447,11 +423,7 @@ pub async fn rebase_onto(workdir: &Path, upstream: &str) -> AppResult<()> {
 /// state for added / new files). Binary files come back as lossy-decoded
 /// UTF-8 strings — callers that care about binary-vs-text should check
 /// upstream before calling this.
-pub async fn show_blob(
-    repo_root: &Path,
-    rev: &str,
-    path: &str,
-) -> AppResult<Option<String>> {
+pub async fn show_blob(repo_root: &Path, rev: &str, path: &str) -> AppResult<Option<String>> {
     let out = Command::new("git")
         .arg("-C")
         .arg(repo_root)
@@ -479,11 +451,7 @@ pub async fn show_blob(
 /// object id on stdout. We compare that to `<base>^{tree}`; if equal, the
 /// branch contributes nothing new. On merge conflict or any git error we
 /// return `false` (conservative — let the caller treat it as not-merged).
-pub async fn effectively_merged(
-    repo_root: &Path,
-    base: &str,
-    branch: &str,
-) -> AppResult<bool> {
+pub async fn effectively_merged(repo_root: &Path, base: &str, branch: &str) -> AppResult<bool> {
     // Short-circuit: if branch == base (fast-forwarded or same tip), tree
     // equality holds trivially and we can skip the merge-tree computation.
     if base == branch {
@@ -512,7 +480,9 @@ pub async fn effectively_merged(
 /// possible. Used by the merge-back "rebase + ff" strategy after the agent
 /// branch has been rebased onto the default branch.
 pub async fn merge_ff_only(repo_root: &Path, branch: &str) -> AppResult<()> {
-    git(repo_root, ["merge", "--ff-only", branch]).await.map(|_| ())
+    git(repo_root, ["merge", "--ff-only", branch])
+        .await
+        .map(|_| ())
 }
 
 /// Squash-merge `branch` into the current HEAD and commit with `message`.
@@ -527,11 +497,7 @@ pub async fn merge_squash_and_commit(
     git(repo_root, ["merge", "--squash", branch]).await?;
     // Use --cleanup=verbatim so leading whitespace / blank lines in the
     // user's message aren't silently stripped.
-    git(
-        repo_root,
-        ["commit", "-m", message, "--cleanup=verbatim"],
-    )
-    .await?;
+    git(repo_root, ["commit", "-m", message, "--cleanup=verbatim"]).await?;
     Ok(())
 }
 
@@ -552,11 +518,7 @@ pub async fn branch_exists(repo_root: &Path, branch: &str) -> AppResult<bool> {
 }
 
 /// `true` if `refs/remotes/<remote>/<branch>` exists.
-pub async fn remote_branch_exists(
-    repo_root: &Path,
-    branch: &str,
-    remote: &str,
-) -> AppResult<bool> {
+pub async fn remote_branch_exists(repo_root: &Path, branch: &str, remote: &str) -> AppResult<bool> {
     let res = Command::new("git")
         .arg("-C")
         .arg(repo_root)
@@ -581,11 +543,7 @@ pub async fn fetch_all(repo_root: &Path) -> AppResult<()> {
 
 /// Add a worktree checking out an *already-existing* branch (no -b). Used
 /// to reuse a local branch that's still around from a previous run.
-pub async fn add_existing(
-    repo_root: &Path,
-    worktree_path: &Path,
-    branch: &str,
-) -> AppResult<()> {
+pub async fn add_existing(repo_root: &Path, worktree_path: &Path, branch: &str) -> AppResult<()> {
     git(
         repo_root,
         [
@@ -604,12 +562,9 @@ pub async fn add_existing(
 /// caller can decide whether to surface it (we keep the worktree alive
 /// either way).
 pub async fn update_submodules(workdir: &Path) -> AppResult<()> {
-    git(
-        workdir,
-        ["submodule", "update", "--init", "--recursive"],
-    )
-    .await
-    .map(|_| ())
+    git(workdir, ["submodule", "update", "--init", "--recursive"])
+        .await
+        .map(|_| ())
 }
 
 /// Add a worktree creating a local branch that tracks `<remote>/<branch>`.
@@ -795,7 +750,9 @@ mod tests {
             .arg(&r.root)
             .args(["checkout", "-q", "main"])
             .status();
-        merge_squash_and_commit(&r.root, "feature", "squashed").await.unwrap();
+        merge_squash_and_commit(&r.root, "feature", "squashed")
+            .await
+            .unwrap();
         let after = commits_ahead(&r.root, &base, "main").await.unwrap();
         // Exactly one new commit on main (the squash) even though feature
         // had two.
@@ -891,7 +848,9 @@ mod tests {
         let r = TempRepo::new();
         // Fresh branch off main at the same commit — no unique work.
         run_git(&r.root, &["checkout", "-q", "-b", "feature"]);
-        assert!(effectively_merged(&r.root, "main", "feature").await.unwrap());
+        assert!(effectively_merged(&r.root, "main", "feature")
+            .await
+            .unwrap());
     }
 
     #[tokio::test]
@@ -899,7 +858,9 @@ mod tests {
         let r = TempRepo::new();
         run_git(&r.root, &["checkout", "-q", "-b", "feature"]);
         r.commit_file("new.txt", "hi\n", "feature");
-        assert!(!effectively_merged(&r.root, "main", "feature").await.unwrap());
+        assert!(!effectively_merged(&r.root, "main", "feature")
+            .await
+            .unwrap());
     }
 
     #[tokio::test]
@@ -911,11 +872,15 @@ mod tests {
         // Squash-merge feature into main — main gets ONE new commit whose
         // tree matches feature's tree.
         run_git(&r.root, &["checkout", "-q", "main"]);
-        merge_squash_and_commit(&r.root, "feature", "squashed").await.unwrap();
+        merge_squash_and_commit(&r.root, "feature", "squashed")
+            .await
+            .unwrap();
         // Classic SHA-only ahead_behind still reports feature as 2 ahead of
         // main because the squash commit has a different SHA. This check
         // should see through that.
-        assert!(effectively_merged(&r.root, "main", "feature").await.unwrap());
+        assert!(effectively_merged(&r.root, "main", "feature")
+            .await
+            .unwrap());
     }
 
     #[tokio::test]
@@ -927,7 +892,9 @@ mod tests {
         r.commit_file("README.md", "main\n", "main edit");
         // Feature and main have divergent edits to the same file — a merge
         // would conflict. merge-tree exits nonzero; we treat as not-merged.
-        assert!(!effectively_merged(&r.root, "main", "feature").await.unwrap());
+        assert!(!effectively_merged(&r.root, "main", "feature")
+            .await
+            .unwrap());
     }
 
     fn run_git(root: &std::path::Path, args: &[&str]) {
@@ -1050,7 +1017,10 @@ mod tests {
         let on_main = r.commit_file("o.txt", "o\n", "O");
         let bare = r.root.parent().unwrap().join("origin.git");
         run_git(&r.root, &["init", "--bare", "-q", bare.to_str().unwrap()]);
-        run_git(&r.root, &["remote", "add", "origin", bare.to_str().unwrap()]);
+        run_git(
+            &r.root,
+            &["remote", "add", "origin", bare.to_str().unwrap()],
+        );
         run_git(&r.root, &["push", "-q", "origin", "main"]);
         run_git(&r.root, &["fetch", "-q", "origin"]);
 
@@ -1069,7 +1039,10 @@ mod tests {
         // Sanity: the two candidate merge-bases really do differ.
         let local_mb = merge_base_sync(&r.root, "main", "feat").unwrap();
         let origin_mb = merge_base_sync(&r.root, "origin/main", "feat").unwrap();
-        assert_eq!(local_mb, initial, "local main shares only the root with feat");
+        assert_eq!(
+            local_mb, initial,
+            "local main shares only the root with feat"
+        );
         assert_eq!(origin_mb, on_main, "origin/main is feat's true fork point");
         assert_ne!(local_mb, origin_mb);
 
@@ -1084,7 +1057,10 @@ mod tests {
 
         // An explicit override to local `main` flips it back to local's root.
         let local_anchor = live_branch_anchor(&r.root, "main", "main", "feat", &local_mb);
-        assert_eq!(local_anchor, initial, "explicit local-main override ignored");
+        assert_eq!(
+            local_anchor, initial,
+            "explicit local-main override ignored"
+        );
     }
 
     /// On the main-clone worktree (branch == default_branch), the live anchor

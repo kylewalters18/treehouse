@@ -11,8 +11,8 @@ use crate::agent::supervisor;
 use crate::forge::{workflow, IssueStart};
 use crate::ipc::commands::{finish_create, resolve_forge};
 use crate::state::AppState;
-use crate::util::ids::WorkspaceId;
 use crate::storage;
+use crate::util::ids::WorkspaceId;
 use crate::worktree::{self, CreateOptions};
 
 use super::{split_command, CallerScope, McpCaller};
@@ -30,10 +30,9 @@ pub fn list(scope: CallerScope) -> Value {
             create_pr_schema(),
         ]),
         // A planner has a repo but no worktree, so nothing to open a PR from.
-        CallerScope::Planner(_) => json!([
-            create_issue_schema(scope),
-            create_worktree_schema(scope),
-        ]),
+        CallerScope::Planner(_) => {
+            json!([create_issue_schema(scope), create_worktree_schema(scope),])
+        }
         CallerScope::Scratch => json!([
             {
                 "name": "list_repos",
@@ -165,7 +164,10 @@ fn create_worktree_schema(scope: CallerScope) -> Value {
 }
 
 pub async fn call(app: &AppHandle, caller: McpCaller, params: &Value) -> Value {
-    let name = params.get("name").and_then(Value::as_str).unwrap_or_default();
+    let name = params
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
     let args = params.get("arguments").cloned().unwrap_or(Value::Null);
     let outcome = match name {
         "create_worktree" => create_worktree(app, caller, &args).await,
@@ -228,13 +230,22 @@ async fn create_issue(app: &AppHandle, caller: McpCaller, args: &Value) -> Resul
     let body = str_arg(args, "body").unwrap_or_default();
     let (workspace_id, _) = target_workspace(app, caller, args)?;
     let state = app.state::<AppState>();
-    let (forge, _) = resolve_forge(workspace_id, &state).await.map_err(|e| e.to_string())?;
-    let issue = forge.create_issue(&title, &body).await.map_err(|e| e.to_string())?;
+    let (forge, _) = resolve_forge(workspace_id, &state)
+        .await
+        .map_err(|e| e.to_string())?;
+    let issue = forge
+        .create_issue(&title, &body)
+        .await
+        .map_err(|e| e.to_string())?;
     tracing::info!(number = issue.number, "mcp: created issue");
     Ok(json!({ "number": issue.number, "url": issue.url, "title": issue.title }))
 }
 
-async fn create_worktree(app: &AppHandle, caller: McpCaller, args: &Value) -> Result<Value, String> {
+async fn create_worktree(
+    app: &AppHandle,
+    caller: McpCaller,
+    args: &Value,
+) -> Result<Value, String> {
     let base = str_arg(args, "base");
     let extra_prompt = str_arg(args, "prompt");
     let issue_number = match args.get("issue") {
@@ -248,8 +259,13 @@ async fn create_worktree(app: &AppHandle, caller: McpCaller, args: &Value) -> Re
     // created, and it names the branch when `name` is omitted.
     let issue = match issue_number {
         Some(n) => {
-            let (forge, _) = resolve_forge(workspace_id, &state).await.map_err(|e| e.to_string())?;
-            let issue = forge.get_issue(n).await.map_err(|e| format!("couldn't read #{n}: {e}"))?;
+            let (forge, _) = resolve_forge(workspace_id, &state)
+                .await
+                .map_err(|e| e.to_string())?;
+            let issue = forge
+                .get_issue(n)
+                .await
+                .map_err(|e| format!("couldn't read #{n}: {e}"))?;
             Some((forge, issue))
         }
         None => None,
@@ -258,7 +274,11 @@ async fn create_worktree(app: &AppHandle, caller: McpCaller, args: &Value) -> Re
         (Some(n), _) => n,
         // Matches the dialog: `<n>-` + the title, slug kept short.
         (None, Some((_, i))) => {
-            format!("{}-{}", i.number, i.title.chars().take(50).collect::<String>())
+            format!(
+                "{}-{}",
+                i.number,
+                i.title.chars().take(50).collect::<String>()
+            )
         }
         (None, None) => return Err("pass `name`, `issue`, or both".into()),
     };
@@ -287,7 +307,11 @@ async fn create_worktree(app: &AppHandle, caller: McpCaller, args: &Value) -> Re
     let mut warnings: Vec<String> = result.warning.take().into_iter().collect();
     let mut prompt = extra_prompt.clone();
     if let Some((forge, i)) = &issue {
-        let start = IssueStart { number: i.number, assign: false, link: true };
+        let start = IssueStart {
+            number: i.number,
+            assign: false,
+            link: true,
+        };
         let started = workflow::start_from_issue(app, forge, &result.worktree.path, &start).await;
         warnings.extend(started.warnings);
         let seed = started.prompt.unwrap_or_else(|| workflow::issue_prompt(i));
@@ -345,13 +369,19 @@ async fn create_worktree(app: &AppHandle, caller: McpCaller, args: &Value) -> Re
 /// Open a PR/MR for the calling agent's own worktree.
 async fn create_pr(app: &AppHandle, caller: McpCaller, args: &Value) -> Result<Value, String> {
     let CallerScope::Worktree(id) = caller.scope else {
-        return Err("create_pr opens a PR for the calling worktree; this agent has none — \
-            tell a worktree's agent to call it".into());
+        return Err(
+            "create_pr opens a PR for the calling worktree; this agent has none — \
+            tell a worktree's agent to call it"
+                .into(),
+        );
     };
     let title = str_arg(args, "title").ok_or("`title` is required")?;
     let body = str_arg(args, "body").unwrap_or_default();
     let draft = args.get("draft").and_then(Value::as_bool).unwrap_or(false);
-    let close_issue = args.get("close_issue").and_then(Value::as_bool).unwrap_or(true);
+    let close_issue = args
+        .get("close_issue")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
 
     let state = app.state::<AppState>();
     let wt = state
@@ -436,11 +466,18 @@ fn resolve_repo(repos: &[Repo], query: &str) -> Result<usize, String> {
         [] if repos.is_empty() => Err("no repos are open in treehouse".into()),
         [] => Err(format!(
             "no open repo named '{query}'. Open repos: {}",
-            repos.iter().map(|r| r.name.as_str()).collect::<Vec<_>>().join(", ")
+            repos
+                .iter()
+                .map(|r| r.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
         )),
         many => Err(format!(
             "more than one open repo is named '{query}'; pass its path instead: {}",
-            many.iter().map(|&i| repos[i].path.display().to_string()).collect::<Vec<_>>().join(", ")
+            many.iter()
+                .map(|&i| repos[i].path.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
         )),
     }
 }
@@ -477,14 +514,25 @@ mod tests {
     }
 
     fn names(tools: &Value) -> Vec<&str> {
-        tools.as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect()
+        tools
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap())
+            .collect()
     }
 
     #[test]
     fn scratch_gets_list_repos_and_required_repo_but_no_create_pr() {
         let tools = list(CallerScope::Scratch);
-        assert_eq!(names(&tools), ["list_repos", "create_issue", "create_worktree"]);
-        assert_eq!(tools[1]["inputSchema"]["required"], json!(["repo", "title", "body"]));
+        assert_eq!(
+            names(&tools),
+            ["list_repos", "create_issue", "create_worktree"]
+        );
+        assert_eq!(
+            tools[1]["inputSchema"]["required"],
+            json!(["repo", "title", "body"])
+        );
         assert_eq!(tools[2]["inputSchema"]["required"], json!(["repo"]));
     }
 
@@ -493,7 +541,11 @@ mod tests {
         let tools = list(CallerScope::Planner(WorkspaceId::new()));
         assert_eq!(names(&tools), ["create_issue", "create_worktree"]);
         for t in tools.as_array().unwrap() {
-            assert!(t["inputSchema"]["properties"].get("repo").is_none(), "{}", t["name"]);
+            assert!(
+                t["inputSchema"]["properties"].get("repo").is_none(),
+                "{}",
+                t["name"]
+            );
         }
         let desc = tools[1]["description"].as_str().unwrap();
         assert!(desc.contains("in this repo"), "{desc}");
@@ -502,9 +554,16 @@ mod tests {
     #[test]
     fn worktree_agents_get_create_pr_and_no_repo_arg() {
         let tools = list(CallerScope::Worktree(crate::util::ids::WorktreeId::new()));
-        assert_eq!(names(&tools), ["create_issue", "create_worktree", "create_pr"]);
+        assert_eq!(
+            names(&tools),
+            ["create_issue", "create_worktree", "create_pr"]
+        );
         for t in tools.as_array().unwrap() {
-            assert!(t["inputSchema"]["properties"].get("repo").is_none(), "{}", t["name"]);
+            assert!(
+                t["inputSchema"]["properties"].get("repo").is_none(),
+                "{}",
+                t["name"]
+            );
         }
         assert!(tools[1]["inputSchema"]["properties"].get("issue").is_some());
     }
