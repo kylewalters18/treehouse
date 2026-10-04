@@ -371,11 +371,14 @@ pub async fn close_workspace(
 /// (lib.rs) has already opened anything that should be live.
 #[tauri::command]
 pub async fn list_workspaces(state: State<'_, AppState>) -> AppResult<Vec<Workspace>> {
-    Ok(state
-        .workspaces
-        .iter()
-        .map(|e| e.value().clone())
-        .collect())
+    // DashMap order is arbitrary; sort by repo name (what the sidebar shows)
+    // so newly opened repos slot in alphabetically.
+    let mut out: Vec<Workspace> = state.workspaces.iter().map(|e| e.value().clone()).collect();
+    out.sort_by_cached_key(|w| {
+        let name = w.root.file_name().map(|n| n.to_string_lossy().to_lowercase());
+        (name, w.root.clone())
+    });
+    Ok(out)
 }
 
 #[tauri::command]

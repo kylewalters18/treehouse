@@ -13,6 +13,23 @@ import { useEditorViewStateStore } from "@/stores/editor-view-state";
 import { usePinsStore } from "@/stores/pins";
 import { clearAgentLeafStatesForWorktree } from "@/panels/agent-leaf-state";
 
+/// Mirrors Rust `list_for_workspace` ordering (main clone first, then
+/// branch, case-insensitive) so a freshly created worktree lands where a
+/// refresh would put it instead of at the bottom.
+function insertSorted(list: Worktree[], wt: Worktree): Worktree[] {
+  const key = wt.branch.toLowerCase();
+  const i = list.findIndex(
+    (w) =>
+      w.workspaceId === wt.workspaceId &&
+      !w.isMainClone &&
+      w.branch.toLowerCase() > key,
+  );
+  // No later sibling → append; the sidebar filters per workspace, so
+  // position relative to other repos' entries doesn't matter.
+  if (i === -1) return [...list, wt];
+  return [...list.slice(0, i), wt, ...list.slice(i)];
+}
+
 type WorktreesState = {
   /// Flat list across every open workspace. Each Worktree carries its
   /// own `workspaceId` so consumers filter at render time. Multi-repo:
@@ -81,7 +98,7 @@ export const useWorktreesStore = create<WorktreesState>((set, get) => ({
     try {
       const result = await ipc.createWorktree(workspaceId, name, opts);
       set({
-        worktrees: [...get().worktrees, result.worktree],
+        worktrees: insertSorted(get().worktrees, result.worktree),
         creating: false,
       });
       // Backend returns a non-fatal warning (e.g. submodule init failed) the

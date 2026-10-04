@@ -515,10 +515,10 @@ pub async fn merge(
 }
 
 pub fn list_for_workspace(workspace_id: WorkspaceId, state: &AppState) -> Vec<Worktree> {
-    // DashMap iteration order is non-deterministic; sorting by id (ULID →
-    // lexicographic == creation order) keeps the sidebar stable across
-    // refreshes so the main clone stays pinned at the top and newer
-    // worktrees always append below.
+    // DashMap iteration order is non-deterministic; sort so the sidebar is
+    // stable across refreshes: main clone pinned at the top, then the rest
+    // alphabetically by branch (case-insensitive) so new worktrees slot into
+    // place rather than appending.
     let mut out: Vec<Worktree> = state
         .worktrees
         .iter()
@@ -531,7 +531,7 @@ pub fn list_for_workspace(workspace_id: WorkspaceId, state: &AppState) -> Vec<Wo
             }
         })
         .collect();
-    out.sort_by_key(|w| w.id);
+    out.sort_by_cached_key(|w| (!w.is_main_clone, w.branch.to_lowercase(), w.id));
     out
 }
 
