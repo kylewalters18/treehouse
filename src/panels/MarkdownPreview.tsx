@@ -152,6 +152,16 @@ export function MarkdownPreview({ worktreeId, path }: Props) {
     );
   }
 
+  if (isMermaidPath(path)) {
+    // A parse failure renders the error plus source, so a misidentified
+    // `.mmd` (e.g. MultiMarkdown) is still readable here.
+    return (
+      <div className="h-full overflow-auto bg-neutral-950 px-8 py-6">
+        <MermaidDiagram chart={content.text} />
+      </div>
+    );
+  }
+
   return (
     <PreviewBody worktreeId={worktreeId} path={path} text={content.text} highlighter={highlighter} />
   );
@@ -328,8 +338,8 @@ function followLink(
       const ds = useDiffsStore.getState();
       pendingAnchor = target.anchor ? { path: target.path, id: target.anchor } : null;
       ds.selectFile(worktreeId, target.path);
-      // Markdown stays in Preview; anything else opens in the editor.
-      ds.setView(worktreeId, isMarkdownPath(target.path) ? "preview" : "file");
+      // Markdown / mermaid stay in Preview; anything else opens in the editor.
+      ds.setView(worktreeId, isPreviewablePath(target.path) ? "preview" : "file");
       return;
     }
     case "none":
@@ -572,4 +582,15 @@ function MermaidLightbox({ svg, onClose }: { svg: string; onClose: () => void })
 export function isMarkdownPath(path: string): boolean {
   const lower = path.toLowerCase();
   return lower.endsWith(".md") || lower.endsWith(".mdx");
+}
+
+/// Standalone mermaid source (`mmdc`'s `.mmd`, GitHub's `.mermaid`).
+export function isMermaidPath(path: string): boolean {
+  const lower = path.toLowerCase();
+  return lower.endsWith(".mmd") || lower.endsWith(".mermaid");
+}
+
+/// Files with a rendered Preview tab: markdown and standalone mermaid.
+export function isPreviewablePath(path: string): boolean {
+  return isMarkdownPath(path) || isMermaidPath(path);
 }

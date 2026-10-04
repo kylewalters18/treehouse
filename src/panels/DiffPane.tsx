@@ -32,7 +32,7 @@ import { CommentOverlay, EditorPane } from "./EditorPane";
 import { useEditorViewStateStore } from "@/stores/editor-view-state";
 import { FileTree } from "./FileTree";
 import { useIsEditorDirty } from "@/stores/editor-dirty";
-import { MarkdownPreview, isMarkdownPath } from "./MarkdownPreview";
+import { MarkdownPreview, isPreviewablePath } from "./MarkdownPreview";
 import { isRasterImagePath } from "./markdown-plugins";
 import { inferLanguage } from "./editor-language";
 import { explorerRow, iconForFile, statusFilenameColor } from "./file-icons";
@@ -289,7 +289,7 @@ function DiffView({ worktreeId }: { worktreeId: WorktreeId }) {
           >
             Diff
           </TabButton>
-          {selectedFile && isMarkdownPath(selectedFile) && (
+          {selectedFile && isPreviewablePath(selectedFile) && (
             <TabButton
               active={view === "preview"}
               onClick={() => setView(worktreeId, "preview")}
@@ -324,7 +324,7 @@ function DiffView({ worktreeId }: { worktreeId: WorktreeId }) {
             </div>
           ) : view === "file" ? (
             <EditorPane worktreeId={worktreeId} path={selectedFile} />
-          ) : view === "preview" && isMarkdownPath(selectedFile) ? (
+          ) : view === "preview" && isPreviewablePath(selectedFile) ? (
             <MarkdownPreview worktreeId={worktreeId} path={selectedFile} />
           ) : resolved ? (
             <DiffEditorView
