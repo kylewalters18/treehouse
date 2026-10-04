@@ -931,7 +931,7 @@ export function AgentLeafSlot({
           have to NOT influence this container, or its ResizeObserver loops
           infinitely — `absolute` decouples child size from parent layout. */}
       <div className="relative flex-1">
-        <div ref={slotRef} className="absolute inset-0" />
+        <div ref={slotRef} className="absolute inset-0 overflow-hidden" />
       </div>
     </div>
   );

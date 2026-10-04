@@ -17,7 +17,7 @@ import type {
   WorkspaceId,
   WorktreeId,
 } from "@/ipc/types";
-import { fitAndPin } from "./xterm-fit";
+import { fitAndPin, watchFit } from "./xterm-fit";
 import { registerTerminalLinks } from "./term-path-links";
 import { attachTerminalSearch } from "./term-search";
 
@@ -47,7 +47,7 @@ export type AgentLeafState = {
   term: Terminal;
   fit: FitAddon;
   sessionId: AgentSessionId | null;
-  resizeObserver: ResizeObserver | null;
+  fitWatch: { disconnect: () => void } | null;
   links: { dispose: () => void } | null;
   killed: boolean;
   /// The agent process has exited (or crashed); the xterm is a tombstone.
@@ -136,6 +136,10 @@ export function createAgentLeafState(
   // host height and over-counted rows by one — the bottom line ended
   // up clipped under the padding-bottom.
   host.style.inset = "8px";
+  // Clip rather than scroll if xterm's grid momentarily outsizes the
+  // host (rounding, a fit racing a resize) — xterm's own viewport is
+  // the only thing that should ever scroll.
+  host.style.overflow = "hidden";
 
   const term = new Terminal({
     fontFamily:
@@ -164,7 +168,7 @@ export function createAgentLeafState(
     term,
     fit,
     sessionId: null,
-    resizeObserver: null,
+    fitWatch: null,
     links: {
       dispose() {
         termLinks.dispose();
@@ -293,17 +297,9 @@ export function createAgentLeafState(
         fitAndPin(fit, term);
         agentResize(id, term.cols, term.rows).catch(() => {});
       }
-      state.resizeObserver = new ResizeObserver(() => {
-        // While the host is detached from the DOM (worktree switch
-        // parks it in the pool), its content box collapses to 0 and
-        // fit() would resize the PTY to a degenerate size. The
-        // agent then writes content wrapped at that wrong width, and
-        // when the host reattaches we see "stale width / duplicated
-        // text." Bail until the host is back in the document.
-        if (!host.isConnected) return;
-        fitAndPin(fit, term);
-      });
-      state.resizeObserver.observe(host);
+      // Refits on host resize, late font load, and DPR change; skips
+      // while the host is parked off-DOM (see watchFit).
+      state.fitWatch = watchFit(host, fit, term);
     } catch (e: unknown) {
       const msg =
         e && typeof e === "object" && "message" in e
@@ -319,7 +315,7 @@ export function createAgentLeafState(
 /// Tear down xterm AND kill the agent. Called on explicit tab close.
 export function disposeAgentLeafState(state: AgentLeafState): void {
   state.killed = true;
-  state.resizeObserver?.disconnect();
+  state.fitWatch?.disconnect();
   state.links?.dispose();
   state.term.dispose();
   if (state.sessionId) {
@@ -332,7 +328,7 @@ export function disposeAgentLeafState(state: AgentLeafState): void {
 /// session orphan whose React tree is gone.
 export function detachAgentLeafState(state: AgentLeafState): void {
   state.killed = true;
-  state.resizeObserver?.disconnect();
+  state.fitWatch?.disconnect();
   state.links?.dispose();
   state.term.dispose();
 }

@@ -301,7 +301,7 @@ export function PlannerPopup() {
           </div>
         )}
         <div className="relative flex-1 bg-[#0F1114]">
-          <div ref={slotRef} className="absolute inset-0" />
+          <div ref={slotRef} className="absolute inset-0 overflow-hidden" />
         </div>
       </div>
     </div>

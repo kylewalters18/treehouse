@@ -33,7 +33,7 @@ import {
   useTerminalLayoutStore,
   type TerminalTab,
 } from "@/stores/terminal-layout";
-import { fitAndPin } from "./xterm-fit";
+import { fitAndPin, watchFit } from "./xterm-fit";
 import { registerTerminalLinks } from "./term-path-links";
 import { attachTerminalSearch } from "./term-search";
 
@@ -480,7 +480,7 @@ export type LeafState = {
   term: Terminal;
   fit: FitAddon;
   sessionId: TerminalId | null;
-  resizeObserver: ResizeObserver | null;
+  fitWatch: { disconnect: () => void } | null;
   /// xterm link provider disposable. Released in `disposeLeafState`
   /// alongside the terminal so we don't accumulate dead listeners.
   pathLinks: { dispose: () => void } | null;
@@ -504,6 +504,10 @@ export function createLeafState(
   // host height and over-counted rows by one — the bottom line ended
   // up clipped under the padding-bottom.
   host.style.inset = "8px";
+  // Clip rather than scroll if xterm's grid momentarily outsizes the
+  // host (rounding, a fit racing a resize) — xterm's own viewport is
+  // the only thing that should ever scroll.
+  host.style.overflow = "hidden";
 
   const term = new Terminal({
     fontFamily:
@@ -544,7 +548,7 @@ export function createLeafState(
     term,
     fit,
     sessionId: null,
-    resizeObserver: null,
+    fitWatch: null,
     pathLinks: linksDisposable,
     killed: false,
   };
@@ -617,16 +621,9 @@ export function createLeafState(
         fitAndPin(fit, term);
         ptyResize(session.id, term.cols, term.rows).catch(() => {});
       }
-      state.resizeObserver = new ResizeObserver(() => {
-        // While the host is detached from the DOM (worktree switch
-        // parks it in the pool), its content box collapses to 0 and
-        // fit() would resize the PTY to a degenerate size, leaving
-        // stale wrapping that surfaces on reattach. Bail until the
-        // host is back in the document.
-        if (!host.isConnected) return;
-        fitAndPin(fit, term);
-      });
-      state.resizeObserver.observe(host);
+      // Refits on host resize, late font load, and DPR change; skips
+      // while the host is parked off-DOM (see watchFit).
+      state.fitWatch = watchFit(host, fit, term);
     } catch (e) {
       term.write(`\r\nerror: failed to open terminal — ${e}\r\n`);
     }
@@ -640,7 +637,7 @@ export function createLeafState(
 /// circuits and orphan-kills inside that path.
 export function disposeLeafState(state: LeafState) {
   state.killed = true;
-  state.resizeObserver?.disconnect();
+  state.fitWatch?.disconnect();
   state.pathLinks?.dispose();
   state.term.dispose();
   if (state.sessionId) {
@@ -652,7 +649,7 @@ export function disposeLeafState(state: LeafState) {
 /// worktree switch so the user can come back and reattach.
 function detachLeafState(state: LeafState) {
   state.killed = true;
-  state.resizeObserver?.disconnect();
+  state.fitWatch?.disconnect();
   state.pathLinks?.dispose();
   state.term.dispose();
 }
@@ -720,5 +717,5 @@ function TerminalLeafSlot({
     leafStates.get(leaf.localId)?.term.focus();
   }, [focused, leaf.localId, leafStates]);
 
-  return <div ref={slotRef} className="relative h-full w-full" />;
+  return <div ref={slotRef} className="relative h-full w-full overflow-hidden" />;
 }
