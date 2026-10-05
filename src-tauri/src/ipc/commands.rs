@@ -346,7 +346,7 @@ pub async fn close_workspace(
         agent::supervisor::kill_for_worktree(&state.agents, *id);
         lsp::supervisor::kill_for_worktree(&state.lsp, *id);
         state.diffs.remove(id);
-        state.worktrees.remove(id);
+        state.unregister_worktree(id);
     }
     let _ = app.emit(&events::lsp_servers_changed(workspace_id), ());
     let removed_root = state

@@ -245,7 +245,10 @@ pub async fn create(
         dirty: false,
         is_main_clone: false,
     };
-    state.worktrees.insert(worktree.id, worktree.clone());
+    // `refresh`: if the autodiscover reconcile adopted this dir between
+    // `git worktree add` and here, keep its id but take our metadata (the
+    // chosen base beats adoption's default-branch guess).
+    let (worktree, _) = state.register_worktree(worktree, true);
     tracing::info!(id = %worktree.id, path = %worktree.path.display(), "created worktree");
 
     // Optional submodule init. Failure surfaces as a non-fatal warning so the
@@ -400,7 +403,7 @@ pub async fn remove(
         .output()
         .await;
 
-    state.worktrees.remove(&worktree_id);
+    state.unregister_worktree(&worktree_id);
     tracing::info!(id = %worktree_id, "removed worktree");
     Ok(summary)
 }
@@ -576,7 +579,9 @@ pub async fn reconcile(workspace_id: WorkspaceId, state: &AppState) -> AppResult
         .worktrees
         .iter()
         .filter(|e| e.value().workspace_id == workspace_id)
-        .map(|e| e.value().path.clone())
+        .map(|e| {
+            dunce::canonicalize(e.value().path.as_path()).unwrap_or_else(|_| e.value().path.clone())
+        })
         .collect();
 
     // Canonicalized paths of every convention worktree currently on disk.
@@ -591,8 +596,11 @@ pub async fn reconcile(workspace_id: WorkspaceId, state: &AppState) -> AppResult
         if !canon_entry.starts_with(&canon_root) {
             continue; // user-managed worktree outside our convention
         }
+        let known = existing_paths.contains(&canon_entry);
         on_disk.insert(canon_entry);
-        if existing_paths.contains(&entry.path) {
+        // Cheap skip for already-known dirs; `register_worktree` below is
+        // what actually guarantees no duplicates.
+        if known {
             continue;
         }
         let branch = match entry.branch.clone() {
@@ -624,9 +632,11 @@ pub async fn reconcile(workspace_id: WorkspaceId, state: &AppState) -> AppResult
             dirty: false,
             is_main_clone: false,
         };
-        tracing::info!(id = %worktree.id, path = %worktree.path.display(), "adopted worktree");
-        delta.added.push(worktree.id);
-        state.worktrees.insert(worktree.id, worktree);
+        let (worktree, inserted) = state.register_worktree(worktree, false);
+        if inserted {
+            tracing::info!(id = %worktree.id, path = %worktree.path.display(), "adopted worktree");
+            delta.added.push(worktree.id);
+        }
     }
 
     // Removal pass: drop worktrees whose dir is gone from disk. The main
@@ -655,7 +665,7 @@ pub async fn reconcile(workspace_id: WorkspaceId, state: &AppState) -> AppResult
         crate::lsp::supervisor::kill_for_worktree(&state.lsp, id);
         state.diffs.remove(&id);
         super::status::drop_for(state, id);
-        state.worktrees.remove(&id);
+        state.unregister_worktree(&id);
         delta.removed.push(id);
     }
 
@@ -702,8 +712,10 @@ pub async fn register_main_clone(
         dirty: false,
         is_main_clone: true,
     };
-    state.worktrees.insert(worktree.id, worktree.clone());
-    tracing::info!(id = %worktree.id, path = %worktree.path.display(), "registered main clone");
+    let (worktree, inserted) = state.register_worktree(worktree, false);
+    if inserted {
+        tracing::info!(id = %worktree.id, path = %worktree.path.display(), "registered main clone");
+    }
     Ok(worktree)
 }
 
@@ -1134,6 +1146,73 @@ mod tests {
             .find(|e| e.value().branch == "agent/orphan")
             .map(|e| e.value().clone());
         assert!(adopted.is_some(), "orphan worktree should be adopted");
+    }
+
+    #[tokio::test]
+    async fn concurrent_reconciles_adopt_a_worktree_once() {
+        let repo = TempRepo::new();
+        let (state, ws_id) = setup(&repo);
+        let dir = super::git_ops::worktrees_root_for(&repo.root).join("racy");
+        std::fs::create_dir_all(dir.parent().unwrap()).unwrap();
+        run_in(
+            &repo.root,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "racy",
+                dir.to_str().unwrap(),
+                "main",
+            ],
+        );
+
+        let (a, b) = tokio::join!(reconcile(ws_id, &state), reconcile(ws_id, &state));
+        let added = a.unwrap().added.len() + b.unwrap().added.len();
+        assert_eq!(added, 1, "only one reconcile reports the adoption");
+        let count = state
+            .worktrees
+            .iter()
+            .filter(|e| e.value().branch == "racy")
+            .count();
+        assert_eq!(count, 1);
+    }
+
+    #[tokio::test]
+    async fn create_after_racing_adoption_keeps_the_adopted_id() {
+        let repo = TempRepo::new();
+        let (state, ws_id) = setup(&repo);
+        let created = create(None, ws_id, "feature", CreateOptions::default(), &state)
+            .await
+            .unwrap()
+            .worktree;
+
+        // Simulate reconcile having adopted the dir first under another id:
+        // re-registering with `refresh` keeps the stored id, takes new fields.
+        let mut again = created.clone();
+        again.id = WorktreeId::new();
+        again.base_branch = "other".into();
+        let (stored, inserted) = state.register_worktree(again, true);
+        assert!(!inserted);
+        assert_eq!(stored.id, created.id);
+        assert_eq!(stored.base_branch, "other");
+        assert_eq!(
+            state
+                .worktrees
+                .iter()
+                .filter(|e| e.value().path == created.path)
+                .count(),
+            1
+        );
+
+        // Unregister clears the index so the dir can be registered afresh.
+        state.unregister_worktree(&created.id);
+        let fresh = Worktree {
+            id: WorktreeId::new(),
+            ..created.clone()
+        };
+        let (stored, inserted) = state.register_worktree(fresh.clone(), false);
+        assert!(inserted);
+        assert_eq!(stored.id, fresh.id);
     }
 
     #[tokio::test]

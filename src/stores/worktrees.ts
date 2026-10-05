@@ -17,6 +17,10 @@ import { clearAgentLeafStatesForWorktree } from "@/panels/agent-leaf-state";
 /// branch, case-insensitive) so a freshly created worktree lands where a
 /// refresh would put it instead of at the bottom.
 function insertSorted(list: Worktree[], wt: Worktree): Worktree[] {
+  // A `worktrees-changed` refresh may have landed mid-create and already
+  // listed this worktree — replace it in place rather than appending a twin.
+  const existing = list.findIndex((w) => w.id === wt.id);
+  if (existing !== -1) return list.map((w, i) => (i === existing ? wt : w));
   const key = wt.branch.toLowerCase();
   const i = list.findIndex(
     (w) =>
