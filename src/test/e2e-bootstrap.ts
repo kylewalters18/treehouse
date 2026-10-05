@@ -35,6 +35,7 @@ export function installE2EMocks(): void {
     list_pinned_worktrees: async () => [],
     list_issue_links: async () => ({}),
     list_branches: async () => [],
+    list_checkout_branches: async () => [],
     lsp_list_configs: async () => [],
     lsp_resolve_command: async () => null,
   };

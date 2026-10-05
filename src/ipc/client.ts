@@ -1,6 +1,7 @@
 import { invoke, Channel } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
+  BranchRef,
   AgentBackendKind,
   AgentOverview,
   AgentProfile,
@@ -77,6 +78,15 @@ export function listWorkspaces(): Promise<Workspace[]> {
 /// Changes-pane base picker. Read-only; no fetch.
 export function listBranches(workspaceId: WorkspaceId): Promise<string[]> {
   return invoke<string[]>("list_branches", { workspaceId });
+}
+
+/// Branches a new worktree can check out (local + `origin/*`, newest first).
+/// `fetch` runs a best-effort `git fetch` first.
+export function listCheckoutBranches(
+  workspaceId: WorkspaceId,
+  fetch: boolean,
+): Promise<BranchRef[]> {
+  return invoke<BranchRef[]>("list_checkout_branches", { workspaceId, fetch });
 }
 
 /// Set (or clear, with `null`) the base ref the Changes diff compares against

@@ -8,6 +8,8 @@ use tokio::process::Command;
 
 use crate::util::errors::{AppError, AppResult};
 use git2::Repository;
+use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 pub(crate) async fn git<I, S>(repo_root: &Path, args: I) -> AppResult<String>
 where
@@ -124,6 +126,11 @@ fn parse_porcelain(s: &str) -> Vec<WorktreeListEntry> {
     out
 }
 
+/// Add a worktree on a brand-new branch forked from `base_ref`. `--no-track`:
+/// with a remote-tracking base like `origin/main`, git's default
+/// `autoSetupMerge` would make the new branch track `origin/main`, so a bare
+/// `git push` / `git pull` in the worktree targets main instead of its own
+/// branch. `push_branch` sets the real upstream on first push.
 pub async fn add(
     repo_root: &Path,
     worktree_path: &Path,
@@ -135,6 +142,7 @@ pub async fn add(
         [
             "worktree".as_ref(),
             "add".as_ref(),
+            "--no-track".as_ref(),
             "-b".as_ref(),
             new_branch.as_ref(),
             worktree_path.as_os_str(),
@@ -284,6 +292,99 @@ pub async fn list_branches(repo_root: &Path) -> AppResult<Vec<String>> {
     names.sort();
     names.dedup();
     Ok(names)
+}
+
+/// A branch a new worktree can check out: a local head and/or
+/// `origin/<name>`. Offered as "existing branch" rows in the create dialog.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct BranchRef {
+    /// Short name without the remote prefix (`kyle/fix-auth`).
+    pub name: String,
+    pub local: bool,
+    /// `origin/<name>` exists.
+    pub remote: bool,
+    /// Newest committer date across the local / remote tip, unix seconds.
+    #[ts(type = "number")]
+    pub updated: i64,
+}
+
+/// Local heads + `origin/*` merged by short name, most recently committed
+/// first. Other remotes are skipped — `create` only knows how to track origin.
+pub async fn list_branch_refs(repo_root: &Path) -> AppResult<Vec<BranchRef>> {
+    let stdout = git(
+        repo_root,
+        [
+            "for-each-ref",
+            "--format=%(committerdate:unix) %(refname)",
+            "refs/heads",
+            "refs/remotes/origin",
+        ],
+    )
+    .await?;
+    Ok(parse_branch_refs(&stdout))
+}
+
+fn parse_branch_refs(stdout: &str) -> Vec<BranchRef> {
+    let mut by_name: std::collections::BTreeMap<String, BranchRef> = Default::default();
+    for line in stdout.lines() {
+        let Some((date, refname)) = line.trim().split_once(' ') else {
+            continue;
+        };
+        let updated = date.parse::<i64>().unwrap_or(0);
+        let (name, local) = if let Some(n) = refname.strip_prefix("refs/heads/") {
+            (n, true)
+        } else if let Some(n) = refname.strip_prefix("refs/remotes/origin/") {
+            (n, false)
+        } else {
+            continue;
+        };
+        if name.is_empty() || (!local && name == "HEAD") {
+            continue;
+        }
+        let e = by_name
+            .entry(name.to_string())
+            .or_insert_with(|| BranchRef {
+                name: name.to_string(),
+                local: false,
+                remote: false,
+                updated: 0,
+            });
+        if local {
+            e.local = true;
+        } else {
+            e.remote = true;
+        }
+        e.updated = e.updated.max(updated);
+    }
+    let mut out: Vec<BranchRef> = by_name.into_values().collect();
+    out.sort_by(|a, b| b.updated.cmp(&a.updated).then_with(|| a.name.cmp(&b.name)));
+    out
+}
+
+/// The branch name a create request should use: `name` verbatim when it's
+/// already a valid branch name (so `kyle/fix-auth` or `JIRA-12_x` can match
+/// an existing `origin/<name>`), else its slug ("Add README!" →
+/// `add-readme`). Validity is git's own `check-ref-format --branch`; `@`-
+/// and `-`-prefixed input is slugified first since `--branch` would expand
+/// `@{-1}` syntax or read it as a flag.
+pub async fn branch_name_for(name: &str) -> String {
+    let name = name.trim();
+    if name.is_empty() || name.starts_with('-') || name.contains("@{") {
+        return slugify(name);
+    }
+    let ok = Command::new("git")
+        .args(["check-ref-format", "--branch", name])
+        .output()
+        .await
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if ok {
+        name.to_string()
+    } else {
+        slugify(name)
+    }
 }
 
 /// `true` if the given git workdir has any staged or unstaged changes, tracked
@@ -644,6 +745,34 @@ mod tests {
         assert_eq!(slugify("!!!"), "wt");
         assert_eq!(slugify("  spaces  "), "spaces");
         assert_eq!(slugify("CamelCase"), "camelcase");
+    }
+
+    #[test]
+    fn test_parse_branch_refs_merges_local_and_origin_newest_first() {
+        let s = "100 refs/heads/main\n\
+                 300 refs/remotes/origin/main\n\
+                 200 refs/remotes/origin/kyle/fix-auth\n\
+                 50 refs/heads/local-only\n\
+                 300 refs/remotes/origin/HEAD\n";
+        let refs = parse_branch_refs(s);
+        let names: Vec<&str> = refs.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, ["main", "kyle/fix-auth", "local-only"]);
+        assert!(refs[0].local && refs[0].remote && refs[0].updated == 300);
+        assert!(!refs[1].local && refs[1].remote);
+        assert!(refs[2].local && !refs[2].remote);
+    }
+
+    #[tokio::test]
+    async fn branch_name_for_keeps_valid_names_and_slugifies_the_rest() {
+        assert_eq!(branch_name_for("kyle/fix-auth").await, "kyle/fix-auth");
+        assert_eq!(
+            branch_name_for("JIRA-123_thing.v2").await,
+            "JIRA-123_thing.v2"
+        );
+        assert_eq!(branch_name_for("  Add README!  ").await, "add-readme");
+        assert_eq!(branch_name_for("bad..name").await, "bad-name");
+        assert_eq!(branch_name_for("@{-1}").await, "1");
+        assert_eq!(branch_name_for("-x").await, "x");
     }
 
     #[test]

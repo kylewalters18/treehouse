@@ -309,6 +309,30 @@ pub async fn list_branches(
     crate::worktree::git_ops::list_branches(&root).await
 }
 
+/// Branches a new worktree can check out (local + `origin/*`, newest first)
+/// for the create dialog's existing-branch rows. With `fetch`, runs a
+/// best-effort `git fetch --all --prune` first — the dialog lists from the
+/// local refs immediately, then calls again with `fetch` to pick up branches
+/// pushed since.
+#[tauri::command]
+pub async fn list_checkout_branches(
+    workspace_id: WorkspaceId,
+    fetch: bool,
+    state: State<'_, AppState>,
+) -> AppResult<Vec<crate::worktree::git_ops::BranchRef>> {
+    let root = state
+        .workspaces
+        .get(&workspace_id)
+        .map(|e| e.value().root.clone())
+        .ok_or_else(|| AppError::Unknown(format!("unknown workspace: {workspace_id}")))?;
+    if fetch {
+        if let Err(e) = crate::worktree::git_ops::fetch_all(&root).await {
+            tracing::debug!(?e, "fetch before listing branches failed");
+        }
+    }
+    crate::worktree::git_ops::list_branch_refs(&root).await
+}
+
 #[tauri::command]
 pub async fn list_comments(app: AppHandle) -> AppResult<Vec<Comment>> {
     storage::load_comments(&app).await

@@ -115,8 +115,11 @@ pub enum MergeResult {
     },
 }
 
-/// Create a new worktree under `<repo>__worktrees/<slug>/` on branch `<slug>`.
-/// `name` is a friendly label; it's slugified into the path + branch.
+/// Create a new worktree under `<repo>__worktrees/<slug>/`. `name` is used
+/// verbatim as the branch when it's a valid branch name (`kyle/fix-auth`), so
+/// an existing local or `origin/` branch of that name gets checked out;
+/// otherwise it's a friendly label slugified into the branch. The directory
+/// is always the branch's slug.
 /// Worktrees adopted from earlier versions may carry an `agent/<slug>` branch
 /// — reconcile handles those transparently.
 ///
@@ -148,8 +151,8 @@ pub async fn create(
         .ok_or_else(|| AppError::Unknown(format!("unknown workspace: {workspace_id}")))?
         .clone();
 
-    let slug = git_ops::slugify(name);
-    let branch = slug.clone();
+    let branch = git_ops::branch_name_for(name).await;
+    let slug = git_ops::slugify(&branch);
     let root = git_ops::worktrees_root_for(&ws.root);
     let path: PathBuf = root.join(&slug);
 
@@ -874,6 +877,84 @@ mod tests {
         assert!(
             wt.path.join("carried-over.txt").exists(),
             "worktree should check out the existing branch's files"
+        );
+    }
+
+    /// `repo` gets an `origin` remote (another temp repo) carrying
+    /// `kyle/fix-auth` with one commit; returns that commit's sha.
+    fn origin_with_branch(repo: &TempRepo, origin: &TempRepo) -> String {
+        run_in(&origin.root, &["checkout", "-q", "-b", "kyle/fix-auth"]);
+        let sha = origin.commit_file("auth.txt", "fixed\n", "fix auth");
+        run_in(&origin.root, &["checkout", "-q", "main"]);
+        run_in(
+            &repo.root,
+            &["remote", "add", "origin", origin.root.to_str().unwrap()],
+        );
+        run_in(&repo.root, &["fetch", "-q", "origin"]);
+        sha
+    }
+
+    #[tokio::test]
+    async fn create_tracks_remote_branch_with_slash_in_name() {
+        // Regression: the name used to be slugified to `kyle-fix-auth`, which
+        // missed `origin/kyle/fix-auth` and forked a new branch off main.
+        let repo = TempRepo::new();
+        let origin = TempRepo::new();
+        let remote_sha = origin_with_branch(&repo, &origin);
+        let (state, ws_id) = setup(&repo);
+
+        let wt = create(
+            None,
+            ws_id,
+            "kyle/fix-auth",
+            CreateOptions::default(),
+            &state,
+        )
+        .await
+        .unwrap()
+        .worktree;
+        assert_eq!(wt.branch, "kyle/fix-auth");
+        assert_eq!(wt.head, remote_sha);
+        assert!(
+            wt.path.ends_with("kyle-fix-auth"),
+            "dir is the slug: {:?}",
+            wt.path
+        );
+        let upstream = std::process::Command::new("git")
+            .args(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"])
+            .current_dir(&wt.path)
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&upstream.stdout).trim(),
+            "origin/kyle/fix-auth"
+        );
+    }
+
+    #[tokio::test]
+    async fn create_new_branch_off_remote_base_does_not_track_it() {
+        let repo = TempRepo::new();
+        let origin = TempRepo::new();
+        origin_with_branch(&repo, &origin);
+        let (state, ws_id) = setup(&repo);
+
+        let opts = CreateOptions {
+            base: Some("origin/main".into()),
+            ..Default::default()
+        };
+        let wt = create(None, ws_id, "fresh", opts, &state)
+            .await
+            .unwrap()
+            .worktree;
+        let merge = std::process::Command::new("git")
+            .args(["config", "--get", "branch.fresh.merge"])
+            .current_dir(&wt.path)
+            .output()
+            .unwrap();
+        assert!(
+            !merge.status.success(),
+            "new branch must not track origin/main, got {}",
+            String::from_utf8_lossy(&merge.stdout)
         );
     }
 

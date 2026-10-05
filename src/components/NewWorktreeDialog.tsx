@@ -1,15 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ask } from "@tauri-apps/plugin-dialog";
-import type { ForgeIssue, IssueStart, WorkspaceId } from "@/ipc/types";
+import type { BranchRef, ForgeIssue, IssueStart, WorkspaceId, Worktree } from "@/ipc/types";
 import {
   forgeCreateIssue,
   forgeGetIssue,
   forgeUpdateIssue,
   listBranches,
+  listCheckoutBranches,
   openExternalUrl,
 } from "@/ipc/client";
 import { useForgeStore, type ForgeIssueState } from "@/stores/forge";
 import { useWorkspaceStore } from "@/stores/workspace";
+import { useWorktreesStore } from "@/stores/worktrees";
+import { useUiStore } from "@/stores/ui";
 import { toastError } from "@/stores/toasts";
 import { asMessage, errorKind } from "@/lib/errors";
 import { cn } from "@/lib/cn";
@@ -28,10 +31,24 @@ export type NewWorktreeOptions = {
 type Draft = { title: string; body: string };
 type RowKey = number | "new";
 
-/// The single worktree-creation surface, palette-style: one field that both
-/// searches issues and names a new branch. Typing offers "New branch <slug>"
-/// (the default row — type-and-Enter always makes a plain branch) and "New
-/// issue", with matching issues below.
+/// One selectable row in the list, in display order.
+type Row =
+  | { kind: "plain" }
+  | { kind: "newIssue" }
+  /// An existing local / `origin/` branch; `open` = already checked out in
+  /// a worktree (or the main clone), so picking it jumps there instead.
+  | { kind: "branch"; ref: BranchRef; open: Worktree | null }
+  | { kind: "issue"; issue: ForgeIssue };
+
+/// Existing-branch rows shown per query.
+const MAX_BRANCH_ROWS = 6;
+
+/// The single worktree-creation surface, palette-style: one field that
+/// searches issues and existing branches and names a new branch. Typing
+/// offers "New branch <name>" (the default row — type-and-Enter makes a
+/// plain branch) and "New issue", then matching local / `origin/` branches
+/// (checked out as-is, tracking origin) and matching issues. When the typed
+/// name is exactly an existing branch, that branch row replaces "New branch".
 ///
 /// Picking an issue opens its title/description in the footer. Edits are
 /// saved back to the forge on Create (with a changed-since check), a new
@@ -74,6 +91,7 @@ export function NewWorktreeDialog({
   const [branchEdit, setBranchEdit] = useState<string | null>(null);
   const [base, setBase] = useState<string | null>(null);
   const [branches, setBranches] = useState<string[]>([]);
+  const [checkoutRefs, setCheckoutRefs] = useState<BranchRef[]>([]);
   const [initSubmodules, setInitSubmodules] = useState(defaultInitSubmodules);
   const [runSetup, setRunSetup] = useState(true);
   const [startAgent, setStartAgent] = useState(defaultStartAgent);
@@ -112,10 +130,27 @@ export function NewWorktreeDialog({
     setBusy(false);
   }, [open, defaultInitSubmodules, defaultStartAgent]);
 
+  // Branches: list local refs right away, then again after a background
+  // fetch so branches pushed since the last fetch show up.
   useEffect(() => {
     if (!open || !workspaceId) return;
+    let live = true;
     void loadStatus(workspaceId);
-    listBranches(workspaceId).then(setBranches).catch(() => {});
+    setCheckoutRefs([]);
+    listBranches(workspaceId).then((b) => live && setBranches(b)).catch(() => {});
+    listCheckoutBranches(workspaceId, false)
+      .then((r) => live && setCheckoutRefs(r))
+      .catch(() => {});
+    listCheckoutBranches(workspaceId, true)
+      .then((r) => {
+        if (!live) return;
+        setCheckoutRefs(r);
+        return listBranches(workspaceId).then((b) => live && setBranches(b));
+      })
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
   }, [open, workspaceId, loadStatus]);
 
   // Only query the forge once it's known to be reachable — otherwise every
@@ -129,17 +164,45 @@ export function NewWorktreeDialog({
   }, [open, workspaceId, forgeReady, query, stateFilter, loadIssues]);
 
   const trimmed = query.trim();
-  const plainSlug = trimmed ? slugify(trimmed) : "";
+  const plainSlug = trimmed ? branchNameFor(trimmed) : "";
   const shownIssues = forgeReady ? issues.map((i) => fresh[i.number] ?? i) : [];
-  // Rows: "New branch" and "New issue" whenever there's text, then issues.
-  const plainRow = trimmed ? 0 : -1;
-  const newRow = trimmed && forgeReady ? 1 : -1;
-  const offset = (trimmed ? 1 : 0) + (newRow >= 0 ? 1 : 0);
-  const rowCount = shownIssues.length + offset;
-  const selIssue: ForgeIssue | null =
-    sel >= offset && sel < rowCount ? shownIssues[sel - offset] : null;
-  const plainSelected = sel === plainRow && plainRow >= 0;
-  const newSelected = sel === newRow && newRow >= 0;
+  const worktrees = useWorktreesStore((s) => s.worktrees);
+  const branchRows = useMemo(() => {
+    const q = trimmed.toLowerCase();
+    // Typed text filters; with nothing typed and no forge to list issues,
+    // offer the most recently committed branches instead.
+    if (!q && forgeReady) return [];
+    const rank = (n: string) => (n === plainSlug ? 0 : n.toLowerCase().startsWith(q) ? 1 : 2);
+    return checkoutRefs
+      .filter((r) => r.name !== defaultBranch && r.name.toLowerCase().includes(q))
+      .sort((a, b) => rank(a.name) - rank(b.name))
+      .slice(0, MAX_BRANCH_ROWS)
+      .map(
+        (ref): Row => ({
+          kind: "branch",
+          ref,
+          open:
+            worktrees.find((w) => w.workspaceId === workspaceId && w.branch === ref.name) ??
+            null,
+        }),
+      );
+  }, [checkoutRefs, trimmed, plainSlug, forgeReady, defaultBranch, worktrees, workspaceId]);
+  const exactBranch = branchRows.some((r) => r.kind === "branch" && r.ref.name === plainSlug);
+  // Rows: "New branch" (or the exact existing branch) and "New issue" when
+  // there's text, then branches, then issues.
+  const rows: Row[] = [
+    ...(trimmed && !exactBranch ? [{ kind: "plain" } as const] : []),
+    ...(exactBranch ? branchRows.slice(0, 1) : []),
+    ...(trimmed && forgeReady ? [{ kind: "newIssue" } as const] : []),
+    ...(exactBranch ? branchRows.slice(1) : branchRows),
+    ...shownIssues.map((issue): Row => ({ kind: "issue", issue })),
+  ];
+  const rowCount = rows.length;
+  const selRow: Row | null = sel >= 0 && sel < rowCount ? rows[sel] : null;
+  const selIssue: ForgeIssue | null = selRow?.kind === "issue" ? selRow.issue : null;
+  const selBranch = selRow?.kind === "branch" ? selRow : null;
+  const plainSelected = selRow?.kind === "plain";
+  const newSelected = selRow?.kind === "newIssue";
   const key: RowKey | null = selIssue ? selIssue.number : newSelected ? "new" : null;
 
   // The editor's current values for the selected row.
@@ -238,13 +301,19 @@ export function NewWorktreeDialog({
     ? issueBranch(selIssue.number, draft?.title ?? selIssue.title)
     : plainSelected
       ? plainSlug
-      : "";
+      : selBranch
+        ? selBranch.ref.name
+        : "";
   // A new issue's number isn't known until it's filed: show the shape.
   const branchPlaceholder = newSelected
     ? issueBranch("<n>", draft?.title ?? trimmed)
-    : "type above, or pick an issue";
+    : "type above, or pick a branch or issue";
   const branchName = branchEdit ?? derivedBranch;
-  const canCreate = newSelected
+  // An already-open branch row jumps to its worktree (branch unedited).
+  const jumpTo = selBranch?.open && branchEdit === null ? selBranch.open : null;
+  const canCreate = jumpTo
+    ? true
+    : newSelected
     ? !!draft?.title.trim()
     : !!branchName.trim() && (!selIssue || !!draft?.title.trim());
 
@@ -269,6 +338,11 @@ export function NewWorktreeDialog({
   async function submit(overwrite = false) {
     if (!canCreate || busy) return;
     const common = { initSubmodules, runSetup };
+    if (jumpTo) {
+      useUiStore.getState().selectWorktree(jumpTo.id);
+      onClose();
+      return;
+    }
     if (!selIssue && !newSelected) {
       onCreate(branchName.trim(), base, { ...common, startAgent });
       onClose();
@@ -346,13 +420,124 @@ export function NewWorktreeDialog({
   const rowSelected = "bg-blue-950/30 shadow-[inset_2px_0_0_theme(colors.blue.500)]";
   const cta = busy
     ? "Saving…"
-    : newSelected
+    : jumpTo
+      ? "Go to worktree"
+      : selBranch && branchEdit === null
+        ? selBranch.ref.local
+          ? "Check out"
+          : `Check out origin/${selBranch.ref.name}`
+        : newSelected
       ? "File issue & create"
       : selIssue
         ? edited
           ? `Update #${selIssue.number} & create`
           : `Create from #${selIssue.number}`
         : "Create";
+
+  function renderRow(row: Row, i: number, selected: boolean) {
+    if (row.kind === "plain") {
+      return (
+        <button
+          data-row={i}
+          onClick={() => select(i)}
+          onDoubleClick={() => void submit()}
+          className={cn(rowBase, selected && rowSelected)}
+        >
+          <span className="w-8 text-right text-neutral-500">⎇</span>
+          <span className="min-w-0 flex-1 truncate text-neutral-300">
+            New branch <span className="font-mono text-neutral-100">{plainSlug}</span>
+            <span className="text-neutral-500"> — no issue</span>
+          </span>
+        </button>
+      );
+    }
+    if (row.kind === "newIssue") {
+      return (
+        <button
+          data-row={i}
+          onClick={() => select(i)}
+          className={cn(rowBase, selected && rowSelected)}
+        >
+          <span className="w-8 text-right text-neutral-500">+</span>
+          <span className="min-w-0 flex-1 truncate text-neutral-300">
+            New issue <span className="text-neutral-100">“{trimmed}”</span>
+            {isDirty("new") && <span className="text-amber-300"> · draft</span>}
+          </span>
+        </button>
+      );
+    }
+    if (row.kind === "branch") {
+      const { ref, open: openWt } = row;
+      return (
+        <button
+          data-row={i}
+          onClick={() => select(i)}
+          onDoubleClick={() => void submit()}
+          className={cn(rowBase, selected && rowSelected)}
+        >
+          <span className="w-8 text-right text-neutral-500">⎇</span>
+          <span className="min-w-0 flex-1 truncate font-mono text-neutral-100">{ref.name}</span>
+          <span className="shrink-0 text-[11px] text-neutral-500">
+            {openWt
+              ? openWt.isMainClone
+                ? "checked out in main clone"
+                : "open"
+              : ref.local
+                ? ref.remote
+                  ? "local · origin"
+                  : "local"
+                : "origin"}
+            {ref.updated > 0 && ` · ${timeAgo(ref.updated)}`}
+          </span>
+        </button>
+      );
+    }
+    const { issue } = row;
+    return (
+      <div
+        data-row={i}
+        onClick={() => select(i)}
+        onDoubleClick={() => void submit()}
+        className={cn(
+          "flex cursor-pointer items-start gap-3 px-3 py-2 hover:bg-neutral-950/60",
+          selected && rowSelected,
+        )}
+      >
+        <span className="mt-0.5 w-8 text-right font-mono text-[11px] text-neutral-500">
+          #{issue.number}
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-sm text-neutral-100">
+            {issue.title}
+            {isDirty(issue.number) && <span className="text-xs text-amber-300"> · edited</span>}
+          </div>
+          <div className="mt-0.5 flex flex-wrap items-center gap-1.5">
+            {issue.labels.slice(0, 4).map((l) => (
+              <span
+                key={l}
+                className="rounded bg-neutral-800 px-1.5 py-[1px] text-[10px] text-neutral-300"
+              >
+                {l}
+              </span>
+            ))}
+            {issue.assignees.length > 0 && (
+              <span className="text-[10px] text-neutral-500">@{issue.assignees[0]}</span>
+            )}
+          </div>
+        </div>
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            void openExternalUrl(issue.url);
+          }}
+          className="rounded border border-neutral-800 px-1.5 py-0.5 text-[11px] text-neutral-400 hover:border-neutral-600 hover:text-neutral-200"
+          title="Open in browser"
+        >
+          ↗
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div
@@ -399,39 +584,28 @@ export function NewWorktreeDialog({
         )}
 
         <div ref={listRef} className="min-h-[5rem] flex-1 overflow-y-auto py-1">
-          {plainRow >= 0 && (
-            <button
-              data-row={plainRow}
-              onClick={() => select(plainRow)}
-              onDoubleClick={() => void submit()}
-              className={cn(rowBase, plainSelected && rowSelected)}
-            >
-              <span className="w-8 text-right text-neutral-500">⎇</span>
-              <span className="min-w-0 flex-1 truncate text-neutral-300">
-                New branch <span className="font-mono text-neutral-100">{plainSlug}</span>
-                <span className="text-neutral-500"> — no issue</span>
-              </span>
-            </button>
-          )}
-          {newRow >= 0 && (
-            <button
-              data-row={newRow}
-              onClick={() => select(newRow)}
-              className={cn(rowBase, newSelected && rowSelected)}
-            >
-              <span className="w-8 text-right text-neutral-500">+</span>
-              <span className="min-w-0 flex-1 truncate text-neutral-300">
-                New issue <span className="text-neutral-100">“{trimmed}”</span>
-                {isDirty("new") && <span className="text-amber-300"> · draft</span>}
-              </span>
-            </button>
-          )}
-
-          {forgeReady && trimmed && shownIssues.length > 0 && (
-            <div className="px-3 pb-1 pt-2 text-[10px] uppercase tracking-wider text-neutral-500">
-              Issues
-            </div>
-          )}
+          {rows.map((row, i) => {
+            const selected = i === sel;
+            const prev = rows[i - 1];
+            const heading =
+              row.kind === "branch" && prev?.kind !== "branch"
+                ? trimmed
+                  ? "Branches"
+                  : "Recent branches"
+                : row.kind === "issue" && prev?.kind !== "issue" && trimmed
+                  ? "Issues"
+                  : null;
+            return (
+              <div key={rowKey(row)}>
+                {heading && (
+                  <div className="px-3 pb-1 pt-2 text-[10px] uppercase tracking-wider text-neutral-500">
+                    {heading}
+                  </div>
+                )}
+                {renderRow(row, i, selected)}
+              </div>
+            );
+          })}
 
           {forgeReady && loading && shownIssues.length === 0 ? (
             <div className="p-4 text-sm text-neutral-500">Loading issues…</div>
@@ -439,66 +613,9 @@ export function NewWorktreeDialog({
             <div className="p-4 text-sm text-neutral-500">
               {trimmed ? "No matching issues." : "No issues. Type a name for a new branch or issue."}
             </div>
-          ) : !forgeReady && !trimmed ? (
+          ) : !forgeReady && !trimmed && rowCount === 0 ? (
             <div className="p-4 text-sm text-neutral-500">Type a name for a new branch.</div>
-          ) : (
-            <ul className="flex flex-col">
-              {shownIssues.map((issue, i) => {
-                const row = i + offset;
-                const selected = row === sel;
-                return (
-                  <li key={issue.number}>
-                    <div
-                      data-row={row}
-                      onClick={() => select(row)}
-                      onDoubleClick={() => void submit()}
-                      className={cn(
-                        "flex cursor-pointer items-start gap-3 px-3 py-2 hover:bg-neutral-950/60",
-                        selected && rowSelected,
-                      )}
-                    >
-                      <span className="mt-0.5 w-8 text-right font-mono text-[11px] text-neutral-500">
-                        #{issue.number}
-                      </span>
-                      <div className="min-w-0 flex-1">
-                        <div className="truncate text-sm text-neutral-100">
-                          {issue.title}
-                          {isDirty(issue.number) && (
-                            <span className="text-xs text-amber-300"> · edited</span>
-                          )}
-                        </div>
-                        <div className="mt-0.5 flex flex-wrap items-center gap-1.5">
-                          {issue.labels.slice(0, 4).map((l) => (
-                            <span
-                              key={l}
-                              className="rounded bg-neutral-800 px-1.5 py-[1px] text-[10px] text-neutral-300"
-                            >
-                              {l}
-                            </span>
-                          ))}
-                          {issue.assignees.length > 0 && (
-                            <span className="text-[10px] text-neutral-500">
-                              @{issue.assignees[0]}
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          void openExternalUrl(issue.url);
-                        }}
-                        className="rounded border border-neutral-800 px-1.5 py-0.5 text-[11px] text-neutral-400 hover:border-neutral-600 hover:text-neutral-200"
-                        title="Open in browser"
-                      >
-                        ↗
-                      </button>
-                    </div>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
+          ) : null}
         </div>
 
         {/* Create form — follows the selection */}
@@ -632,8 +749,16 @@ export function NewWorktreeDialog({
               spellCheck={false}
               className="min-w-0 flex-1 rounded border border-neutral-800 bg-neutral-950 px-2 py-1 font-mono text-neutral-100 placeholder:text-neutral-600 focus:border-neutral-600 focus:outline-none"
             />
-            <label htmlFor="nwt-base" className="shrink-0 text-neutral-500">
-              from
+            <label
+              htmlFor="nwt-base"
+              className="shrink-0 text-neutral-500"
+              title={
+                selBranch
+                  ? "Existing branch: checked out as-is. This is the PR target and the Changes diff base."
+                  : "Where the new branch forks from"
+              }
+            >
+              {selBranch ? "target" : "from"}
             </label>
             <select
               id="nwt-base"
@@ -745,9 +870,51 @@ export function NewWorktreeDialog({
   );
 }
 
+/// Approximates the backend `git_ops::branch_name_for`: the input verbatim
+/// when it's a valid branch name, else its slug. Rust (`git check-ref-format`)
+/// is authoritative; this only previews the name in the "New branch" row.
+function branchNameFor(name: string): string {
+  const n = name.trim();
+  const valid =
+    n !== "" &&
+    n !== "@" &&
+    !n.startsWith("-") &&
+    !n.startsWith("/") &&
+    !n.endsWith("/") &&
+    !n.endsWith(".") &&
+    !n.includes("..") &&
+    !n.includes("//") &&
+    !n.includes("@{") &&
+    !/[\x00-\x20\x7f~^:?*[\\]/.test(n) &&
+    n.split("/").every((c) => !c.startsWith(".") && !c.endsWith(".lock"));
+  return valid ? n : slugify(n);
+}
+
+function rowKey(row: Row): string {
+  switch (row.kind) {
+    case "plain":
+    case "newIssue":
+      return row.kind;
+    case "branch":
+      return `branch:${row.ref.name}`;
+    case "issue":
+      return `issue:${row.issue.number}`;
+  }
+}
+
+/// "3d", "5h", "just now" — from unix seconds.
+function timeAgo(unixSecs: number): string {
+  const s = Math.max(0, Date.now() / 1000 - unixSecs);
+  if (s < 60) return "just now";
+  if (s < 3600) return `${Math.floor(s / 60)}m`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h`;
+  if (s < 86400 * 30) return `${Math.floor(s / 86400)}d`;
+  if (s < 86400 * 365) return `${Math.floor(s / (86400 * 30))}mo`;
+  return `${Math.floor(s / (86400 * 365))}y`;
+}
+
 /// Mirror of the backend `git_ops::slugify`: lowercase, ASCII alphanumerics
-/// kept, every other run collapsed to a single dash, trimmed. So the branch
-/// field shows the real name the worktree will get.
+/// kept, every other run collapsed to a single dash, trimmed.
 function slugify(name: string): string {
   let s = "";
   let prevDash = true;

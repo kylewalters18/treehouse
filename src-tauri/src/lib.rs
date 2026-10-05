@@ -105,6 +105,7 @@ pub fn run() {
         ipc::commands::list_issue_links,
         ipc::commands::set_worktree_issue,
         ipc::commands::list_branches,
+        ipc::commands::list_checkout_branches,
         ipc::commands::list_comments,
         ipc::commands::save_comments,
         ipc::commands::list_worktrees,
