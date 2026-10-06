@@ -6,9 +6,11 @@
 //! `settings/mcp.json`, which is the user's global servers plus a
 //! `treehouse` entry carrying this session's token.
 //!
-//! Nothing is written into the repo or the user's `~/.kiro`. Auth lives
-//! outside `KIRO_HOME`, and a chat session creates no files of its own in
-//! it, so the shadow can be deleted when the agent exits. Edits Kiro makes
+//! Nothing is written into the repo or the user's `~/.kiro` (beyond an
+//! empty `sessions` dir Kiro would make anyway). Auth lives outside
+//! `KIRO_HOME`, and conversations are saved through the `sessions` link
+//! (see `agent::kiro_history`), so the shadow can be deleted when the
+//! agent exits. Edits Kiro makes
 //! to the user's settings land in the real files through the symlinks;
 //! only a `/mcp add` in-session (which rewrites our `mcp.json`) is lost.
 
@@ -24,7 +26,7 @@ pub const HOME_ENV: &str = "KIRO_HOME";
 const SHADOW_DIR: &str = "kiro-home";
 
 /// The user's real Kiro home: their own `KIRO_HOME` if set, else `~/.kiro`.
-fn real_home() -> Option<PathBuf> {
+pub fn real_home() -> Option<PathBuf> {
     if let Some(h) = std::env::var_os(HOME_ENV).filter(|h| !h.is_empty()) {
         return Some(PathBuf::from(h));
     }
@@ -65,6 +67,9 @@ fn build(dir: &Path, real: Option<&Path>, server: Value) -> AppResult<()> {
     std::fs::create_dir_all(&settings)
         .map_err(|e| AppError::Io(format!("create kiro shadow home: {e}")))?;
     if let Some(real) = real {
+        // Kiro saves conversations under `sessions`; make sure it exists to
+        // be linked, or a first-ever session would vanish with the shadow.
+        let _ = std::fs::create_dir_all(real.join("sessions"));
         link_entries(real, dir, "settings")?;
         link_entries(&real.join("settings"), &settings, "mcp.json")?;
     }

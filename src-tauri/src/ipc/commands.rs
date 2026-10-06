@@ -962,7 +962,7 @@ pub async fn launch_agent(
     )
 }
 
-/// Saved Claude conversations in a worktree, newest first. See
+/// Saved Claude and Kiro conversations in a worktree, newest first. See
 /// `agent::history`.
 #[tauri::command]
 pub async fn list_agent_history(
@@ -977,13 +977,11 @@ pub async fn list_agent_history(
     Ok(state.agents.history_for(&path))
 }
 
-/// Drop a conversation from treehouse's history. Claude's transcript stays.
+/// Drop a conversation from treehouse's history. The backend's transcript
+/// stays.
 #[tauri::command]
-pub async fn forget_agent_session(
-    claude_session_id: String,
-    state: State<'_, AppState>,
-) -> AppResult<()> {
-    state.agents.forget_history(&claude_session_id);
+pub async fn forget_agent_session(session_id: String, state: State<'_, AppState>) -> AppResult<()> {
+    state.agents.forget_history(&session_id);
     Ok(())
 }
 
@@ -1172,7 +1170,15 @@ pub async fn list_planner_history(
             crate::planner::checkout_dir(&root)
         }
     };
-    Ok(state.agents.history_for(&dir))
+    // A planner resumes with the default backend, so only its
+    // conversations can be picked.
+    let backend = crate::storage::load_settings(&app)
+        .await
+        .unwrap_or_default()
+        .default_agent_backend;
+    let mut entries = state.agents.history_for(&dir);
+    entries.retain(|e| e.backend == backend);
+    Ok(entries)
 }
 
 /// One planner's activity for the ⌘J pill (`workspace_id` null = global).

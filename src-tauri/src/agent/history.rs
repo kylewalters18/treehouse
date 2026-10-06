@@ -1,4 +1,6 @@
-//! Resumable Claude Code conversations, per worktree.
+//! Resumable Claude Code conversations, per worktree. Kiro's are read from
+//! Kiro's own store instead (see `agent::kiro_history`); the two lists are
+//! merged by `AgentRegistry::history_for`.
 //!
 //! Claude keeps every transcript on disk itself and `claude --resume <id>`
 //! reopens one in the same directory, so all we remember is which
@@ -19,6 +21,7 @@ use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+use super::AgentBackendKind;
 use crate::util::ids::AgentSessionId;
 
 pub const HISTORY_FILE: &str = "agent_history.json";
@@ -53,9 +56,15 @@ pub struct LastTurn {
     pub message: Option<String>,
 }
 
+/// Kiro conversations the user removed from the list. Kiro's files are
+/// its own, so forgetting one only hides it. Oldest are dropped past this.
+const DISMISSED_MAX: usize = 500;
+
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct HistoryFile {
     items: Vec<Record>,
+    #[serde(default)]
+    dismissed: Vec<String>,
 }
 
 /// One resumable conversation, as the agent pane's history menu shows it.
@@ -63,12 +72,15 @@ struct HistoryFile {
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
 pub struct AgentHistoryEntry {
-    pub claude_session_id: String,
+    /// The backend's own conversation id, as its resume flag takes it.
+    pub session_id: String,
+    /// Claude Code or Kiro; decides how the conversation is resumed.
+    pub backend: AgentBackendKind,
     /// Claude Code's generated title, or the first prompt when there's none
     /// yet (records from before titles were read, or a conversation that
-    /// ended before Claude named it).
+    /// ended before Claude named it). Kiro's title is its first prompt.
     pub title: Option<String>,
-    /// Claude's most recent reply.
+    /// The agent's most recent reply.
     pub last_message: Option<String>,
     #[ts(type = "number")]
     pub started_at: u64,
@@ -83,6 +95,7 @@ pub struct AgentHistory {
     /// `None` until `load` runs at startup; until then nothing is saved.
     path: Mutex<Option<PathBuf>>,
     records: Mutex<Vec<Record>>,
+    dismissed: Mutex<Vec<String>>,
 }
 
 impl AgentHistory {
@@ -94,6 +107,7 @@ impl AgentHistory {
             .and_then(|b| serde_json::from_slice(&b).ok())
             .unwrap_or_default();
         *self.records.lock() = file.items;
+        *self.dismissed.lock() = file.dismissed;
         *self.path.lock() = Some(path);
     }
 
@@ -135,7 +149,8 @@ impl AgentHistory {
             .iter()
             .filter(|r| r.worktree_path == worktree_path)
             .map(|r| AgentHistoryEntry {
-                claude_session_id: r.claude_session_id.clone(),
+                session_id: r.claude_session_id.clone(),
+                backend: AgentBackendKind::ClaudeCode,
                 title: r.ai_title.clone().or_else(|| r.title.clone()),
                 last_message: r.last_message.clone(),
                 started_at: r.started_at,
@@ -161,14 +176,27 @@ impl AgentHistory {
             })
     }
 
-    /// Forget one conversation. Claude's own transcript is left alone.
-    pub fn forget(&self, claude_session_id: &str) {
+    /// Forget one conversation. The backend's own transcript is left alone:
+    /// a Claude record is dropped, anything else (Kiro) is hidden.
+    pub fn forget(&self, session_id: &str) {
         let mut records = self.records.lock();
         let n = records.len();
-        records.retain(|r| r.claude_session_id != claude_session_id);
-        if records.len() != n {
-            self.save(&records);
+        records.retain(|r| r.claude_session_id != session_id);
+        if records.len() == n {
+            let mut dismissed = self.dismissed.lock();
+            if dismissed.iter().any(|d| d == session_id) {
+                return;
+            }
+            dismissed.push(session_id.to_string());
+            let excess = dismissed.len().saturating_sub(DISMISSED_MAX);
+            dismissed.drain(..excess);
         }
+        self.save(&records);
+    }
+
+    /// Whether the user hid this (Kiro) conversation with `forget`.
+    pub fn is_dismissed(&self, session_id: &str) -> bool {
+        self.dismissed.lock().iter().any(|d| d == session_id)
     }
 
     /// Forget every conversation in a worktree that's being removed:
@@ -190,6 +218,7 @@ impl AgentHistory {
         };
         let file = HistoryFile {
             items: records.to_vec(),
+            dismissed: self.dismissed.lock().clone(),
         };
         let Ok(bytes) = serde_json::to_vec_pretty(&file) else {
             return;
@@ -269,7 +298,7 @@ fn upsert(
     }
 }
 
-/// Claude session ids are UUIDs. Anything else is refused before it can
+/// Claude and Kiro session ids are UUIDs. Anything else is refused before it can
 /// reach an argv, so a stray value can't turn into a flag.
 pub fn is_valid_session_id(id: &str) -> bool {
     !id.is_empty()
@@ -407,6 +436,22 @@ mod tests {
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].title.as_deref(), Some("Greeting"));
         h2.forget_worktree(&wt());
+        assert!(h2.list_for(&wt()).is_empty());
+    }
+
+    #[test]
+    fn forgetting_an_unrecorded_session_dismisses_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(HISTORY_FILE);
+        let h = AgentHistory::default();
+        h.load(path.clone());
+        h.observe(&wt(), None, "s1", Some("hi"), &LastTurn::default(), 1);
+        h.forget("s1");
+        assert!(!h.is_dismissed("s1"));
+        h.forget("kiro-1");
+        let h2 = AgentHistory::default();
+        h2.load(path);
+        assert!(h2.is_dismissed("kiro-1"));
         assert!(h2.list_for(&wt()).is_empty());
     }
 

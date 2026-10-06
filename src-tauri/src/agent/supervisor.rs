@@ -15,6 +15,7 @@ use crate::util::ids::{AgentSessionId, WorktreeId};
 
 use super::history::{self, AgentHistory, AgentHistoryEntry};
 use super::hooks::{self, HookSession, HookSessionMap};
+use super::kiro_history;
 use super::{
     AgentActivity, AgentBackendKind, AgentEvent, AgentOverview, AgentSession, AgentStatus,
     PendingPrompt,
@@ -91,12 +92,25 @@ pub struct AgentRegistry {
     /// so hook events can be filed into `history` by worktree path.
     history_meta: Arc<DashMap<AgentSessionId, HistoryMeta>>,
     history: Arc<AgentHistory>,
+    /// The same for Kiro sessions, so history can tell which conversation
+    /// a running Kiro agent has open (see `history_for`).
+    kiro_meta: DashMap<AgentSessionId, KiroMeta>,
 }
 
 struct HistoryMeta {
     cwd: PathBuf,
     resumed_from: Option<String>,
 }
+
+struct KiroMeta {
+    cwd: PathBuf,
+    started_at: u64,
+    resumed_from: Option<String>,
+}
+
+/// Kiro writes a session's `created_at` a moment after spawn, but allow a
+/// little skew either way.
+const KIRO_START_SLACK_MS: u64 = 5_000;
 
 impl AgentRegistry {
     pub fn new() -> Self {
@@ -109,6 +123,7 @@ impl AgentRegistry {
             )),
             history_meta: Arc::new(DashMap::new()),
             history: Arc::new(AgentHistory::default()),
+            kiro_meta: DashMap::new(),
         }
     }
 
@@ -161,23 +176,82 @@ impl AgentRegistry {
         Ok(())
     }
 
-    /// Resumable Claude conversations in `cwd`, newest first, each marked
-    /// with the live agent that has it open.
+    /// Resumable Claude and Kiro conversations in `cwd`, newest first, each
+    /// marked with the live agent that has it open.
     pub fn history_for(&self, cwd: &std::path::Path) -> Vec<AgentHistoryEntry> {
         let mut entries = self.history.list_for(cwd);
         for e in &mut entries {
             e.live_agent_id = self
                 .hook_sessions
                 .iter()
-                .find(|h| h.value().claude_session_id.as_deref() == Some(&e.claude_session_id))
+                .find(|h| h.value().claude_session_id.as_deref() == Some(&e.session_id))
                 .map(|h| *h.key())
                 .filter(|id| is_live(self, *id));
+        }
+        if let Some(dir) = kiro_history::sessions_dir() {
+            let kiro: Vec<_> = kiro_history::list_in(&dir, cwd)
+                .into_iter()
+                .filter(|k| !self.history.is_dismissed(&k.id))
+                .collect();
+            let live = self.live_kiro_sessions(cwd, &kiro);
+            entries.extend(kiro.into_iter().map(|k| AgentHistoryEntry {
+                live_agent_id: live.iter().find(|(sid, _)| *sid == k.id).map(|(_, a)| *a),
+                session_id: k.id,
+                backend: AgentBackendKind::Kiro,
+                title: k.title,
+                last_message: k.last_message,
+                started_at: k.started_at,
+                last_active_at: k.last_active_at,
+            }));
+            entries.sort_by(|a, b| b.last_active_at.cmp(&a.last_active_at));
         }
         entries
     }
 
-    pub fn forget_history(&self, claude_session_id: &str) {
-        self.history.forget(claude_session_id);
+    /// Pair running Kiro agents in `cwd` with the conversations they have
+    /// open. A resumed one is known; a fresh one gets the earliest unclaimed
+    /// conversation created after it started, oldest agent first.
+    fn live_kiro_sessions(
+        &self,
+        cwd: &std::path::Path,
+        sessions: &[kiro_history::KiroSession],
+    ) -> Vec<(String, AgentSessionId)> {
+        let mut agents: Vec<(AgentSessionId, u64, Option<String>)> = self
+            .kiro_meta
+            .iter()
+            .filter(|m| m.value().cwd == cwd && is_live(self, *m.key()))
+            .map(|m| {
+                (
+                    *m.key(),
+                    m.value().started_at,
+                    m.value().resumed_from.clone(),
+                )
+            })
+            .collect();
+        agents.sort_by_key(|a| a.1);
+        let mut out: Vec<(String, AgentSessionId)> = agents
+            .iter()
+            .filter_map(|(id, _, r)| Some((r.clone()?, *id)))
+            .collect();
+        let mut by_start: Vec<_> = sessions.iter().collect();
+        by_start.sort_by_key(|s| s.started_at);
+        for (id, started, resumed) in &agents {
+            if resumed.is_some() {
+                continue;
+            }
+            let pick = by_start.iter().find(|s| {
+                s.started_at + KIRO_START_SLACK_MS >= *started
+                    && !out.iter().any(|(sid, _)| *sid == s.id)
+            });
+            if let Some(s) = pick {
+                out.push((s.id.clone(), *id));
+            }
+        }
+        out
+    }
+
+    pub fn forget_history(&self, session_id: &str) {
+        self.history.forget(session_id);
     }
 
     pub fn forget_worktree_history(&self, cwd: &std::path::Path) {
@@ -187,6 +261,7 @@ impl AgentRegistry {
     fn drop_session_state(&self, id: &AgentSessionId) {
         self.hook_sessions.remove(id);
         self.history_meta.remove(id);
+        self.kiro_meta.remove(id);
     }
 
     pub fn list_for_worktree(&self, worktree_id: WorktreeId) -> Vec<AgentSession> {
@@ -464,8 +539,8 @@ fn max_severity(a: AgentActivity, b: AgentActivity) -> AgentActivity {
 /// and Kiro sessions also get the treehouse MCP server injected — see
 /// `crate::mcp::inject`.
 ///
-/// `resume` reopens a saved Claude conversation (`claude --resume <id>`);
-/// see `agent::history`.
+/// `resume` reopens a saved conversation (`claude --resume <id>`,
+/// `kiro-cli chat --resume-id <id>`); see `agent::history`.
 #[allow(clippy::too_many_arguments)]
 pub fn launch(
     app: &AppHandle,
@@ -481,15 +556,16 @@ pub fn launch(
     channel: Option<Channel<AgentEvent>>,
 ) -> AppResult<AgentSession> {
     if let Some(id) = &resume {
-        if !matches!(backend, AgentBackendKind::ClaudeCode) {
+        if !matches!(
+            backend,
+            AgentBackendKind::ClaudeCode | AgentBackendKind::Kiro
+        ) {
             return Err(AppError::Unknown(
-                "Only Claude Code sessions can be resumed.".into(),
+                "Only Claude Code and Kiro sessions can be resumed.".into(),
             ));
         }
         if !history::is_valid_session_id(id) {
-            return Err(AppError::Unknown(format!(
-                "invalid Claude session id: {id}"
-            )));
+            return Err(AppError::Unknown(format!("invalid session id: {id}")));
         }
     }
     // Install Claude Code hooks in the worktree *before* spawning the
@@ -674,6 +750,16 @@ pub fn launch(
         })
         .map_err(|e| AppError::Unknown(format!("spawn agent reader: {e}")))?;
 
+    if matches!(backend, AgentBackendKind::Kiro) {
+        registry.kiro_meta.insert(
+            session_id,
+            KiroMeta {
+                cwd: cwd.clone(),
+                started_at: session.started_at,
+                resumed_from: resume.clone(),
+            },
+        );
+    }
     if matches!(backend, AgentBackendKind::ClaudeCode) {
         if let Some(cid) = &resume {
             // Seed only: if a hook already landed, it's newer than history.
@@ -869,8 +955,9 @@ pub fn resize(registry: &AgentRegistry, id: AgentSessionId, cols: u16, rows: u16
 /// Final argv for the child: the user-visible `argv` (what `AgentSession`
 /// records and tab labels derive from) plus injected flags. A seeded prompt
 /// goes last behind `--`, because Claude's `--mcp-config <configs...>` is
-/// variadic and would otherwise swallow it. Kiro only takes a prompt on
-/// `kiro-cli chat`, so that's inserted when the command doesn't name it.
+/// variadic and would otherwise swallow it. Kiro only takes a prompt or a
+/// resume on `kiro-cli chat`, so that's inserted when the command doesn't
+/// name it.
 fn build_spawn_argv(
     backend: AgentBackendKind,
     argv: &[String],
@@ -879,19 +966,20 @@ fn build_spawn_argv(
     prompt: Option<&str>,
 ) -> Vec<String> {
     let mut out = argv.to_vec();
+    let kiro = matches!(backend, AgentBackendKind::Kiro);
+    let prompt = prompt.map(str::trim).filter(|p| !p.is_empty());
+    if kiro && (resume.is_some() || prompt.is_some()) && !out.iter().skip(1).any(|a| a == "chat") {
+        out.insert(1.min(out.len()), "chat".into());
+    }
     if let Some(id) = resume {
-        out.push("--resume".into());
+        out.push(if kiro { "--resume-id" } else { "--resume" }.into());
         out.push(id.into());
     }
     if let Some(cfg) = mcp_config {
         out.push("--mcp-config".into());
         out.push(cfg.into());
     }
-    let prompt = prompt.map(str::trim).filter(|p| !p.is_empty());
     if let Some(p) = prompt {
-        if matches!(backend, AgentBackendKind::Kiro) && !out.iter().skip(1).any(|a| a == "chat") {
-            out.insert(1.min(out.len()), "chat".into());
-        }
         out.push("--".into());
         out.push(p.into());
     }
@@ -1228,6 +1316,20 @@ mod tests {
                 None,
             ),
             vec!["claude", "--resume", "abc-123", "--mcp-config", "{}"]
+        );
+    }
+
+    #[test]
+    fn kiro_resume_goes_through_chat() {
+        assert_eq!(
+            build_spawn_argv(
+                AgentBackendKind::Kiro,
+                &["kiro-cli".into(), "--agent".into(), "x".into()],
+                None,
+                Some("abc-123"),
+                None,
+            ),
+            vec!["kiro-cli", "chat", "--agent", "x", "--resume-id", "abc-123"]
         );
     }
 

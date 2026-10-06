@@ -178,12 +178,12 @@ export function PlannerPopup() {
     setHistoryOpen(false);
     // Already the conversation on screen → nothing to do.
     if (entry.liveAgentId && entry.liveAgentId === leaf?.sessionId) return;
-    resumeRef.current = entry.claudeSessionId;
+    resumeRef.current = entry.sessionId;
     setGeneration((g) => g + 1);
   }
 
   async function forget(entry: AgentHistoryEntry) {
-    await forgetAgentSession(entry.claudeSessionId).catch(() => {});
+    await forgetAgentSession(entry.sessionId).catch(() => {});
     setHistory(await listPlannerHistory(scope).catch(() => []));
   }
 

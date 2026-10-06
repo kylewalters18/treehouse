@@ -81,11 +81,17 @@ type Tab = {
   mode: AgentLeafMode;
   backend: AgentBackendKind;
   label: string;
-  /// Continues a saved conversation (`claude --resume`).
+  /// Continues a saved conversation (`claude --resume`,
+  /// `kiro-cli chat --resume-id`).
   resumed?: boolean;
 };
 
-/// How many times closing a Claude tab explains where it went.
+/// Backends whose closed tabs land in history (see `agent::history`).
+function resumable(backend: AgentBackendKind): boolean {
+  return backend === "claudeCode" || backend === "kiro";
+}
+
+/// How many times closing a resumable tab explains where it went.
 const CLOSE_TOAST_LIMIT = 3;
 const CLOSE_TOAST_KEY = "treehouse.agentHistoryToastCount";
 
@@ -460,17 +466,18 @@ function AgentTabs({
         return;
       }
     }
-    const argv = commandArgv(agentCommands.claudeCode);
+    const { backend } = entry;
+    const argv = commandArgv(agentCommands[backend]);
     const next: Tab = {
       localId: crypto.randomUUID(),
       mode: {
         kind: "launch",
-        backend: "claudeCode",
+        backend,
         argv,
-        resume: entry.claudeSessionId,
+        resume: entry.sessionId,
       },
-      backend: "claudeCode",
-      label: nextLabel(tabLabelBase("claudeCode", argv, profilesRef.current)),
+      backend,
+      label: nextLabel(tabLabelBase(backend, argv, profilesRef.current)),
       resumed: true,
     };
     setTabs((prev) => [...prev, next]);
@@ -481,9 +488,9 @@ function AgentTabs({
 
   async function forgetSession(entry: AgentHistoryEntry) {
     setHistory((prev) =>
-      prev.filter((e) => e.claudeSessionId !== entry.claudeSessionId),
+      prev.filter((e) => e.sessionId !== entry.sessionId),
     );
-    await forgetAgentSession(entry.claudeSessionId).catch(() => {});
+    await forgetAgentSession(entry.sessionId).catch(() => {});
     void refreshHistory();
   }
 
@@ -506,7 +513,7 @@ function AgentTabs({
     const closing = tabsRef.current.find((t) => t.localId === localId);
     // Look the conversation up before the kill, while it's still live.
     const saved =
-      agentId && closing?.backend === "claudeCode"
+      agentId && closing && resumable(closing.backend)
         ? (await refreshHistory())?.find((e) => e.liveAgentId === agentId)
         : undefined;
     // Pool entry is keyed by sessionId once known, falls back to
@@ -653,7 +660,7 @@ function AgentTabs({
               }}
               className={instanceTabClose(tab.localId === activeId)}
               title={
-                tab.backend === "claudeCode"
+                resumable(tab.backend)
                   ? "Close (resume later from history)"
                   : "Kill agent"
               }
@@ -669,7 +676,7 @@ function AgentTabs({
               if (!historyOpen) void refreshHistory();
               setHistoryOpen((o) => !o);
             }}
-            title="Recent Claude Code sessions in this worktree"
+            title="Recent agent sessions in this worktree"
             aria-expanded={historyOpen}
             className={cn(
               "flex h-6 items-center gap-1 rounded-md px-1.5 text-[11px]",

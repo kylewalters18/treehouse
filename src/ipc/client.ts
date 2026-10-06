@@ -480,8 +480,8 @@ export function listAgentHistory(
   return invoke<AgentHistoryEntry[]>("list_agent_history", { worktreeId });
 }
 
-export function forgetAgentSession(claudeSessionId: string): Promise<void> {
-  return invoke<void>("forget_agent_session", { claudeSessionId });
+export function forgetAgentSession(sessionId: string): Promise<void> {
+  return invoke<void>("forget_agent_session", { sessionId });
 }
 
 export function attachAgent(
@@ -497,7 +497,7 @@ export function attachAgent(
 /// `workspaceId` null. Attaches to the running session (ring buffer replayed
 /// into the channel) or starts one; a new repo planner first refreshes its
 /// checkout to `origin/<default>`, which can take a fetch's worth of time.
-/// With `resume` (a past conversation's Claude session id), the planner's
+/// With `resume` (a past conversation's session id), the planner's
 /// running session is replaced by that conversation.
 export function openPlanner(
   workspaceId: WorkspaceId | null,

@@ -4,7 +4,7 @@ import type { AgentHistoryEntry } from "@/ipc/types";
 import { cn } from "@/lib/cn";
 import { formatWhen } from "@/lib/time";
 
-/// Saved Claude conversations for one worktree. Rendered as the header
+/// Saved Claude / Kiro conversations for one worktree. Rendered as the header
 /// button's dropdown and, trimmed to a few rows, in the empty agent pane.
 export function AgentHistoryList({
   entries,
@@ -22,7 +22,7 @@ export function AgentHistoryList({
         const open = e.liveAgentId !== null;
         return (
           <div
-            key={e.claudeSessionId}
+            key={e.sessionId}
             role="button"
             tabIndex={0}
             onClick={() => onResume(e)}
@@ -122,7 +122,7 @@ export function AgentHistoryMenu({
         </div>
       )}
       <div className="border-t border-neutral-800 px-2.5 py-1.5 text-[11px] text-neutral-500">
-        Claude Code conversations land here. Click one to resume.
+        Claude Code and Kiro conversations land here. Click one to resume.
       </div>
     </div>
   );

@@ -10,7 +10,8 @@ import {
 
 const HISTORY = [
   {
-    claudeSessionId: "7f3c2a1e-0b9d-4c8e-9f21-3a5b6c7d8e9f",
+    sessionId: "7f3c2a1e-0b9d-4c8e-9f21-3a5b6c7d8e9f",
+    backend: "claudeCode",
     title: "Wire LSP diagnostics into the gutter",
     lastMessage: "Diagnostics now render as squiggles.",
     startedAt: Date.now() - 60 * 60_000,
@@ -18,7 +19,8 @@ const HISTORY = [
     liveAgentId: null,
   },
   {
-    claudeSessionId: "0a1b2c3d-0000-4000-8000-000000000002",
+    sessionId: "0a1b2c3d-0000-4000-8000-000000000002",
+    backend: "kiro",
     title: "Add backoff to the CI poller",
     lastMessage: "Tests pass.",
     startedAt: Date.now() - 5 * 60 * 60_000,
@@ -71,19 +73,23 @@ async function setup(page: Page) {
 
 function launches(page: Page) {
   return page.evaluate(
-    () => (window as unknown as { __launches: { resume?: string }[] }).__launches,
+    () =>
+      (window as unknown as { __launches: { resume?: string; backend: string }[] })
+        .__launches,
   );
 }
 
-test("empty agent pane offers saved sessions and resumes one", async ({ page }) => {
+test("empty agent pane offers saved sessions and resumes one with its backend", async ({
+  page,
+}) => {
   await setup(page);
   await expect(page.getByText("Resume a recent session")).toBeVisible();
   await page.getByText("Add backoff to the CI poller").click();
 
   await expect(page.getByTitle("Resumed conversation")).toBeVisible();
   await expect
-    .poll(async () => (await launches(page)).map((l) => l.resume))
-    .toEqual(["0a1b2c3d-0000-4000-8000-000000000002"]);
+    .poll(async () => (await launches(page)).map((l) => [l.backend, l.resume]))
+    .toEqual([["kiro", "0a1b2c3d-0000-4000-8000-000000000002"]]);
 });
 
 test("history menu lists sessions and forgets one", async ({ page }) => {
@@ -100,7 +106,7 @@ test("history menu lists sessions and forgets one", async ({ page }) => {
     });
   });
 
-  await page.getByTitle("Recent Claude Code sessions in this worktree").click();
+  await page.getByTitle("Recent agent sessions in this worktree").click();
   const menu = page.getByText("Recent sessions", { exact: true }).locator("../..");
   await expect(menu.getByText("Wire LSP diagnostics into the gutter")).toBeVisible();
 
@@ -110,5 +116,5 @@ test("history menu lists sessions and forgets one", async ({ page }) => {
     .poll(() =>
       page.evaluate(() => (window as unknown as { __forgot: unknown[] }).__forgot),
     )
-    .toEqual([{ claudeSessionId: "7f3c2a1e-0b9d-4c8e-9f21-3a5b6c7d8e9f" }]);
+    .toEqual([{ sessionId: "7f3c2a1e-0b9d-4c8e-9f21-3a5b6c7d8e9f" }]);
 });

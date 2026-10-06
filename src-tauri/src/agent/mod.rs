@@ -1,5 +1,6 @@
 pub mod history;
 pub mod hooks;
+pub mod kiro_history;
 pub mod patterns;
 pub mod supervisor;
 

@@ -100,7 +100,9 @@ pub enum Injection {
     KiroHome(PathBuf),
 }
 
-pub use kiro::{remove as remove_kiro_home, HOME_ENV as KIRO_HOME_ENV};
+pub use kiro::{
+    real_home as kiro_real_home, remove as remove_kiro_home, HOME_ENV as KIRO_HOME_ENV,
+};
 
 /// Inject the treehouse server into an agent launch, minting a token for
 /// `agent_id`. `None` for Codex or if the server never came up — the agent
