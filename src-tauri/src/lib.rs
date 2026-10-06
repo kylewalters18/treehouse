@@ -114,6 +114,8 @@ pub fn run() {
         ipc::commands::merge_worktree,
         ipc::commands::sync_worktree,
         ipc::commands::get_diff,
+        ipc::commands::list_branch_commits,
+        ipc::commands::get_commit_diff,
         ipc::commands::read_file,
         ipc::commands::read_file_bytes,
         ipc::commands::write_file,

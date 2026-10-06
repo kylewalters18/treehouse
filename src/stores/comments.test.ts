@@ -23,6 +23,7 @@ function comment(partial: Partial<Comment>): Comment {
     line: 42,
     endLine: null,
     side: "head",
+    commit: null,
     text: "look at this",
     createdAt: 0,
     sentAt: null,
@@ -181,6 +182,23 @@ describe("comment anchors", () => {
     expect(
       formatBatchForAgent([comment({ filePath: "a.rs", line: 0, text: "t" })]),
     ).toContain("[a.rs (whole file)]\nt");
+  });
+
+  it("names the commit for comments made on a single commit's diff", () => {
+    const commit = "3c611bc0123456789abcdef0123456789abcdef0";
+    expect(
+      formatCommentForAgent(comment({ filePath: "a.rs", line: 5, commit, text: "t" })),
+    ).toContain(
+      "a.rs:5 (in commit 3c611bc — numbering is from that commit's version of the file)",
+    );
+    expect(
+      formatCommentForAgent(
+        comment({ filePath: "a.rs", line: 5, endLine: 6, side: "base", commit, text: "t" }),
+      ),
+    ).toContain("a.rs:5-6 (lines removed in commit 3c611bc — numbering is from its parent, 3c611bc^)");
+    expect(
+      formatCommentForAgent(comment({ filePath: "a.rs", line: 0, commit, text: "t" })),
+    ).toContain("a.rs (whole file, as changed in commit 3c611bc)");
   });
 });
 

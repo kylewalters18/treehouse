@@ -11,6 +11,7 @@ function comment(partial: Partial<Comment>): Comment {
     line: 4,
     endLine: null,
     side: "head",
+    commit: null,
     text: "rename this",
     createdAt: 0,
     sentAt: null,
@@ -41,5 +42,18 @@ describe("toForgePosts", () => {
     expect(inline).toHaveLength(1);
     expect(inline[0].removed).toBe(true);
     expect(general).toEqual(["**src/a.ts**\n\nsplit this file"]);
+  });
+
+  it("posts commit comments as general comments naming the commit", () => {
+    const commit = "3c611bc0123456789abcdef0123456789abcdef0";
+    const { inline, general } = toForgePosts([
+      comment({ commit, line: 4, endLine: 6 }),
+      comment({ id: "c2", commit, side: "base", text: "why drop this?" }),
+    ]);
+    expect(inline).toEqual([]);
+    expect(general).toEqual([
+      "**src/a.ts:4–6 @ 3c611bc**\n\nrename this",
+      "**src/a.ts:4 @ 3c611bc^ (removed in 3c611bc)**\n\nwhy drop this?",
+    ]);
   });
 });

@@ -22,6 +22,8 @@ export type { Comment } from "./bindings/Comment";
 export type { CommentSide } from "./bindings/CommentSide";
 export type { DiffSet } from "./bindings/DiffSet";
 export type { DiffMode } from "./bindings/DiffMode";
+export type { BranchCommits } from "./bindings/BranchCommits";
+export type { CommitSummary } from "./bindings/CommitSummary";
 export type { DiffStats } from "./bindings/DiffStats";
 export type { FileDiff } from "./bindings/FileDiff";
 export type { FileStatus } from "./bindings/FileStatus";

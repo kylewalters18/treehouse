@@ -21,6 +21,7 @@ import {
   commentStatus,
   formatReviewForAgent,
   reviewKey,
+  shortSha,
   useCommentsStore,
 } from "@/stores/comments";
 import { useForgeStore, forgeBranchKey, useForgeTerms } from "@/stores/forge";
@@ -187,6 +188,8 @@ export function ReviewPanel() {
   const selectFile = useDiffsStore((s) => s.selectFile);
   const setView = useDiffsStore((s) => s.setView);
   const setPendingReveal = useDiffsStore((s) => s.setPendingReveal);
+  const selectCommit = useDiffsStore((s) => s.selectCommit);
+  const setDiffSidebarTab = useUiStore((s) => s.setDiffSidebarTab);
 
   if (!selected || !workspace || !branch) {
     return <Empty>Select a worktree to see its review.</Empty>;
@@ -209,6 +212,14 @@ export function ReviewPanel() {
   /// so they open the Diff view; everything else reveals in the File view.
   function jumpToComment(c: Comment) {
     if (!selectedWorktreeId) return;
+    // Commit comments only make sense on that commit's diff: open it in
+    // the History tab (selectCommit keeps the file selected below).
+    if (c.commit) {
+      selectFile(selectedWorktreeId, c.filePath);
+      setDiffSidebarTab("history");
+      void selectCommit(selectedWorktreeId, c.commit);
+      return;
+    }
     if (c.side === "base") {
       setView(selectedWorktreeId, "diff");
       selectFile(selectedWorktreeId, c.filePath);
@@ -646,6 +657,14 @@ function CommentRow({
               <MessageSquare size={11} className="shrink-0 text-neutral-500" />
               <span className="truncate">{anchorLabel(comment)}</span>
             </button>
+            {comment.commit && (
+              <span
+                className={cn(countBadge("accent"), "font-mono")}
+                title={`On commit ${comment.commit} — opens in the History tab`}
+              >
+                {shortSha(comment.commit)}
+              </span>
+            )}
             {comment.side === "base" && (
               <span
                 className={countBadge("danger")}

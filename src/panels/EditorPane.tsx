@@ -642,6 +642,7 @@ export function CommentOverlay({
   worktreeId,
   filePath,
   diffEditor,
+  commit,
 }: {
   editor: MonacoEditor.IStandaloneCodeEditor;
   worktreeId: WorktreeId;
@@ -650,6 +651,10 @@ export function CommentOverlay({
   /// comments on removed lines: they render under the deleted-code block and
   /// can be created from a "+" that appears when hovering one.
   diffEditor?: MonacoEditor.IStandaloneDiffEditor;
+  /// Full sha when the diff is a single commit's (History tab). Only that
+  /// commit's comments show, new ones are stamped with it, and MR threads
+  /// (anchored to the MR head) are left out.
+  commit?: string;
 }) {
   const worktrees = useWorktreesStore((s) => s.worktrees);
   const wt = worktrees.find((w) => w.id === worktreeId) ?? null;
@@ -728,9 +733,10 @@ export function CommentOverlay({
         c.workspaceRoot === workspaceRoot &&
         c.branch === branch &&
         c.filePath === filePath &&
+        (c.commit ?? null) === (commit ?? null) &&
         (showResolved || c.resolvedAt === null),
     );
-  }, [allComments, workspaceRoot, branch, filePath, showResolved]);
+  }, [allComments, workspaceRoot, branch, filePath, commit, showResolved]);
 
   // Teammates' MR review threads, rendered inline on the lines they commented
   // on (the same threads also appear in the Review tab). Look up the MR for
@@ -755,7 +761,7 @@ export function CommentOverlay({
   }, [workspace, mr, loadThreads]);
 
   const fileThreads = useMemo(() => {
-    if (!mrThreads) return [] as { thread: ForgeThread; line: number }[];
+    if (!mrThreads || commit) return [] as { thread: ForgeThread; line: number }[];
     const out: { thread: ForgeThread; line: number }[] = [];
     for (const t of mrThreads) {
       const anchored = t.notes.find(
@@ -766,7 +772,7 @@ export function CommentOverlay({
       }
     }
     return out;
-  }, [mrThreads, filePath]);
+  }, [mrThreads, filePath, commit]);
 
   const mrNumber = mr ? mr.number : null;
   const onReply = (discussionId: string, body: string) => {
@@ -1279,6 +1285,7 @@ export function CommentOverlay({
                 branch,
                 filePath,
                 ...desc.target,
+                commit: commit ?? null,
                 text,
               });
               if (!c) return;
@@ -1297,6 +1304,7 @@ export function CommentOverlay({
                 branch,
                 filePath,
                 ...desc.target,
+                commit: commit ?? null,
                 text,
               });
             }}
@@ -1307,6 +1315,7 @@ export function CommentOverlay({
                 branch,
                 filePath,
                 ...desc.target,
+                commit: commit ?? null,
                 text,
               });
               // No agent attached to this worktree → save still

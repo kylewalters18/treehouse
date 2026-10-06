@@ -61,7 +61,7 @@ type UiState = {
   browserDevice: BrowserDeviceId | null;
   /// Which list the DiffPane sidebar shows: the changed-files list or
   /// the full worktree file tree. One at a time, not stacked.
-  diffSidebarTab: "changes" | "files";
+  diffSidebarTab: "changes" | "files" | "history";
   /// Collapsed state of the Uncommitted / Branch groups in the
   /// Changes tab. App-wide, not per worktree.
   collapsedChangeGroups: Record<ChangeGroup, boolean>;
@@ -135,7 +135,7 @@ type UiState = {
   setBrowserDevice: (device: BrowserDeviceId | null) => void;
   /// Drop a worktree's preview (the worktree is gone).
   closeBrowser: (worktreeId: WorktreeId) => void;
-  setDiffSidebarTab: (tab: "changes" | "files") => void;
+  setDiffSidebarTab: (tab: "changes" | "files" | "history") => void;
   toggleChangeGroup: (group: ChangeGroup) => void;
   toggleProblemsTab: () => void;
   requestAgentLaunch: () => void;
@@ -173,7 +173,7 @@ export const useUiStore = create<UiState>((set, get) => ({
   browserUrlByWorktree: {},
   browserDevice: null,
   diffSidebarTab: "files",
-  collapsedChangeGroups: { branch: false, uncommitted: false },
+  collapsedChangeGroups: { branch: false, uncommitted: false, commit: false },
   agentLaunchNonce: 0,
   pendingAgentLaunch: {},
   newWorktreeWorkspace: null,
@@ -385,7 +385,7 @@ export const useUiStore = create<UiState>((set, get) => ({
       browserUrlByWorktree: {},
       browserDevice: null,
       diffSidebarTab: "files",
-      collapsedChangeGroups: { branch: false, uncommitted: false },
+      collapsedChangeGroups: { branch: false, uncommitted: false, commit: false },
       agentLaunchNonce: 0,
       pendingAgentLaunch: {},
       newWorktreeWorkspace: null,

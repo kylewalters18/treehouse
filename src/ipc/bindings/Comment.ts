@@ -22,7 +22,13 @@ endLine: number | null,
  * Which version of the file the lines refer to: `head` (the worktree)
  * or `base` (the diff base — lines the agent removed or changed).
  */
-side: CommentSide, text: string, 
+side: CommentSide, 
+/**
+ * Full sha when the comment was made on a single commit's diff
+ * (History tab): `head` lines are that commit's version of the file,
+ * `base` lines its first parent's. `None` = the live branch diff.
+ */
+commit: string | null, text: string, 
 /**
  * Epoch milliseconds. Fits in `Number.MAX_SAFE_INTEGER` for the next
  * ~285k years, so ts-rs is overridden to surface it as `number` rather

@@ -1426,6 +1426,60 @@ pub async fn get_diff(
     Ok(computed)
 }
 
+/// Commits on the worktree's branch since it forked from the workspace base
+/// (the same merge-base the Branch diff uses), newest first.
+#[tauri::command]
+pub async fn list_branch_commits(
+    worktree_id: WorktreeId,
+    state: State<'_, AppState>,
+) -> AppResult<diff::history::BranchCommits> {
+    let wt = state
+        .worktrees
+        .get(&worktree_id)
+        .ok_or_else(|| AppError::Unknown(format!("unknown worktree: {worktree_id}")))?
+        .clone();
+    let ws = state
+        .workspaces
+        .get(&wt.workspace_id)
+        .ok_or_else(|| AppError::Unknown(format!("unknown workspace: {}", wt.workspace_id)))?
+        .clone();
+    let base = crate::worktree::git_ops::effective_base(
+        &ws.default_branch,
+        ws.base_ref_override.as_deref(),
+    );
+    tokio::task::spawn_blocking(move || {
+        let anchor = crate::worktree::git_ops::live_branch_anchor(
+            &wt.path,
+            &ws.default_branch,
+            &base,
+            &wt.branch,
+            &wt.base_ref,
+        );
+        diff::history::list_commits(&wt.path, &anchor)
+    })
+    .await
+    .map_err(|e| AppError::Unknown(format!("history task join: {e}")))?
+}
+
+/// The diff one commit introduced (first parent → commit). Commits are
+/// immutable, so the frontend caches these by sha.
+#[tauri::command]
+pub async fn get_commit_diff(
+    worktree_id: WorktreeId,
+    sha: String,
+    state: State<'_, AppState>,
+) -> AppResult<DiffSet> {
+    let wt_path = state
+        .worktrees
+        .get(&worktree_id)
+        .ok_or_else(|| AppError::Unknown(format!("unknown worktree: {worktree_id}")))?
+        .path
+        .clone();
+    tokio::task::spawn_blocking(move || diff::compute::compute_commit(worktree_id, &wt_path, &sha))
+        .await
+        .map_err(|e| AppError::Unknown(format!("diff task join: {e}")))?
+}
+
 // --- LSP ---
 
 #[tauri::command]

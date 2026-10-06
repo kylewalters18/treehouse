@@ -35,8 +35,44 @@ pub fn compute(
     // new files the agent creates without staging. We don't need the index
     // view — agents generally don't `git add`, so "workdir vs base_ref" is
     // the right semantic.
-    let mut diff = repo.diff_tree_to_workdir(Some(&base_tree), Some(&mut opts))?;
+    let diff = repo.diff_tree_to_workdir(Some(&base_tree), Some(&mut opts))?;
+    build_set(worktree_id, base_ref, diff)
+}
 
+/// Compute the DiffSet a single commit introduced: its first parent's tree
+/// → its own tree. `base_ref` on the result is the parent sha so the
+/// DiffEditor can load the "before" side with `read_blob_at_ref`. A root
+/// commit diffs against the empty tree (every file shows as added, so the
+/// before side is never read).
+pub fn compute_commit(
+    worktree_id: WorktreeId,
+    worktree_path: &Path,
+    sha: &str,
+) -> AppResult<DiffSet> {
+    let repo = Repository::open(worktree_path)?;
+    let commit = repo.revparse_single(sha)?.peel_to_commit()?;
+    let tree = commit.tree()?;
+    let parent = commit.parents().next();
+    let parent_tree = parent.as_ref().map(|p| p.tree()).transpose()?;
+    let base_ref = parent
+        .map(|p| p.id().to_string())
+        .unwrap_or_else(|| EMPTY_TREE.to_string());
+
+    let mut opts = DiffOptions::new();
+    opts.context_lines(3).interhunk_lines(1).id_abbrev(8);
+    let diff = repo.diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), Some(&mut opts))?;
+    build_set(worktree_id, &base_ref, diff)
+}
+
+/// git's well-known empty tree object id.
+const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+
+/// Rename detection + patch walk shared by the workdir and commit views.
+fn build_set(
+    worktree_id: WorktreeId,
+    base_ref: &str,
+    mut diff: git2::Diff<'_>,
+) -> AppResult<DiffSet> {
     // Detect renames / copies.
     let mut find = DiffFindOptions::new();
     find.renames(true).copies(true).rewrites(true);

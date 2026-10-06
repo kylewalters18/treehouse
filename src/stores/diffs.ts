@@ -1,14 +1,15 @@
 import { create } from "zustand";
 import * as ipc from "@/ipc/client";
-import type { DiffSet, WorktreeId } from "@/ipc/types";
+import type { BranchCommits, DiffSet, WorktreeId } from "@/ipc/types";
 
 type DiffView = "diff" | "file" | "preview";
 
 /// Which Changes-list group a selection came from. `branch` is the
 /// merge-base-anchored "PR-style" diff (what merge-back ships);
 /// `uncommitted` is HEAD..workdir (what the agent touched since the
-/// last commit). A path can appear in both with different hunks.
-export type ChangeGroup = "branch" | "uncommitted";
+/// last commit). `commit` is the History tab's selected commit
+/// (parent..commit). A path can appear in several with different hunks.
+export type ChangeGroup = "branch" | "uncommitted" | "commit";
 
 /// `(line, column)` to reveal once a freshly-selected file finishes
 /// loading in the editor. 1-indexed to match Monaco. Populated by the
@@ -29,6 +30,14 @@ type DiffsState = {
   /// Falls back to the other group when the file isn't in this one.
   selectedGroup: Record<WorktreeId, ChangeGroup>;
   view: Record<WorktreeId, DiffView>;
+  /// History tab: commits on the branch since its merge-base, newest first.
+  commitsByWorktree: Record<WorktreeId, BranchCommits>;
+  /// Full sha of the commit the History tab has open.
+  selectedCommit: Record<WorktreeId, string | null>;
+  /// Per-commit diffs keyed by full sha. Commits are immutable, so
+  /// entries never go stale.
+  commitDiffs: Record<string, DiffSet>;
+  commitDiffError: Record<WorktreeId, string | null>;
   pendingReveal: Record<WorktreeId, PendingReveal | null>;
   /// Fetch both groups.
   fetch: (worktreeId: WorktreeId) => Promise<void>;
@@ -43,6 +52,11 @@ type DiffsState = {
     group?: ChangeGroup,
   ) => void;
   setView: (worktreeId: WorktreeId, view: DiffView) => void;
+  fetchCommits: (worktreeId: WorktreeId) => Promise<void>;
+  /// Open a commit in the History tab, fetching its diff if uncached.
+  /// Keeps the selected file when the commit touched it, else picks the
+  /// commit's first file, and shows the Diff view.
+  selectCommit: (worktreeId: WorktreeId, sha: string | null) => Promise<void>;
   setPendingReveal: (
     worktreeId: WorktreeId,
     reveal: PendingReveal | null,
@@ -61,6 +75,8 @@ function asMessage(e: unknown): string {
 /// refetched on every fs event — drop responses that arrive after a
 /// newer request was issued.
 const uncommittedSeq: Record<WorktreeId, number> = {};
+/// Same guard for the commit list (refetched on fs events and ref moves).
+const commitsSeq: Record<WorktreeId, number> = {};
 
 export const useDiffsStore = create<DiffsState>((set, get) => ({
   byWorktree: {},
@@ -70,6 +86,10 @@ export const useDiffsStore = create<DiffsState>((set, get) => ({
   selectedFile: {},
   selectedGroup: {},
   view: {},
+  commitsByWorktree: {},
+  selectedCommit: {},
+  commitDiffs: {},
+  commitDiffError: {},
   pendingReveal: {},
   async fetch(worktreeId) {
     set((s) => ({
@@ -129,6 +149,58 @@ export const useDiffsStore = create<DiffsState>((set, get) => ({
   setView(worktreeId, view) {
     set((s) => ({ view: { ...s.view, [worktreeId]: view } }));
   },
+  async fetchCommits(worktreeId) {
+    const seq = (commitsSeq[worktreeId] ?? 0) + 1;
+    commitsSeq[worktreeId] = seq;
+    const list = await ipc.listBranchCommits(worktreeId);
+    if (commitsSeq[worktreeId] !== seq) return;
+    set((s) => {
+      // A rebase / amend can drop the open commit; fall back to the
+      // branch diff rather than showing a commit that's left the branch.
+      const sel = s.selectedCommit[worktreeId];
+      const gone = sel != null && !list.commits.some((c) => c.sha === sel);
+      return {
+        commitsByWorktree: { ...s.commitsByWorktree, [worktreeId]: list },
+        ...(gone && {
+          selectedCommit: { ...s.selectedCommit, [worktreeId]: null },
+          ...(s.selectedGroup[worktreeId] === "commit" && {
+            selectedGroup: { ...s.selectedGroup, [worktreeId]: "branch" },
+          }),
+        }),
+      };
+    });
+  },
+  async selectCommit(worktreeId, sha) {
+    set((s) => ({
+      selectedCommit: { ...s.selectedCommit, [worktreeId]: sha },
+      commitDiffError: { ...s.commitDiffError, [worktreeId]: null },
+    }));
+    if (!sha) return;
+    let d = get().commitDiffs[sha];
+    if (!d) {
+      try {
+        d = await ipc.getCommitDiff(worktreeId, sha);
+      } catch (e: unknown) {
+        if (get().selectedCommit[worktreeId] !== sha) return;
+        set((s) => ({
+          commitDiffError: { ...s.commitDiffError, [worktreeId]: asMessage(e) },
+        }));
+        return;
+      }
+      set((s) => ({ commitDiffs: { ...s.commitDiffs, [sha]: d! } }));
+    }
+    // A later click won the race; leave its selection alone.
+    if (get().selectedCommit[worktreeId] !== sha) return;
+    const prev = get().selectedFile[worktreeId];
+    const path = prev && d.files.some((f) => f.path === prev)
+      ? prev
+      : (d.files[0]?.path ?? null);
+    set((s) => ({
+      selectedFile: { ...s.selectedFile, [worktreeId]: path },
+      selectedGroup: { ...s.selectedGroup, [worktreeId]: "commit" },
+      ...(path && { view: { ...s.view, [worktreeId]: "diff" } }),
+    }));
+  },
   setPendingReveal(worktreeId, reveal) {
     set((s) => ({
       pendingReveal: { ...s.pendingReveal, [worktreeId]: reveal },
@@ -143,6 +215,10 @@ export const useDiffsStore = create<DiffsState>((set, get) => ({
       selectedFile: {},
       selectedGroup: {},
       view: {},
+      commitsByWorktree: {},
+      selectedCommit: {},
+      commitDiffs: {},
+      commitDiffError: {},
       pendingReveal: {},
     });
   },

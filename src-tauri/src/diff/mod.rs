@@ -1,4 +1,5 @@
 pub mod compute;
+pub mod history;
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;

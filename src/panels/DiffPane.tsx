@@ -37,6 +37,7 @@ import { countBadge, iconButton, sectionStrip, sectionTab } from "@/lib/pane-chr
 import { CommentOverlay, EditorPane } from "./EditorPane";
 import { useEditorViewStateStore } from "@/stores/editor-view-state";
 import { FileTree } from "./FileTree";
+import { HistoryPanel } from "./HistoryPanel";
 import { useIsEditorDirty } from "@/stores/editor-dirty";
 import { MarkdownPreview, isPreviewablePath } from "./MarkdownPreview";
 import { isRasterImagePath } from "./markdown-plugins";
@@ -93,6 +94,13 @@ function DiffView({ worktreeId }: { worktreeId: WorktreeId }) {
   const setShowIgnored = useUiStore((s) => s.setShowIgnored);
   const sidebarTab = useUiStore((s) => s.diffSidebarTab);
   const setSidebarTab = useUiStore((s) => s.setDiffSidebarTab);
+  const selectedCommit = useDiffsStore((s) => s.selectedCommit[worktreeId] ?? null);
+  const commitDiff = useDiffsStore((s) =>
+    selectedCommit ? s.commitDiffs[selectedCommit] : undefined,
+  );
+  const commitCount = useDiffsStore(
+    (s) => s.commitsByWorktree[worktreeId]?.commits.length,
+  );
   const explorerBoxRef = useRef<HTMLDivElement>(null);
   const explorerPanelRef = useRef<ImperativePanelHandle>(null);
   const explorer = usePixelStablePanel(
@@ -126,23 +134,30 @@ function DiffView({ worktreeId }: { worktreeId: WorktreeId }) {
 
   // Resolve the selected file against the group it was picked from,
   // falling back to the other group (e.g. picked from the tree, or the
-  // file just got committed and left the Uncommitted group).
+  // file just got committed and left the Uncommitted group). The commit
+  // group only applies while the History tab is showing — leaving it
+  // returns the Diff view to the live branch diff.
   const resolved = useMemo<{
     file: FileDiff;
     set: DiffSet;
     group: ChangeGroup;
   } | null>(() => {
     if (!selectedFile) return null;
-    const order: [ChangeGroup, DiffSet | undefined][] =
+    const live: [ChangeGroup, DiffSet | undefined][] =
       selectedGroup === "uncommitted"
         ? [["uncommitted", uncommitted], ["branch", diff]]
         : [["branch", diff], ["uncommitted", uncommitted]];
+    const order: [ChangeGroup, DiffSet | undefined][] =
+      selectedGroup === "commit" && sidebarTab === "history"
+        ? [["commit", commitDiff], ...live]
+        : live;
     for (const [group, set] of order) {
       const file = set?.files.find((f) => f.path === selectedFile);
       if (set && file) return { file, set, group };
     }
     return null;
-  }, [diff, uncommitted, selectedFile, selectedGroup]);
+  }, [diff, uncommitted, commitDiff, selectedFile, selectedGroup, sidebarTab]);
+  const commitSha = resolved?.group === "commit" ? selectedCommit : null;
   const selected = resolved?.file ?? null;
 
   // Reconcile the active tab with what makes sense for the selected
@@ -223,32 +238,22 @@ function DiffView({ worktreeId }: { worktreeId: WorktreeId }) {
                 {diff?.stats.filesChanged ?? 0}
               </span>
             </SidebarTab>
-          </div>
-          {sidebarTab === "changes"
-            ? diff && (
-                <span className="self-center font-mono text-[11px]">
-                  <span className="text-emerald-400">+{diff.stats.insertions}</span>{" "}
-                  <span className="text-rose-400">-{diff.stats.deletions}</span>
-                </span>
-              )
-            : (
-                <button
-                  onClick={() => setShowIgnored(!showIgnored)}
-                  title={
-                    showIgnored
-                      ? "Hide gitignored files"
-                      : "Show gitignored files (dimmed)"
-                  }
-                  className={cn(
-                    "self-center rounded px-1 font-mono text-[10px] transition",
-                    showIgnored
-                      ? "bg-neutral-800 text-neutral-200"
-                      : "text-neutral-600 hover:bg-neutral-900 hover:text-neutral-300",
-                  )}
-                >
-                  {showIgnored ? "◉ ignored" : "○ ignored"}
-                </button>
+            <SidebarTab
+              active={sidebarTab === "history"}
+              onClick={() => setSidebarTab("history")}
+            >
+              History
+              {commitCount != null && (
+                <span className={countBadge("neutral")}>{commitCount}</span>
               )}
+            </SidebarTab>
+          </div>
+          {sidebarTab === "changes" && diff && (
+            <span className="self-center font-mono text-[11px]">
+              <span className="text-emerald-400">+{diff.stats.insertions}</span>{" "}
+              <span className="text-rose-400">-{diff.stats.deletions}</span>
+            </span>
+          )}
         </div>
         {sidebarTab === "changes" && (
           <div className="min-h-0 flex-1 overflow-y-auto">
@@ -276,17 +281,39 @@ function DiffView({ worktreeId }: { worktreeId: WorktreeId }) {
             />
           </div>
         )}
+        {sidebarTab === "history" && (
+          <div className="min-h-0 flex-1">
+            <HistoryPanel worktreeId={worktreeId} />
+          </div>
+        )}
         {/* Kept mounted while hidden so the tree's expansion state
             survives flipping to Changes and back. */}
-        <div className={cn("min-h-0 flex-1 overflow-y-auto", sidebarTab !== "files" && "hidden")}>
-          <FileTree
-            worktreeId={worktreeId}
-            statusByPath={statusByPath}
-            selectedPath={selectedFile}
-            onSelect={(path) => selectFile(worktreeId, path)}
-            refreshToken={treeRefresh}
-            showIgnored={showIgnored}
-          />
+        <div className={cn("flex min-h-0 flex-1 flex-col", sidebarTab !== "files" && "hidden")}>
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            <FileTree
+              worktreeId={worktreeId}
+              statusByPath={statusByPath}
+              selectedPath={selectedFile}
+              onSelect={(path) => selectFile(worktreeId, path)}
+              refreshToken={treeRefresh}
+              showIgnored={showIgnored}
+            />
+          </div>
+          {/* Tree view option, kept off the tab strip so the tabs have room. */}
+          <button
+            onClick={() => setShowIgnored(!showIgnored)}
+            aria-pressed={showIgnored}
+            title={showIgnored ? "Hide gitignored files" : "Show gitignored files (dimmed)"}
+            className={cn(
+              "flex h-6 shrink-0 items-center gap-1.5 border-t border-neutral-800 px-3 text-[11px] transition-colors",
+              showIgnored
+                ? "text-neutral-300 hover:text-neutral-100"
+                : "text-neutral-600 hover:text-neutral-300",
+            )}
+          >
+            {showIgnored ? <Eye size={12} /> : <EyeOff size={12} />}
+            {showIgnored ? "Showing ignored files" : "Ignored files hidden"}
+          </button>
         </div>
         </aside>
       </Panel>
@@ -326,11 +353,11 @@ function DiffView({ worktreeId }: { worktreeId: WorktreeId }) {
             <FilePathLabel
               worktreeId={worktreeId}
               path={selectedFile}
-              anchor={
+              suffix={
                 view === "diff" && resolved
-                  ? resolved.group === "uncommitted"
-                    ? "HEAD"
-                    : baseRefLabel(workspace)
+                  ? commitSha
+                    ? `· in ${commitSha.slice(0, 7)}`
+                    : `· vs ${resolved.group === "uncommitted" ? "HEAD" : baseRefLabel(workspace)}`
                   : null
               }
             />
@@ -354,6 +381,7 @@ function DiffView({ worktreeId }: { worktreeId: WorktreeId }) {
             <DiffEditorView
               worktreeId={worktreeId}
               baseRef={resolved.set.baseRef}
+              afterRef={commitSha ?? undefined}
               file={resolved.file}
             />
           ) : (
@@ -379,12 +407,12 @@ const EXPLORER_MAX_PCT = 50;
 function FilePathLabel({
   worktreeId,
   path,
-  anchor,
+  suffix,
 }: {
   worktreeId: WorktreeId;
   path: string;
-  /// Ref the Diff tab compares against, shown as "· vs <anchor>".
-  anchor: string | null;
+  /// What the Diff tab compares, e.g. "· vs origin/main" or "· in 3c611bc".
+  suffix: string | null;
 }) {
   const dirty = useIsEditorDirty(worktreeId, path);
   return (
@@ -398,8 +426,8 @@ function FilePathLabel({
         </span>
       )}
       <span className="truncate">{path}</span>
-      {anchor && (
-        <span className="ml-1.5 shrink-0 text-neutral-600">· vs {anchor}</span>
+      {suffix && (
+        <span className="ml-1.5 shrink-0 text-neutral-600">{suffix}</span>
       )}
     </span>
   );
@@ -776,14 +804,18 @@ function TabButton({
 /// Inline diff powered by Monaco's `DiffEditor` so we get syntax
 /// highlighting, unified / side-by-side rendering, and folded-unchanged
 /// regions. Fetches the "before" content via `git show <base_ref>:<path>`
-/// and the "after" content from the worktree's workdir.
+/// and the "after" content from the worktree's workdir — or, for a
+/// History-tab commit, from `afterRef`, whose review comments are
+/// stamped with (and filtered to) that commit.
 function DiffEditorView({
   worktreeId,
   baseRef,
+  afterRef,
   file,
 }: {
   worktreeId: WorktreeId;
   baseRef: string;
+  afterRef?: string;
   file: FileDiff;
 }) {
   const [before, setBefore] = useState<string | null>(null);
@@ -816,7 +848,7 @@ function DiffEditorView({
   // separately from the file-view editor (different content shape)
   // so the diff doesn't try to scroll to the file's line offset.
   useEffect(() => {
-    if (!modifiedEditor) return;
+    if (!modifiedEditor || afterRef) return;
     const saved = useEditorViewStateStore
       .getState()
       .get(worktreeId, file.path, "diff");
@@ -827,7 +859,7 @@ function DiffEditorView({
         .getState()
         .save(worktreeId, file.path, "diff", state);
     };
-  }, [modifiedEditor, worktreeId, file.path]);
+  }, [modifiedEditor, worktreeId, file.path, afterRef]);
 
   useEffect(() => {
     if (file.binary) {
@@ -855,6 +887,7 @@ function DiffEditorView({
     const loadAfter = async (): Promise<string> => {
       // Deleted files: no current workdir version.
       if (file.status.kind === "deleted") return "";
+      if (afterRef) return await readBlobAtRef(worktreeId, file.path, afterRef);
       const r = await readFile(worktreeId, file.path);
       return r.text ?? "";
     };
@@ -878,7 +911,7 @@ function DiffEditorView({
     return () => {
       cancelled = true;
     };
-  }, [worktreeId, baseRef, file.path, file.status, file.binary]);
+  }, [worktreeId, baseRef, afterRef, file.path, file.status, file.binary]);
 
   if (file.binary) {
     return (
@@ -949,6 +982,7 @@ function DiffEditorView({
           worktreeId={worktreeId}
           filePath={file.path}
           diffEditor={diffEditor ?? undefined}
+          commit={afterRef}
         />
       )}
     </div>

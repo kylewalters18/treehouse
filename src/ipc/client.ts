@@ -16,6 +16,7 @@ import type {
   Comment,
   CreateWorktreeResult,
   DiffMode,
+  BranchCommits,
   DiffSet,
   FileContent,
   HookRunSummary,
@@ -272,6 +273,19 @@ export function getDiff(
   mode?: DiffMode,
 ): Promise<DiffSet> {
   return invoke<DiffSet>("get_diff", { worktreeId, mode });
+}
+
+export function listBranchCommits(
+  worktreeId: WorktreeId,
+): Promise<BranchCommits> {
+  return invoke<BranchCommits>("list_branch_commits", { worktreeId });
+}
+
+export function getCommitDiff(
+  worktreeId: WorktreeId,
+  sha: string,
+): Promise<DiffSet> {
+  return invoke<DiffSet>("get_commit_diff", { worktreeId, sha });
 }
 
 export function onDiffUpdated(

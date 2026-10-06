@@ -37,18 +37,35 @@ export function anchorLabel(
   return `${c.filePath}:${c.line}`;
 }
 
+/// Short sha for display: `3c611bc`.
+export function shortSha(sha: string): string {
+  return sha.slice(0, 7);
+}
+
 /// Anchor as the agent should read it. Removed-line numbers refer to the
 /// base version, which the agent can't see in the working tree, so say so.
+/// Comments made on a single commit name it: their numbering is from that
+/// commit (or its parent), not the working tree.
 function anchorForAgent(
-  c: Pick<Comment, "filePath" | "line" | "endLine" | "side">,
+  c: Pick<Comment, "filePath" | "line" | "endLine" | "side" | "commit">,
 ): string {
-  if (isFileLevel(c)) return `${c.filePath} (whole file)`;
+  const sha = c.commit ? shortSha(c.commit) : null;
+  if (isFileLevel(c)) {
+    return sha
+      ? `${c.filePath} (whole file, as changed in commit ${sha})`
+      : `${c.filePath} (whole file)`;
+  }
   const lines =
     c.endLine !== null && c.endLine !== c.line
       ? `${c.filePath}:${c.line}-${c.endLine}`
       : `${c.filePath}:${c.line}`;
+  const noun = c.endLine !== null && c.endLine !== c.line ? "lines" : "line";
+  if (sha) {
+    return c.side === "base"
+      ? `${lines} (${noun} removed in commit ${sha} — numbering is from its parent, ${sha}^)`
+      : `${lines} (in commit ${sha} — numbering is from that commit's version of the file)`;
+  }
   if (c.side === "base") {
-    const noun = c.endLine !== null && c.endLine !== c.line ? "lines" : "line";
     return `${lines} (removed ${noun} — numbering is from the diff base)`;
   }
   return lines;
@@ -74,7 +91,7 @@ type CommentsState = {
   load: () => Promise<void>;
   add: (
     fields: Pick<Comment, "workspaceRoot" | "branch" | "filePath" | "line" | "text"> &
-      Partial<Pick<Comment, "endLine" | "side">>,
+      Partial<Pick<Comment, "endLine" | "side" | "commit">>,
   ) => Promise<Comment | null>;
   updateText: (id: string, text: string) => Promise<void>;
   remove: (id: string) => Promise<void>;
@@ -144,6 +161,7 @@ export const useCommentsStore = create<CommentsState>((set, get) => {
         line: fields.line,
         endLine: fields.endLine ?? null,
         side: fields.side ?? "head",
+        commit: fields.commit ?? null,
         text: fields.text,
         createdAt: nowMs(),
         sentAt: null,
