@@ -5,22 +5,26 @@
 //! Shape:
 //! - One Streamable-HTTP endpoint (`POST /mcp`, JSON responses only, no SSE)
 //!   bound to `127.0.0.1` on an OS-assigned port at boot. See `server`.
-//! - Every Claude Code launch mints a bearer token tied to that agent session
-//!   and gets the server injected via `--mcp-config` (never written into the
-//!   repo). The token is how a tool call knows its caller's workspace and
-//!   parent worktree; it stops working once the agent exits.
+//! - Every Claude Code / Kiro launch mints a bearer token tied to that agent
+//!   session. Claude gets the server via `--mcp-config`; Kiro has no such
+//!   flag, so it gets a per-session shadow `KIRO_HOME` (see `kiro`). Neither
+//!   writes into the repo or the user's own config. The token is how a tool
+//!   call knows its caller's workspace and parent worktree; it stops working
+//!   once the agent exits.
 //! - Tools live in `tools`: `create_issue`, `create_worktree`, `create_pr`
 //!   (worktree agents only), plus `list_repos` for the global scratch agent
 //!   (`crate::scratch`), which isn't in any repo and so has to name one. A
 //!   repo planner (`crate::planner`) is scoped to its repo.
-//! - Gating is Claude Code's own permission prompt: we don't pre-approve the
+//! - Gating is the agent's own permission prompt: we don't pre-approve the
 //!   tool, so each call asks the user in the parent agent's pane (which also
 //!   flips that worktree to needs-attention in the sidebar).
 
+mod kiro;
 mod server;
 mod tools;
 
 use std::io::Read;
+use std::path::PathBuf;
 use std::sync::OnceLock;
 
 use dashmap::DashMap;
@@ -87,16 +91,27 @@ impl McpRegistry {
     }
 }
 
-/// The `--mcp-config` JSON for a Claude Code launch, minting a token for
-/// `agent_id`. `None` for other backends or if the server never came up —
-/// the agent then just runs without treehouse tools.
-pub fn claude_config_for(
+/// How the treehouse server reaches a launched agent.
+pub enum Injection {
+    /// Claude Code: JSON for `--mcp-config`.
+    ClaudeConfig(String),
+    /// Kiro: a shadow home to pass as `KIRO_HOME` (see `kiro`). The caller
+    /// removes it with `remove_kiro_home` once the agent exits.
+    KiroHome(PathBuf),
+}
+
+pub use kiro::{remove as remove_kiro_home, HOME_ENV as KIRO_HOME_ENV};
+
+/// Inject the treehouse server into an agent launch, minting a token for
+/// `agent_id`. `None` for Codex or if the server never came up — the agent
+/// then just runs without treehouse tools.
+pub fn inject(
     app: &AppHandle,
     backend: AgentBackendKind,
     agent_id: AgentSessionId,
     worktree_id: WorktreeId,
-) -> Option<String> {
-    if !matches!(backend, AgentBackendKind::ClaudeCode) {
+) -> Option<Injection> {
+    if matches!(backend, AgentBackendKind::Codex) {
         return None;
     }
     let state = app.try_state::<AppState>()?;
@@ -110,18 +125,25 @@ pub fn claude_config_for(
         CallerScope::Worktree(worktree_id)
     };
     let token = mcp.mint(McpCaller { agent_id, scope });
-    Some(
-        json!({
-            "mcpServers": {
-                SERVER_NAME: {
-                    "type": "http",
-                    "url": format!("http://127.0.0.1:{port}/mcp"),
-                    "headers": { "Authorization": format!("Bearer {token}") },
-                }
+    let server = json!({
+        "type": "http",
+        "url": format!("http://127.0.0.1:{port}/mcp"),
+        "headers": { "Authorization": format!("Bearer {token}") },
+    });
+    match backend {
+        AgentBackendKind::ClaudeCode => Some(Injection::ClaudeConfig(
+            json!({ "mcpServers": { SERVER_NAME: server } }).to_string(),
+        )),
+        AgentBackendKind::Kiro => match kiro::install(app, agent_id, server) {
+            Ok(dir) => Some(Injection::KiroHome(dir)),
+            Err(e) => {
+                tracing::warn!(?e, %worktree_id, "kiro mcp: failed to build shadow home");
+                mcp.revoke(&token);
+                None
             }
-        })
-        .to_string(),
-    )
+        },
+        AgentBackendKind::Codex => None,
+    }
 }
 
 fn random_token() -> String {

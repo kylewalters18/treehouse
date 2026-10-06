@@ -37,6 +37,7 @@ review, or merge them from the app.";
 /// Bind the server and record its port. Called once from `setup()`; on
 /// failure agents simply launch without treehouse tools.
 pub fn start(app: &AppHandle) {
+    super::kiro::sweep(app);
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         let listener = match tokio::net::TcpListener::bind(("127.0.0.1", 0)).await {

@@ -351,9 +351,7 @@ async fn create_worktree(
     } else {
         false
     };
-    let prompt_delivered = agent_started
-        && prompt.is_some()
-        && settings.default_agent_backend.accepts_positional_prompt();
+    let prompt_delivered = agent_started && prompt.is_some();
 
     Ok(json!({
         "branch": wt.branch,

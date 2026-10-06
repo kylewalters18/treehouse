@@ -460,9 +460,9 @@ fn max_severity(a: AgentActivity, b: AgentActivity) -> AgentActivity {
 /// worktree over MCP): output only fills the ring buffer until the user
 /// opens that worktree and `AgentPane` adopts the session via `attach`.
 ///
-/// `prompt` seeds the session's first turn (Claude Code / Codex take it as a
-/// positional arg; ignored for Kiro). Claude Code sessions also get the
-/// treehouse MCP server injected via `--mcp-config` — see `crate::mcp`.
+/// `prompt` seeds the session's first turn as a positional arg. Claude Code
+/// and Kiro sessions also get the treehouse MCP server injected — see
+/// `crate::mcp::inject`.
 ///
 /// `resume` reopens a saved Claude conversation (`claude --resume <id>`);
 /// see `agent::history`.
@@ -522,10 +522,15 @@ pub fn launch(
     // Minted before spawn so the token can ride in argv; the handler checks
     // the session is still live, so a failed spawn just leaves a dead token.
     let session_id = AgentSessionId::new();
+    let (mcp_config, kiro_home) = match crate::mcp::inject(app, backend, session_id, worktree_id) {
+        Some(crate::mcp::Injection::ClaudeConfig(c)) => (Some(c), None),
+        Some(crate::mcp::Injection::KiroHome(h)) => (None, Some(h)),
+        None => (None, None),
+    };
     let spawn_argv = build_spawn_argv(
         backend,
         &argv,
-        crate::mcp::claude_config_for(app, backend, session_id, worktree_id).as_deref(),
+        mcp_config.as_deref(),
         resume.as_deref(),
         prompt.as_deref(),
     );
@@ -541,11 +546,19 @@ pub fn launch(
     }
     // Hook commands key their state files by this; see `agent::hooks`.
     cmd.env(hooks::SESSION_ENV, session_id.to_string());
+    if let Some(home) = &kiro_home {
+        cmd.env(crate::mcp::KIRO_HOME_ENV, home);
+    }
 
-    let child = pair
-        .slave
-        .spawn_command(cmd)
-        .map_err(|e| AppError::Unknown(format!("spawn agent: {e}")))?;
+    let child = match pair.slave.spawn_command(cmd) {
+        Ok(c) => c,
+        Err(e) => {
+            if let Some(home) = &kiro_home {
+                crate::mcp::remove_kiro_home(home);
+            }
+            return Err(AppError::Unknown(format!("spawn agent: {e}")));
+        }
+    };
 
     let mut reader = pair
         .master
@@ -646,6 +659,10 @@ pub fn launch(
                         break;
                     }
                 }
+            }
+            // EOF means the child is gone, so its shadow home can go too.
+            if let Some(home) = &kiro_home {
+                crate::mcp::remove_kiro_home(home);
             }
             let exit = AgentStatus::Exited { code: None };
             let mut sh = shared_for_reader.lock();
@@ -852,7 +869,8 @@ pub fn resize(registry: &AgentRegistry, id: AgentSessionId, cols: u16, rows: u16
 /// Final argv for the child: the user-visible `argv` (what `AgentSession`
 /// records and tab labels derive from) plus injected flags. A seeded prompt
 /// goes last behind `--`, because Claude's `--mcp-config <configs...>` is
-/// variadic and would otherwise swallow it.
+/// variadic and would otherwise swallow it. Kiro only takes a prompt on
+/// `kiro-cli chat`, so that's inserted when the command doesn't name it.
 fn build_spawn_argv(
     backend: AgentBackendKind,
     argv: &[String],
@@ -870,7 +888,10 @@ fn build_spawn_argv(
         out.push(cfg.into());
     }
     let prompt = prompt.map(str::trim).filter(|p| !p.is_empty());
-    if let (Some(p), true) = (prompt, backend.accepts_positional_prompt()) {
+    if let Some(p) = prompt {
+        if matches!(backend, AgentBackendKind::Kiro) && !out.iter().skip(1).any(|a| a == "chat") {
+            out.insert(1.min(out.len()), "chat".into());
+        }
         out.push("--".into());
         out.push(p.into());
     }
@@ -1163,7 +1184,7 @@ mod tests {
             build_spawn_argv(AgentBackendKind::ClaudeCode, &argv, None, None, Some(" ")),
             argv
         );
-        // Kiro has no verified positional-prompt form.
+        // Kiro takes the prompt on `chat`, added when the command lacks it.
         assert_eq!(
             build_spawn_argv(
                 AgentBackendKind::Kiro,
@@ -1171,6 +1192,26 @@ mod tests {
                 None,
                 None,
                 Some("hi")
+            ),
+            vec!["kiro-cli", "chat", "--", "hi"]
+        );
+        let kiro = vec![
+            "kiro-cli".to_string(),
+            "chat".into(),
+            "--agent".into(),
+            "x".into(),
+        ];
+        assert_eq!(
+            build_spawn_argv(AgentBackendKind::Kiro, &kiro, None, None, Some("hi")),
+            vec!["kiro-cli", "chat", "--agent", "x", "--", "hi"]
+        );
+        assert_eq!(
+            build_spawn_argv(
+                AgentBackendKind::Kiro,
+                &["kiro-cli".into()],
+                None,
+                None,
+                None
             ),
             vec!["kiro-cli"]
         );

@@ -64,7 +64,7 @@ src-tauri/src/
   fs_watch/               # Per-worktree debounced notify watcher → triggers diff recompute
   forge/                  # GitLab (REST + ~/.netrc) / GitHub (gh) issues, MR/PR threads, CI;
                           #   workflow.rs = issue → worktree → PR steps shared by UI commands + MCP
-  mcp/                    # Local MCP server exposed to launched Claude sessions
+  mcp/                    # Local MCP server exposed to launched Claude / Kiro sessions
                           #   (create_worktree [+issue], create_issue, create_pr, list_repos)
   util/
     ids.rs                # ULID-backed typed ID newtypes (WorktreeId, AgentSessionId, LspServerId, ...)
