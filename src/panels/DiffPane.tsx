@@ -4,7 +4,9 @@ import {
   ChevronRight,
   Eye,
   EyeOff,
+  Maximize2,
   MessageSquarePlus,
+  Minimize2,
 } from "lucide-react";
 import { DiffEditor, type DiffOnMount } from "@monaco-editor/react";
 import type { editor as MonacoEditor } from "monaco-editor";
@@ -473,18 +475,15 @@ function LspProgressIndicator({ worktreeId }: { worktreeId: WorktreeId }) {
 function FocusToggle() {
   const focusMode = useUiStore((s) => s.focusMode);
   const toggle = useUiStore((s) => s.toggleFocusMode);
+  const label = focusMode ? "Restore panel (⌘\\)" : "Maximize panel (⌘\\)";
   return (
     <button
       onClick={toggle}
-      title={focusMode ? "Exit focus mode (⌘\\)" : "Focus mode (⌘\\)"}
-      className={cn(
-        "ml-auto shrink-0 rounded px-1.5 py-0.5 text-[11px] font-medium",
-        focusMode
-          ? "bg-blue-900/50 text-blue-200 hover:bg-blue-900/70"
-          : "text-neutral-400 hover:bg-neutral-900 hover:text-neutral-200",
-      )}
+      className={cn(iconButton, "ml-auto shrink-0 self-center")}
+      title={label}
+      aria-label={label}
     >
-      {focusMode ? "⤡" : "⤢"}
+      {focusMode ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
     </button>
   );
 }

@@ -78,22 +78,34 @@ export function Workspace() {
     workspaces[0] ??
     null;
   const toggleProblemsTab = useUiStore((s) => s.toggleProblemsTab);
-  // Bottom-pane maximize = collapse the diff above it. Store → Panel here;
-  // Panel → store via onCollapse/onExpand so dragging the handle to the
-  // top edge reads as maximized too.
+  // Bottom-pane maximize = collapse the diff above it; focus mode = collapse
+  // the bottom pane below it. Store → Panel here; Panel → store via
+  // onCollapse/onExpand so dragging the handle to either edge reads as the
+  // matching mode too. The store keeps the two mutually exclusive.
   const bottomMaximized = useUiStore((s) => s.bottomPaneMaximized);
   const diffPanelRef = useRef<ImperativePanelHandle>(null);
+  const bottomPanelRef = useRef<ImperativePanelHandle>(null);
   const setBottomMaximized = (on: boolean) => {
     if (useUiStore.getState().bottomPaneMaximized !== on) {
       useUiStore.getState().toggleBottomPaneMaximized();
     }
   };
+  const setFocusMode = (on: boolean) => {
+    if (useUiStore.getState().focusMode !== on) {
+      useUiStore.getState().setFocusMode(on);
+    }
+  };
   useEffect(() => {
     const id = requestAnimationFrame(() => {
-      const panel = diffPanelRef.current;
-      if (!panel) return;
-      if (bottomMaximized && !panel.isCollapsed()) panel.collapse();
-      if (!bottomMaximized && panel.isCollapsed()) panel.expand();
+      const diff = diffPanelRef.current;
+      const bottom = bottomPanelRef.current;
+      if (!diff || !bottom) return;
+      // Expand first so switching straight between the two modes never
+      // asks the group to collapse both panels at once.
+      if (!bottomMaximized && diff.isCollapsed()) diff.expand();
+      if (!focusMode && bottom.isCollapsed()) bottom.expand();
+      if (bottomMaximized && !diff.isCollapsed()) diff.collapse();
+      if (focusMode && !bottom.isCollapsed()) bottom.collapse();
     });
     return () => cancelAnimationFrame(id);
   }, [bottomMaximized, focusMode]);
@@ -106,10 +118,6 @@ export function Workspace() {
   // Reflect store state onto the Panel imperatively. Keeping state in the
   // store (not inside the Panel) lets the sidebar content + keyboard shortcut
   // both toggle from outside the Panel component.
-  //
-  // `focusMode` is in the deps because toggling it swaps which PanelGroup
-  // (and therefore which Panel) is mounted — the ref points at a fresh
-  // Panel at its default size, so we need to re-assert the collapsed state.
   //
   // The rAF defer is because react-resizable-panels' imperative API doesn't
   // take effect if called before the newly-mounted Panel has registered with
@@ -132,7 +140,7 @@ export function Workspace() {
       cancelAnimationFrame(pinId);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sidebarCollapsed, focusMode]);
+  }, [sidebarCollapsed]);
 
   // The other direction: dragging the handle past `minSize` collapses
   // (or drags it back open) inside the library, so mirror that into the
@@ -345,94 +353,72 @@ export function Workspace() {
       </header>
 
       <div ref={panelBodyRef} className="flex min-h-0 flex-1">
-        {focusMode ? (
-          <PanelGroup
-            key="focus"
-            direction="horizontal"
-            className="min-h-0 flex-1"
-            autoSaveId="layout-focus"
+        {/* Single PanelGroup across main-clone and worktree selections so
+            the sidebar keeps its user-dragged width when switching between
+            them. Previously we swapped PanelGroups via `key`, which
+            remounted the sidebar and reset its width to `defaultSize`
+            every time the user clicked the main clone. react-resizable-
+            panels v2 handles the conditionally-rendered Agent pane as
+            long as each Panel carries a stable `id` + `order`. */}
+        <PanelGroup
+          direction="horizontal"
+          className="min-h-0 flex-1"
+          autoSaveId="layout-normal"
+        >
+          <Panel
+            id="sidebar"
+            order={1}
+            ref={sidebarPanelRef}
+            defaultSize={18}
+            minSize={SIDEBAR_MIN_PCT}
+            collapsible
+            collapsedSize={railPct}
+            onCollapse={onSidebarCollapse}
+            onExpand={onSidebarExpand}
+            onResize={sidebarWidth.onResize}
           >
-            <Panel
-              ref={sidebarPanelRef}
-              defaultSize={18}
-              minSize={SIDEBAR_MIN_PCT}
-              collapsible
-              collapsedSize={railPct}
-              onCollapse={onSidebarCollapse}
-              onExpand={onSidebarExpand}
-              onResize={sidebarWidth.onResize}
-            >
-              <WorktreeSidebar />
-            </Panel>
-            <PanelResizeHandle
-              className="w-px bg-neutral-800 hover:bg-neutral-700"
-              onDragging={sidebarWidth.onDragging}
-            />
-            <Panel defaultSize={82}>
-              <DiffPane />
-            </Panel>
-          </PanelGroup>
-        ) : (
-          // Single PanelGroup across main-clone and worktree selections so
-          // the sidebar keeps its user-dragged width when switching between
-          // them. Previously we swapped PanelGroups via `key`, which
-          // remounted the sidebar and reset its width to `defaultSize`
-          // every time the user clicked the main clone. react-resizable-
-          // panels v2 handles the conditionally-rendered Agent pane as
-          // long as each Panel carries a stable `id` + `order`.
-          <PanelGroup
-            direction="horizontal"
-            className="min-h-0 flex-1"
-            autoSaveId="layout-normal"
-          >
-            <Panel
-              id="sidebar"
-              order={1}
-              ref={sidebarPanelRef}
-              defaultSize={18}
-              minSize={SIDEBAR_MIN_PCT}
-              collapsible
-              collapsedSize={railPct}
-              onCollapse={onSidebarCollapse}
-              onExpand={onSidebarExpand}
-              onResize={sidebarWidth.onResize}
-            >
-              <WorktreeSidebar />
-            </Panel>
-            <PanelResizeHandle
-              className="w-px bg-neutral-800 hover:bg-neutral-700"
-              onDragging={sidebarWidth.onDragging}
-            />
-            <Panel id="center" order={2} defaultSize={48}>
-              <PanelGroup direction="vertical" autoSaveId="center-normal">
-                <Panel
-                  ref={diffPanelRef}
-                  defaultSize={60}
-                  collapsible
-                  collapsedSize={0}
-                  onCollapse={() => setBottomMaximized(true)}
-                  onExpand={() => setBottomMaximized(false)}
-                >
-                  <DiffPane />
-                </Panel>
-                <PanelResizeHandle className="h-px bg-neutral-800 hover:bg-neutral-700" />
-                <Panel defaultSize={40}>
-                  <BottomPane />
-                </Panel>
-              </PanelGroup>
-            </Panel>
-            <PanelResizeHandle className="w-px bg-neutral-800 hover:bg-neutral-700" />
-            {/* Agent panel stays mounted on main clone too — AgentPane
-                renders an empty placeholder when on the main clone, but
-                the panel group's widths stay stable across main/worktree
-                switches that way. Conditionally removing this Panel
-                triggered react-resizable-panels' proportional reflow,
-                which drifted the sidebar's width on every flip. */}
-            <Panel id="agent" order={3} defaultSize={34} minSize={20}>
-              <AgentPane />
-            </Panel>
-          </PanelGroup>
-        )}
+            <WorktreeSidebar />
+          </Panel>
+          <PanelResizeHandle
+            className="w-px bg-neutral-800 hover:bg-neutral-700"
+            onDragging={sidebarWidth.onDragging}
+          />
+          <Panel id="center" order={2} defaultSize={48}>
+            <PanelGroup direction="vertical" autoSaveId="center-normal">
+              <Panel
+                ref={diffPanelRef}
+                defaultSize={60}
+                collapsible
+                collapsedSize={0}
+                onCollapse={() => setBottomMaximized(true)}
+                onExpand={() => setBottomMaximized(false)}
+              >
+                <DiffPane />
+              </Panel>
+              <PanelResizeHandle className="h-px bg-neutral-800 hover:bg-neutral-700" />
+              <Panel
+                ref={bottomPanelRef}
+                defaultSize={40}
+                collapsible
+                collapsedSize={0}
+                onCollapse={() => setFocusMode(true)}
+                onExpand={() => setFocusMode(false)}
+              >
+                <BottomPane />
+              </Panel>
+            </PanelGroup>
+          </Panel>
+          <PanelResizeHandle className="w-px bg-neutral-800 hover:bg-neutral-700" />
+          {/* Agent panel stays mounted on main clone too — AgentPane
+              renders an empty placeholder when on the main clone, but
+              the panel group's widths stay stable across main/worktree
+              switches that way. Conditionally removing this Panel
+              triggered react-resizable-panels' proportional reflow,
+              which drifted the sidebar's width on every flip. */}
+          <Panel id="agent" order={3} defaultSize={34} minSize={20}>
+            <AgentPane />
+          </Panel>
+        </PanelGroup>
       </div>
       <StatusBar
         worktree={selectedWorktree}

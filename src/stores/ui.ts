@@ -18,6 +18,8 @@ export type BottomPaneTab = "terminal" | "browser" | "problems" | "review" | "ci
 
 type UiState = {
   selectedWorktreeId: WorktreeId | null;
+  /// Diff takes over the whole center column (bottom pane collapsed).
+  /// Mirror of `bottomPaneMaximized`; sidebar and agent pane stay put.
   focusMode: boolean;
   worktreeSidebarCollapsed: boolean;
   /// Workspace-wide toggle: when true, gitignored entries are surfaced
@@ -188,11 +190,17 @@ export const useUiStore = create<UiState>((set, get) => ({
   selectWorktree(id) {
     set({ selectedWorktreeId: id });
   },
+  // Focus mode (diff takes the center column) and bottom-pane maximize
+  // (bottom pane takes it) are mirror images — entering one leaves the other.
   toggleFocusMode() {
-    set((s) => ({ focusMode: !s.focusMode }));
+    set((s) =>
+      s.focusMode
+        ? { focusMode: false }
+        : { focusMode: true, bottomPaneMaximized: false },
+    );
   },
   setFocusMode(on) {
-    set({ focusMode: on });
+    set(on ? { focusMode: true, bottomPaneMaximized: false } : { focusMode: false });
   },
   toggleWorktreeSidebar() {
     set((s) => ({ worktreeSidebarCollapsed: !s.worktreeSidebarCollapsed }));
@@ -244,7 +252,11 @@ export const useUiStore = create<UiState>((set, get) => ({
     set({ bottomPaneTab: tab });
   },
   toggleBottomPaneMaximized() {
-    set((s) => ({ bottomPaneMaximized: !s.bottomPaneMaximized }));
+    set((s) =>
+      s.bottomPaneMaximized
+        ? { bottomPaneMaximized: false }
+        : { bottomPaneMaximized: true, focusMode: false },
+    );
   },
   setBrowserUrl(worktreeId, url) {
     set((s) => ({

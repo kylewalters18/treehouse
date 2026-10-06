@@ -28,6 +28,17 @@ describe("ui store", () => {
     expect(useUiStore.getState().focusMode).toBe(false);
   });
 
+  it("focus mode and bottom-pane maximize are mutually exclusive", () => {
+    const s = useUiStore.getState();
+    s.toggleBottomPaneMaximized();
+    s.toggleFocusMode();
+    expect(useUiStore.getState()).toMatchObject({ focusMode: true, bottomPaneMaximized: false });
+    s.toggleBottomPaneMaximized();
+    expect(useUiStore.getState()).toMatchObject({ focusMode: false, bottomPaneMaximized: true });
+    s.setFocusMode(true);
+    expect(useUiStore.getState()).toMatchObject({ focusMode: true, bottomPaneMaximized: false });
+  });
+
   it("toggles worktree sidebar independently of focus mode", () => {
     expect(useUiStore.getState().worktreeSidebarCollapsed).toBe(false);
     useUiStore.getState().toggleWorktreeSidebar();
