@@ -1,5 +1,6 @@
-import { useEffect } from "react";
-import { GitCommitHorizontal, GitMerge } from "lucide-react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { Check, Copy, GitCommitHorizontal, GitMerge } from "lucide-react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { useDiffsStore } from "@/stores/diffs";
 import { useActivityStore } from "@/stores/activity";
@@ -138,11 +139,15 @@ function CommitRow({
   onSelect: () => void;
 }) {
   const Glyph = commit.merge ? GitMerge : GitCommitHorizontal;
+  const rowRef = useRef<HTMLButtonElement>(null);
+  const hover = useHoverCard();
   return (
     <li>
       <button
+        ref={rowRef}
         onClick={onSelect}
-        title={`${commit.message}\n\n${commit.author} · ${new Date(commit.time).toLocaleString()}`}
+        onMouseEnter={hover.enter}
+        onMouseLeave={hover.leave}
         className={cn(
           "relative grid w-full grid-cols-[14px_minmax(0,1fr)_auto] items-center gap-x-2 px-2 py-1 text-left transition-colors",
           explorerRow(selected),
@@ -167,8 +172,265 @@ function CommitRow({
           <span className="truncate">{commit.author}</span>
         </span>
       </button>
+      {hover.open && rowRef.current && (
+        <CommitHoverCard
+          commit={commit}
+          anchor={rowRef.current}
+          onEnter={hover.enter}
+          onLeave={hover.leave}
+          onClose={hover.close}
+        />
+      )}
     </li>
   );
+}
+
+/// Delayed open, short grace period on leave so the pointer can travel
+/// from the row into the card (to copy the SHA or scroll a long body).
+function useHoverCard() {
+  const [open, setOpen] = useState(false);
+  const timer = useRef<number | null>(null);
+  const clear = () => {
+    if (timer.current) window.clearTimeout(timer.current);
+    timer.current = null;
+  };
+  useEffect(() => clear, []);
+  return {
+    open,
+    close: () => {
+      clear();
+      setOpen(false);
+    },
+    enter: () => {
+      clear();
+      if (!open) timer.current = window.setTimeout(() => setOpen(true), 450);
+    },
+    leave: () => {
+      clear();
+      timer.current = window.setTimeout(() => setOpen(false), 120);
+    },
+  };
+}
+
+const CARD_WIDTH = 360;
+const GAP = 8;
+const MARGIN = 8;
+
+/// Rich commit details floating beside the row. Portaled + `position:
+/// fixed` so it escapes the history list's scroll clipping; placed right
+/// of the row when it fits, else left, and clamped to the viewport.
+function CommitHoverCard({
+  commit,
+  anchor,
+  onEnter,
+  onLeave,
+  onClose,
+}: {
+  commit: CommitSummary;
+  anchor: HTMLElement;
+  onEnter: () => void;
+  onLeave: () => void;
+  onClose: () => void;
+}) {
+  const cardRef = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  useLayoutEffect(() => {
+    const rect = anchor.getBoundingClientRect();
+    const h = cardRef.current?.offsetHeight ?? 0;
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    let left = rect.right + GAP;
+    if (left + CARD_WIDTH > vw - MARGIN) left = rect.left - GAP - CARD_WIDTH;
+    left = Math.max(MARGIN, Math.min(left, vw - CARD_WIDTH - MARGIN));
+    const top = Math.max(MARGIN, Math.min(rect.top, vh - h - MARGIN));
+    setPos({ top, left });
+  }, [anchor]);
+
+  // Position is a snapshot of the row's rect; drop the card rather than
+  // leave it floating when anything but the card itself scrolls.
+  useEffect(() => {
+    const onScroll = (e: Event) => {
+      if (!cardRef.current?.contains(e.target as Node)) onClose();
+    };
+    window.addEventListener("scroll", onScroll, true);
+    window.addEventListener("resize", onClose);
+    return () => {
+      window.removeEventListener("scroll", onScroll, true);
+      window.removeEventListener("resize", onClose);
+    };
+  }, [onClose]);
+
+  const { body, trailers } = splitMessage(commit.message);
+  const { filesChanged, insertions, deletions } = commit.stats;
+  const date = new Date(commit.time);
+
+  async function copySha() {
+    try {
+      await navigator.clipboard.writeText(commit.sha);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1200);
+    } catch {
+      /* clipboard unavailable — nothing useful to surface */
+    }
+  }
+
+  return createPortal(
+    <div
+      ref={cardRef}
+      onMouseEnter={onEnter}
+      onMouseLeave={onLeave}
+      style={{
+        width: CARD_WIDTH,
+        ...(pos ?? { top: 0, left: 0, visibility: "hidden" }),
+      }}
+      className="fixed z-50 overflow-hidden rounded-md border border-neutral-800 bg-neutral-900/95 text-neutral-300 shadow-2xl shadow-black/50 backdrop-blur-sm"
+    >
+      <div className="flex items-center gap-2 border-b border-neutral-800/80 px-3 py-2">
+        <Avatar name={commit.author} />
+        <div className="min-w-0 flex-1 leading-tight">
+          <div className="truncate text-[12px] font-medium text-neutral-200">
+            {commit.author}
+          </div>
+          <div
+            className="truncate text-[10.5px] text-neutral-500"
+            title={date.toISOString()}
+          >
+            {relativeTime(commit.time)} ·{" "}
+            {date.toLocaleString(undefined, {
+              dateStyle: "medium",
+              timeStyle: "short",
+            })}
+          </div>
+        </div>
+        {commit.merge && (
+          <span className="flex shrink-0 items-center gap-1 rounded border border-violet-400/25 bg-violet-400/10 px-1.5 py-0.5 text-[10px] text-violet-300">
+            <GitMerge size={11} /> merge
+          </span>
+        )}
+      </div>
+
+      <div className="max-h-72 overflow-y-auto px-3 py-2.5">
+        <div className="text-[12.5px] font-medium leading-snug text-neutral-100">
+          {commit.summary || (
+            <span className="italic text-neutral-500">(no message)</span>
+          )}
+        </div>
+        {body && (
+          <div className="mt-2 whitespace-pre-wrap break-words text-[11.5px] leading-relaxed text-neutral-400">
+            {body}
+          </div>
+        )}
+        {trailers.length > 0 && (
+          <div className="mt-2.5 space-y-0.5 border-t border-neutral-800/80 pt-2">
+            {trailers.map(([k, v], i) => (
+              <div key={i} className="flex gap-1.5 text-[10.5px]">
+                <span className="shrink-0 text-neutral-500">{k}:</span>
+                <span className="truncate text-neutral-400">{v}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="flex items-center gap-3 border-t border-neutral-800/80 bg-neutral-950/40 px-3 py-1.5 font-mono text-[10.5px] tabular-nums">
+        <span className="text-neutral-500">
+          {filesChanged} file{filesChanged === 1 ? "" : "s"}
+        </span>
+        <span className="text-emerald-400/90">+{insertions}</span>
+        <span className="text-rose-400/90">-{deletions}</span>
+        <ChangeBar insertions={insertions} deletions={deletions} />
+        <button
+          onClick={copySha}
+          title="Copy full SHA"
+          className="ml-auto flex items-center gap-1 rounded px-1.5 py-0.5 text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200"
+        >
+          {commit.shortSha}
+          {copied ? (
+            <Check size={11} className="text-emerald-400" />
+          ) : (
+            <Copy size={11} />
+          )}
+        </button>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+/// GitHub-style five-block +/- proportion bar.
+function ChangeBar({
+  insertions,
+  deletions,
+}: {
+  insertions: number;
+  deletions: number;
+}) {
+  const total = insertions + deletions;
+  const blocks = 5;
+  const add = total ? Math.round((insertions / total) * blocks) : 0;
+  const del = total ? Math.min(blocks - add, Math.round((deletions / total) * blocks)) : 0;
+  return (
+    <span className="flex gap-px">
+      {Array.from({ length: blocks }, (_, i) => (
+        <span
+          key={i}
+          className={cn(
+            "h-2 w-2 rounded-[1px]",
+            i < add
+              ? "bg-emerald-500/80"
+              : i < add + del
+                ? "bg-rose-500/80"
+                : "bg-neutral-700",
+          )}
+        />
+      ))}
+    </span>
+  );
+}
+
+function Avatar({ name }: { name: string }) {
+  const initials =
+    name
+      .split(/\s+/)
+      .filter(Boolean)
+      .slice(0, 2)
+      .map((w) => w[0]!.toUpperCase())
+      .join("") || "?";
+  let hash = 0;
+  for (const ch of name) hash = (hash * 31 + ch.charCodeAt(0)) | 0;
+  const hue = Math.abs(hash) % 360;
+  return (
+    <span
+      className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[10px] font-semibold text-white/90"
+      style={{ background: `hsl(${hue} 45% 38%)` }}
+    >
+      {initials}
+    </span>
+  );
+}
+
+/// Split a commit message into its body (minus the summary line) and a
+/// trailing `Key: value` trailer block (Co-Authored-By, Signed-off-by, …).
+export function splitMessage(message: string): {
+  body: string;
+  trailers: [string, string][];
+} {
+  const lines = message.replace(/\r\n/g, "\n").split("\n");
+  const rest = lines.slice(1).join("\n").trim();
+  if (!rest) return { body: "", trailers: [] };
+  const paras = rest.split(/\n\s*\n/);
+  const last = paras[paras.length - 1]!.split("\n");
+  const trailerRe = /^([A-Za-z][A-Za-z0-9-]*):\s+(.+)$/;
+  if (last.every((l) => trailerRe.test(l))) {
+    const trailers = last.map((l) => {
+      const m = l.match(trailerRe)!;
+      return [m[1]!, m[2]!] as [string, string];
+    });
+    return { body: paras.slice(0, -1).join("\n\n").trim(), trailers };
+  }
+  return { body: rest, trailers: [] };
 }
 
 function relativeTime(ms: number): string {
