@@ -38,11 +38,11 @@ import { CommentOverlay, EditorPane } from "./EditorPane";
 import { useEditorViewStateStore } from "@/stores/editor-view-state";
 import { FileTree } from "./FileTree";
 import { HistoryPanel } from "./HistoryPanel";
+import { ChangedFileTree } from "./ChangedFileTree";
 import { useIsEditorDirty } from "@/stores/editor-dirty";
 import { MarkdownPreview, isPreviewablePath } from "./MarkdownPreview";
 import { isRasterImagePath } from "./markdown-plugins";
 import { inferLanguage } from "./editor-language";
-import { explorerRow, iconForFile, statusFilenameColor } from "./file-icons";
 import { THEME_NAME } from "./monaco-theme";
 
 export function DiffPane() {
@@ -677,41 +677,13 @@ function ChangeGroupSection({
         <div className="flex min-w-0 items-center">{anchor}</div>
       </div>
       {open && (
-        <ul className="pb-1">
-          {files.map((f) => {
-            const basename = f.path.split("/").pop() ?? f.path;
-            const { Icon, color } = iconForFile(basename);
-            const isSelected = selectedFile === f.path;
-            return (
-              <li key={f.path}>
-                <button
-                  onClick={() => onSelect(f.path)}
-                  className={cn(
-                    "relative flex h-[22px] w-full items-center justify-between gap-2 pl-[26px] pr-2 text-left text-[12px] transition-colors",
-                    explorerRow(isSelected),
-                  )}
-                  title={f.path}
-                >
-                  <span className="flex min-w-0 items-center gap-1.5">
-                    <Icon size={13} color={color} className="shrink-0" />
-                    <span
-                      className={cn(
-                        "truncate font-mono text-[11px]",
-                        statusFilenameColor(f.status.kind),
-                      )}
-                    >
-                      {f.path}
-                    </span>
-                  </span>
-                  <span className="shrink-0 font-mono text-[10.5px] tabular-nums">
-                    <span className="text-emerald-400">+{f.insertions}</span>{" "}
-                    <span className="text-rose-400">-{f.deletions}</span>
-                  </span>
-                </button>
-              </li>
-            );
-          })}
-        </ul>
+        <ChangedFileTree
+          files={files}
+          isSelected={(path) => selectedFile === path}
+          onSelect={onSelect}
+          indent={20}
+          className="pb-1"
+        />
       )}
     </section>
   );

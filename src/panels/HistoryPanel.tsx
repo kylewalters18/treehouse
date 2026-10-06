@@ -6,7 +6,8 @@ import { useActivityStore } from "@/stores/activity";
 import type { CommitSummary, WorktreeId } from "@/ipc/types";
 import { cn } from "@/lib/cn";
 import { countBadge } from "@/lib/pane-chrome";
-import { explorerRow, iconForFile, statusFilenameColor } from "./file-icons";
+import { explorerRow } from "./file-icons";
+import { ChangedFileTree } from "./ChangedFileTree";
 
 /// History tab of the DiffPane sidebar: the branch's commits on top
 /// (newest first, down to the merge-base), the open commit's files below.
@@ -108,45 +109,17 @@ export function HistoryPanel({ worktreeId }: { worktreeId: WorktreeId }) {
                 Loading…
               </div>
             ) : (
-              <ul className="py-1">
-                {commitDiff.files.map((f) => {
-                  const basename = f.path.split("/").pop() ?? f.path;
-                  const { Icon, color } = iconForFile(basename);
-                  const isSelected =
-                    selectedGroup === "commit" && selectedFile === f.path;
-                  return (
-                    <li key={f.path}>
-                      <button
-                        onClick={() => {
-                          selectFile(worktreeId, f.path, "commit");
-                          setView(worktreeId, "diff");
-                        }}
-                        className={cn(
-                          "relative flex h-[22px] w-full items-center justify-between gap-2 pl-3 pr-2 text-left text-[12px] transition-colors",
-                          explorerRow(isSelected),
-                        )}
-                        title={f.path}
-                      >
-                        <span className="flex min-w-0 items-center gap-1.5">
-                          <Icon size={13} color={color} className="shrink-0" />
-                          <span
-                            className={cn(
-                              "truncate font-mono text-[11px]",
-                              statusFilenameColor(f.status.kind),
-                            )}
-                          >
-                            {f.path}
-                          </span>
-                        </span>
-                        <span className="shrink-0 font-mono text-[10.5px] tabular-nums">
-                          <span className="text-emerald-400">+{f.insertions}</span>{" "}
-                          <span className="text-rose-400">-{f.deletions}</span>
-                        </span>
-                      </button>
-                    </li>
-                  );
-                })}
-              </ul>
+              <ChangedFileTree
+                files={commitDiff.files}
+                isSelected={(path) =>
+                  selectedGroup === "commit" && selectedFile === path
+                }
+                onSelect={(path) => {
+                  selectFile(worktreeId, path, "commit");
+                  setView(worktreeId, "diff");
+                }}
+                className="py-1"
+              />
             )}
           </div>
         </div>
