@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   AlertTriangle,
   Check,
@@ -578,10 +579,8 @@ export function WorktreeSidebar() {
         aria-current={selectedId === w.id ? "true" : undefined}
         title={w.path}
       >
-        {/* Dim the row CONTENT but not the row itself — `opacity` <1
-            creates a stacking context, and applying it to the <li>
-            traps RowMenu's dropdown inside that context: sibling
-            rows below paint over the popup and swallow its clicks. */}
+        {/* Dim the row CONTENT but not the row itself, so the hover
+            controls (pin, ⋯) stay full-strength. */}
         <div
           className={cn(
             "flex min-w-0 flex-1 items-center gap-2",
@@ -691,16 +690,14 @@ export function WorktreeSidebar() {
       </div>
 
       {/* Pinned above the scroll area so it stays visible however many
-          worktrees there are. Deliberately not its own scroller: overflow
-          would clip RowMenu's absolutely-positioned dropdown. */}
+          worktrees there are. */}
       {inbox.length > 0 && (
         <div className="relative z-30 shrink-0 border-b border-amber-400/25 bg-amber-400/[0.06] before:absolute before:inset-y-0 before:left-0 before:w-[2px] before:bg-amber-400/60 pb-1">
           <SectionHeader label="Needs you" count={inbox.length} />
           <ul>{inbox.map((w) => renderRow(w, { chip: showRepoChips }))}</ul>
         </div>
       )}
-      {/* Same treatment as "Needs you": fixed, not scrolling. Stacks
-          under it (lower z) so its row menus can overlap this band. */}
+      {/* Same treatment as "Needs you": fixed, not scrolling. */}
       {pinned.length > 0 && (
         <div className="relative z-20 shrink-0 border-b border-neutral-800 pb-1">
           <SectionHeader label="Pinned" count={pinned.length} tone="neutral" />
@@ -1228,22 +1225,57 @@ function RowMenu({
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState<{ top: number; right: number } | null>(null);
+
+  // Portaled + fixed so the sidebar's scroller can't clip it, and flipped
+  // above the button when it would run off the bottom of the window —
+  // otherwise the last rows' menus open offscreen.
+  useLayoutEffect(() => {
+    if (!open) {
+      setPos(null);
+      return;
+    }
+    const b = buttonRef.current?.getBoundingClientRect();
+    if (!b) return;
+    const h = menuRef.current?.offsetHeight ?? 0;
+    const gap = 2;
+    const below = b.bottom + gap;
+    const top =
+      below + h > window.innerHeight - 4 && b.top - gap - h >= 4
+        ? b.top - gap - h
+        : below;
+    setPos({ top, right: window.innerWidth - b.right });
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
     function onDocClick(e: MouseEvent) {
-      if (ref.current && !ref.current.contains(e.target as Node)) {
+      const t = e.target as Node;
+      if (!ref.current?.contains(t) && !menuRef.current?.contains(t)) {
         setOpen(false);
       }
     }
     function onKey(e: KeyboardEvent) {
       if (e.key === "Escape") setOpen(false);
     }
+    // A fixed menu would drift off its row when the list scrolls.
+    function onScroll(e: Event) {
+      if (!menuRef.current?.contains(e.target as Node)) setOpen(false);
+    }
+    function onResize() {
+      setOpen(false);
+    }
     window.addEventListener("mousedown", onDocClick);
     window.addEventListener("keydown", onKey);
+    window.addEventListener("scroll", onScroll, true);
+    window.addEventListener("resize", onResize);
     return () => {
       window.removeEventListener("mousedown", onDocClick);
       window.removeEventListener("keydown", onKey);
+      window.removeEventListener("scroll", onScroll, true);
+      window.removeEventListener("resize", onResize);
     };
   }, [open]);
 
@@ -1262,6 +1294,7 @@ function RowMenu({
       className="relative shrink-0"
     >
       <button
+        ref={buttonRef}
         onClick={(e) => {
           e.stopPropagation();
           setOpen((v) => !v);
@@ -1276,20 +1309,33 @@ function RowMenu({
       >
         ⋯
       </button>
-      {open && (
-        <div className="absolute right-0 top-[110%] z-30 w-40 overflow-hidden rounded border border-neutral-800 bg-neutral-900 py-1 shadow-xl">
-          {behind > 0 && (
-            <MenuItem onClick={run(onSync)}>
-              Sync <span className="text-neutral-600">↓{behind}</span>
+      {open &&
+        createPortal(
+          <div
+            ref={menuRef}
+            // React events bubble through portals: keep clicks on the
+            // menu's padding/divider from selecting the row underneath.
+            onClick={(e) => e.stopPropagation()}
+            style={
+              pos
+                ? { top: pos.top, right: pos.right }
+                : { top: 0, left: 0, visibility: "hidden" }
+            }
+            className="fixed z-50 w-40 overflow-hidden rounded border border-neutral-800 bg-neutral-900 py-1 shadow-xl"
+          >
+            {behind > 0 && (
+              <MenuItem onClick={run(onSync)}>
+                Sync <span className="text-neutral-600">↓{behind}</span>
+              </MenuItem>
+            )}
+            <MenuItem onClick={run(onMerge)}>Merge…</MenuItem>
+            <div className="my-1 border-t border-neutral-800" />
+            <MenuItem onClick={run(onRemove)} danger>
+              Remove
             </MenuItem>
-          )}
-          <MenuItem onClick={run(onMerge)}>Merge…</MenuItem>
-          <div className="my-1 border-t border-neutral-800" />
-          <MenuItem onClick={run(onRemove)} danger>
-            Remove
-          </MenuItem>
-        </div>
-      )}
+          </div>,
+          document.body,
+        )}
     </div>
   );
 }
