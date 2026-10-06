@@ -33,8 +33,8 @@ export async function resolveSendableAgent(
   return sendable[0]?.id ?? null;
 }
 
-/// Mirror of Rust `AgentBackendKind::accepts_positional_prompt`: backends
-/// whose CLI starts a session with `-- "<prompt>"` already submitted.
+/// Backends whose CLI starts a session with `-- "<prompt>"` already
+/// submitted (see Rust `supervisor::build_spawn_argv`).
 export function acceptsPositionalPrompt(backend: AgentBackendKind): boolean {
-  return backend === "claudeCode" || backend === "codex";
+  return backend === "claudeCode" || backend === "codex" || backend === "kiro";
 }
