@@ -94,6 +94,24 @@ body {
 .markdown-body > :first-child { margin-top: 0 !important; }
 .markdown-body > :last-child { margin-bottom: 0 !important; }
 
+/* Popover-sized variant for forge issue / MR text. */
+.markdown-body.markdown-compact { font-size: 12px; line-height: 1.6; }
+.markdown-body.markdown-compact p,
+.markdown-body.markdown-compact ul,
+.markdown-body.markdown-compact ol,
+.markdown-body.markdown-compact blockquote,
+.markdown-body.markdown-compact .table-wrap,
+.markdown-body.markdown-compact details,
+.markdown-body.markdown-compact .shiki-block { margin-bottom: 10px; }
+.markdown-body.markdown-compact h1,
+.markdown-body.markdown-compact h2,
+.markdown-body.markdown-compact h3 { font-size: 1.1em; margin: 14px 0 6px; padding-bottom: 0; border-bottom: 0; }
+.markdown-body.markdown-compact h4,
+.markdown-body.markdown-compact h5,
+.markdown-body.markdown-compact h6 { font-size: 1em; margin: 12px 0 4px; }
+.markdown-body.markdown-compact ul,
+.markdown-body.markdown-compact ol { padding-left: 1.5em; }
+
 .markdown-body p,
 .markdown-body ul,
 .markdown-body ol,

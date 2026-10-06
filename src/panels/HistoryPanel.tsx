@@ -9,6 +9,8 @@ import { cn } from "@/lib/cn";
 import { countBadge } from "@/lib/pane-chrome";
 import { explorerRow } from "./file-icons";
 import { ChangedFileTree } from "./ChangedFileTree";
+import { Avatar } from "@/components/Avatar";
+import { relativeTime } from "@/lib/time";
 
 /// History tab of the DiffPane sidebar: the branch's commits on top
 /// (newest first, down to the merge-base), the open commit's files below.
@@ -390,27 +392,6 @@ function ChangeBar({
   );
 }
 
-function Avatar({ name }: { name: string }) {
-  const initials =
-    name
-      .split(/\s+/)
-      .filter(Boolean)
-      .slice(0, 2)
-      .map((w) => w[0]!.toUpperCase())
-      .join("") || "?";
-  let hash = 0;
-  for (const ch of name) hash = (hash * 31 + ch.charCodeAt(0)) | 0;
-  const hue = Math.abs(hash) % 360;
-  return (
-    <span
-      className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[10px] font-semibold text-white/90"
-      style={{ background: `hsl(${hue} 45% 38%)` }}
-    >
-      {initials}
-    </span>
-  );
-}
-
 /// Split a commit message into its body (minus the summary line) and a
 /// trailing `Key: value` trailer block (Co-Authored-By, Signed-off-by, …).
 export function splitMessage(message: string): {
@@ -431,16 +412,4 @@ export function splitMessage(message: string): {
     return { body: paras.slice(0, -1).join("\n\n").trim(), trailers };
   }
   return { body: rest, trailers: [] };
-}
-
-function relativeTime(ms: number): string {
-  const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
-  if (s < 60) return "just now";
-  const m = Math.round(s / 60);
-  if (m < 60) return `${m}m ago`;
-  const h = Math.round(m / 60);
-  if (h < 48) return `${h}h ago`;
-  const d = Math.round(h / 24);
-  if (d < 60) return `${d}d ago`;
-  return new Date(ms).toLocaleDateString();
 }

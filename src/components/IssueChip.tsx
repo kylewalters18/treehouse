@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { CircleDot, Plus } from "lucide-react";
+import { CircleCheck, CircleDot, ExternalLink, Plus, Send } from "lucide-react";
 import type { ForgeIssue, WorkspaceId, WorktreeId } from "@/ipc/types";
 import {
   forgeGetIssue,
@@ -16,6 +16,9 @@ import { pasteAndSubmit } from "@/lib/agent";
 import { toastError, toastInfo, toastSuccess } from "@/stores/toasts";
 import { asMessage } from "@/lib/errors";
 import { cn } from "@/lib/cn";
+import { relativeTime } from "@/lib/time";
+import { Avatar, nameHue } from "./Avatar";
+import { ForgeMarkdown } from "./ForgeMarkdown";
 
 /// The issue this worktree is working on — its stored link (set when created
 /// from an issue, or here via "Link issue"), never parsed from the branch
@@ -167,49 +170,68 @@ export function IssueChip({
         {issue && <span className="max-w-[16rem] truncate">{issue.title}</span>}
       </button>
       {open && (
-        <div className="absolute left-0 top-[120%] z-30 w-[26rem] rounded-lg border border-neutral-800 bg-neutral-900 shadow-2xl">
+        <div className="absolute left-0 top-[120%] z-30 flex max-h-[70vh] w-[30rem] flex-col overflow-hidden rounded-md border border-neutral-800 bg-neutral-900/95 text-neutral-300 shadow-2xl shadow-black/50 backdrop-blur-sm">
           {issue ? (
             <>
-              <div className="flex items-start gap-2 border-b border-neutral-800 p-2">
-                <span className="mt-0.5 font-mono text-[11px] text-neutral-500">
-                  #{issue.number}
-                </span>
-                <div className="min-w-0 flex-1">
-                  <div className="text-sm text-neutral-100">{issue.title}</div>
-                  <div className="mt-0.5 flex flex-wrap items-center gap-1.5">
-                    {issue.labels.slice(0, 5).map((l) => (
-                      <span
-                        key={l}
-                        className="rounded bg-neutral-800 px-1.5 py-[1px] text-[10px] text-neutral-300"
-                      >
-                        {l}
-                      </span>
-                    ))}
+              <div className="border-b border-neutral-800/80 px-3 pb-2.5 pt-2">
+                <div className="flex items-center gap-2 text-[10.5px]">
+                  <IssueStateBadge state={issue.state} />
+                  <span className="font-mono text-neutral-500">#{issue.number}</span>
+                  <span className="text-neutral-600" title={issue.updatedAt}>
+                    updated {relativeTime(Date.parse(issue.updatedAt))}
+                  </span>
+                  <button
+                    onClick={() => void openExternalUrl(issue.url)}
+                    className="ml-auto flex items-center gap-1 rounded px-1.5 py-0.5 text-neutral-500 hover:bg-neutral-800 hover:text-neutral-200"
+                    title={issue.url}
+                  >
+                    Open <ExternalLink size={11} />
+                  </button>
+                </div>
+                <div className="mt-1.5 text-[13.5px] font-medium leading-snug text-neutral-100">
+                  {issue.title}
+                </div>
+                {(issue.labels.length > 0 || issue.assignees.length > 0) && (
+                  <div className="mt-2 flex items-center gap-2">
+                    <div className="flex min-w-0 flex-1 flex-wrap gap-1">
+                      {issue.labels.map((l) => (
+                        <LabelPill key={l} name={l} />
+                      ))}
+                    </div>
                     {issue.assignees.length > 0 && (
-                      <span className="text-[10px] text-neutral-500">
-                        @{issue.assignees[0]}
-                      </span>
+                      <div
+                        className="flex shrink-0 -space-x-1.5"
+                        title={`Assigned to ${issue.assignees.join(", ")}`}
+                      >
+                        {issue.assignees.slice(0, 4).map((a) => (
+                          <Avatar
+                            key={a}
+                            name={a}
+                            size={20}
+                            className="ring-2 ring-neutral-900"
+                          />
+                        ))}
+                      </div>
                     )}
                   </div>
-                </div>
-                <button
-                  onClick={() => void openExternalUrl(issue.url)}
-                  className="rounded border border-neutral-800 px-1.5 py-0.5 text-[11px] text-neutral-400 hover:border-neutral-600 hover:text-neutral-200"
-                  title="Open in browser"
-                >
-                  ↗
-                </button>
+                )}
               </div>
-              <div className="max-h-64 overflow-y-auto whitespace-pre-wrap px-3 py-2 text-xs text-neutral-300">
-                {issue.body || <span className="text-neutral-600">No description.</span>}
+              <div className="min-h-0 flex-1 overflow-y-auto px-3 py-2.5">
+                {issue.body.trim() ? (
+                  <ForgeMarkdown source={issue.body} />
+                ) : (
+                  <span className="text-[12px] italic text-neutral-600">
+                    No description.
+                  </span>
+                )}
               </div>
             </>
           ) : (
-            <div className="px-3 py-2 text-xs text-neutral-500">
+            <div className="px-3 py-3 text-xs text-neutral-500">
               Couldn't load #{number} from the forge.
             </div>
           )}
-          <div className="flex items-center gap-2 border-t border-neutral-800 px-3 py-2">
+          <div className="flex shrink-0 items-center gap-2 border-t border-neutral-800/80 bg-neutral-950/40 px-3 py-1.5">
             <button
               onClick={() => void unlink()}
               className="rounded px-1.5 py-1 text-[11px] text-neutral-500 hover:bg-neutral-800 hover:text-neutral-300"
@@ -234,10 +256,10 @@ export function IssueChip({
                 </button>
                 <button
                   onClick={() => void sendToAgent()}
-                  className="rounded border border-blue-700 bg-blue-950/40 px-2 py-1 text-[11px] font-medium text-blue-200 hover:bg-blue-950/60"
+                  className="flex items-center gap-1 rounded border border-blue-700 bg-blue-950/40 px-2 py-1 text-[11px] font-medium text-blue-200 hover:bg-blue-950/60"
                   title="Send the issue to this worktree's active agent"
                 >
-                  → Send to agent
+                  <Send size={11} /> Send to agent
                 </button>
               </>
             )}
@@ -245,6 +267,42 @@ export function IssueChip({
         </div>
       )}
     </div>
+  );
+}
+
+function IssueStateBadge({ state }: { state: string }) {
+  const closed = state === "closed";
+  const Icon = closed ? CircleCheck : CircleDot;
+  return (
+    <span
+      className={cn(
+        "flex items-center gap-1 rounded-full border px-1.5 py-[1px] font-medium capitalize",
+        closed
+          ? "border-violet-400/25 bg-violet-400/10 text-violet-300"
+          : "border-emerald-400/25 bg-emerald-400/10 text-emerald-300",
+      )}
+    >
+      <Icon size={11} />
+      {state}
+    </span>
+  );
+}
+
+/// Forges don't hand us label colors here; hash the name so each label
+/// keeps a consistent tint.
+function LabelPill({ name }: { name: string }) {
+  const hue = nameHue(name);
+  return (
+    <span
+      className="rounded-full border px-1.5 py-[1px] text-[10px] font-medium"
+      style={{
+        color: `hsl(${hue} 70% 75%)`,
+        background: `hsl(${hue} 60% 50% / 0.12)`,
+        borderColor: `hsl(${hue} 60% 60% / 0.3)`,
+      }}
+    >
+      {name}
+    </span>
   );
 }
 
