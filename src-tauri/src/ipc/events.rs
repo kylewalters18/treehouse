@@ -32,6 +32,12 @@ pub fn issue_links_changed() -> String {
     "issue-links://changed".to_string()
 }
 
+/// CI for a branch in this workspace changed under the renderer — an agent
+/// retried a job over MCP. Payload: the branch name.
+pub fn ci_changed(workspace_id: WorkspaceId) -> String {
+    format!("workspace://{workspace_id}/ci-changed")
+}
+
 /// An MR/PR was created (or otherwise changed) for a branch in this
 /// workspace — by the UI or by an agent over MCP. Payload: the branch name.
 pub fn mr_changed(workspace_id: WorkspaceId) -> String {

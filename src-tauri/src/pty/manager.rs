@@ -268,6 +268,47 @@ pub fn list_for_worktree(
         .collect()
 }
 
+/// A terminal's buffered output plus what it's running, for readers outside
+/// the UI (the MCP `get_terminal_output` tool).
+pub struct TerminalOutput {
+    pub id: TerminalId,
+    pub alive: bool,
+    /// The ring buffer: the last ~2MB of raw PTY output.
+    pub bytes: Vec<u8>,
+    /// Foreground process group of the PTY, and the shell's own pid — equal
+    /// when the shell is idle at a prompt.
+    pub foreground_pid: Option<i32>,
+    pub shell_pid: Option<u32>,
+}
+
+/// Every terminal of a worktree, oldest first (ids are ULIDs).
+pub fn outputs_for_worktree(
+    registry: &TerminalRegistry,
+    worktree_id: WorktreeId,
+) -> Vec<TerminalOutput> {
+    let mut out: Vec<TerminalOutput> = registry
+        .inner
+        .iter()
+        .filter(|e| e.value().session.worktree_id == worktree_id)
+        .map(|e| {
+            let h = e.value();
+            let (bytes, alive) = {
+                let sh = h.shared.lock();
+                (sh.ring.iter().copied().collect(), sh.exited.is_none())
+            };
+            TerminalOutput {
+                id: *e.key(),
+                alive,
+                bytes,
+                foreground_pid: h.master.lock().process_group_leader(),
+                shell_pid: h.child.lock().process_id(),
+            }
+        })
+        .collect();
+    out.sort_by_key(|t| t.id);
+    out
+}
+
 pub fn close_for_worktree(registry: &TerminalRegistry, worktree_id: WorktreeId) {
     let ids: Vec<_> = registry
         .inner

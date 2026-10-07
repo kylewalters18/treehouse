@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ForgeJob, ForgeJobLog, ForgePipeline } from "@/ipc/types";
-import { forgeJobLog, openExternalUrl } from "@/ipc/client";
+import { forgeJobLog, onCiChanged, openExternalUrl } from "@/ipc/client";
 import { useForgeStore, forgeBranchKey } from "@/stores/forge";
 import { useUiStore } from "@/stores/ui";
 import { useWorktreesStore } from "@/stores/worktrees";
@@ -104,6 +104,15 @@ export function CIPanel() {
   useEffect(() => {
     if (wsId && pipeline) void loadJobs(wsId, pipeline.id);
   }, [wsId, pipeline?.id, loadJobs]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // An agent retried a job over MCP: show the run it started.
+  useEffect(() => {
+    if (!wsId || !branch) return;
+    const p = onCiChanged(wsId, (b) => {
+      if (b === branch) void loadPipelines(wsId, branch);
+    });
+    return () => void p.then((un) => un());
+  }, [wsId, branch, loadPipelines]);
 
   // A different run or branch starts from its default job.
   useEffect(() => setJobKey(null), [pipeline?.id, branch]);

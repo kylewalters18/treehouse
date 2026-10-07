@@ -28,7 +28,9 @@ create_worktree with `issue` starts a worktree + agent on an existing one; creat
 pull/merge request for your own worktree once your work is committed. To get PRs for \
 worktrees you start, tell their agents in `prompt` to commit and call create_pr when done.
 Once your PR is open, get_pr_threads reads reviewer feedback and get_ci_status / get_ci_log \
-show why CI failed; get_linked_issue re-reads the issue you're working on.
+show why CI failed; after pushing, wait_for_ci waits for the run to finish (retry_ci_job \
+re-runs a flaky job); get_linked_issue re-reads the issue you're working on. When the user \
+points at something in their terminal, get_terminal_output reads treehouse's terminal tabs.
 
 Whenever you need a new git worktree, ALWAYS use create_worktree. NEVER run \
 `git worktree add` (in any form) and never use Claude Code's built-in worktree features \

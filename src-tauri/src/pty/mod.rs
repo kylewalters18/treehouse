@@ -1,4 +1,5 @@
 pub mod manager;
+pub mod text;
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;

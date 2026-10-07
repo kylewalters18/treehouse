@@ -3,13 +3,16 @@
 //! reason and relay it, rather than seeing a protocol error.
 
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::agent::supervisor;
-use crate::forge::{log, workflow, Forge, ForgeThread, IssueStart};
+use crate::forge::{log, workflow, Forge, ForgePipeline, ForgeThread, IssueStart};
 use crate::ipc::commands::{finish_create, resolve_forge};
+use crate::ipc::events;
+use crate::pty;
 use crate::state::AppState;
 use crate::storage;
 use crate::util::ids::WorkspaceId;
@@ -32,6 +35,9 @@ pub fn list(scope: CallerScope) -> Value {
             get_pr_threads_schema(),
             get_ci_status_schema(),
             get_ci_log_schema(),
+            wait_for_ci_schema(),
+            retry_ci_job_schema(),
+            get_terminal_output_schema(),
         ]),
         // A planner has a repo but no worktree, so nothing to open a PR from.
         CallerScope::Planner(_) => {
@@ -160,6 +166,66 @@ fn get_ci_log_schema() -> Value {
     })
 }
 
+fn wait_for_ci_schema() -> Value {
+    json!({
+        "name": "wait_for_ci",
+        "description": "Wait for CI on THIS worktree's pushed HEAD to finish, then return its \
+            result in get_ci_status's shape. Push first — this errors if HEAD isn't on origin. \
+            Returns early if no run appears for HEAD within ~3 minutes, and with `timedOut` if \
+            still running at the timeout (call again to keep waiting). On failure, read the \
+            failed job with get_ci_log.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "timeout_secs": {
+                    "type": "integer",
+                    "description": "How long to wait, 30–1800. Default 600."
+                }
+            }
+        }
+    })
+}
+
+fn retry_ci_job_schema() -> Value {
+    json!({
+        "name": "retry_ci_job",
+        "description": "Re-run one finished job (an id from get_ci_status) of THIS worktree's latest \
+            pipeline — for failures you've judged flaky or infrastructural from the log, not ones \
+            your code caused. Then call wait_for_ci.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "job_id": { "type": "integer", "description": "Job id from get_ci_status." }
+            },
+            "required": ["job_id"]
+        }
+    })
+}
+
+fn get_terminal_output_schema() -> Value {
+    json!({
+        "name": "get_terminal_output",
+        "description": "Read recent output from the user's terminal tabs in THIS worktree in \
+            treehouse (not your own shell) — e.g. a dev server's errors or a test run the user \
+            started. With one terminal open, returns its output; with several, call without \
+            `terminal` first to list them (number, what each is running, its last line), then \
+            pass the number. Escape codes are stripped; full-screen apps won't read well.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "terminal": {
+                    "type": "integer",
+                    "description": "Which terminal, by the number from the listing."
+                },
+                "lines": {
+                    "type": "integer",
+                    "description": "How many of the most recent lines to return, 1–2000. Default 200."
+                }
+            }
+        }
+    })
+}
+
 fn create_worktree_schema(scope: CallerScope) -> Value {
     let scratch = scope == CallerScope::Scratch;
     let (what, base_hint) = match scope {
@@ -234,6 +300,9 @@ pub async fn call(app: &AppHandle, caller: McpCaller, params: &Value) -> Value {
         "get_pr_threads" => get_pr_threads(app, caller, &args).await,
         "get_ci_status" => get_ci_status(app, caller).await,
         "get_ci_log" => get_ci_log(app, caller, &args).await,
+        "wait_for_ci" => wait_for_ci(app, caller, &args).await,
+        "retry_ci_job" => retry_ci_job(app, caller, &args).await,
+        "get_terminal_output" => get_terminal_output(app, caller, &args).await,
         "list_repos" if caller.scope == CallerScope::Scratch => Ok(list_repos(app)),
         other => Err(format!("unknown tool: {other}")),
     };
@@ -573,17 +642,29 @@ fn thread_json(t: ForgeThread) -> Value {
 async fn get_ci_status(app: &AppHandle, caller: McpCaller) -> Result<Value, String> {
     let wt = own_worktree(app, caller, "get_ci_status")?;
     let forge = own_forge(app, &wt).await?;
+    let head = git_ops::rev_parse(&wt.path, "HEAD").await.ok();
     let pipelines = forge
         .list_pipelines(&wt.branch)
         .await
         .map_err(|e| e.to_string())?;
-    let Some(p) = pipelines.into_iter().next() else {
-        return Ok(json!({
+    match pipelines.into_iter().next() {
+        Some(p) => ci_report(&forge, &wt, &p, head.as_deref()).await,
+        None => Ok(json!({
             "branch": wt.branch,
             "pipeline": null,
             "note": "no CI runs for this branch — it may not be pushed yet, or CI isn't set up",
-        }));
-    };
+        })),
+    }
+}
+
+/// A pipeline and the current run of each of its jobs, as the CI tools
+/// report it.
+async fn ci_report(
+    forge: &Forge,
+    wt: &Worktree,
+    p: &ForgePipeline,
+    head: Option<&str>,
+) -> Result<Value, String> {
     let jobs = forge.pipeline_jobs(p.id).await.map_err(|e| e.to_string())?;
     let jobs: Vec<Value> = crate::forge::latest_jobs(jobs)
         .into_iter()
@@ -598,8 +679,7 @@ async fn get_ci_status(app: &AppHandle, caller: McpCaller) -> Result<Value, Stri
             })
         })
         .collect();
-    let head = git_ops::rev_parse(&wt.path, "HEAD").await.ok();
-    let is_head = head.as_deref() == Some(p.sha.as_str());
+    let is_head = head == Some(p.sha.as_str());
     Ok(json!({
         "branch": wt.branch,
         "pipeline": {
@@ -616,6 +696,124 @@ async fn get_ci_status(app: &AppHandle, caller: McpCaller) -> Result<Value, Stri
     }))
 }
 
+/// Pipeline states that won't change without someone acting.
+const CI_SETTLED: &[&str] = &["success", "failed", "canceled", "skipped", "manual"];
+const CI_POLL: Duration = Duration::from_secs(15);
+/// How long a pushed HEAD may go without any pipeline before we decide CI
+/// isn't going to run on it.
+const CI_APPEAR_GRACE: Duration = Duration::from_secs(180);
+
+/// Block until CI for the pushed HEAD settles, then report it like
+/// get_ci_status. Gives up early when HEAD isn't pushed (no run will ever
+/// come) or no run appears for it, and stops if the calling agent exits.
+async fn wait_for_ci(app: &AppHandle, caller: McpCaller, args: &Value) -> Result<Value, String> {
+    let timeout = args
+        .get("timeout_secs")
+        .and_then(Value::as_u64)
+        .unwrap_or(600)
+        .clamp(30, 1800);
+    let wt = own_worktree(app, caller, "wait_for_ci")?;
+    let forge = own_forge(app, &wt).await?;
+    let head = git_ops::rev_parse(&wt.path, "HEAD")
+        .await
+        .map_err(|e| e.to_string())?;
+    let pushed = git_ops::rev_parse(&wt.path, &format!("refs/remotes/origin/{}", wt.branch))
+        .await
+        .ok();
+    if pushed.as_deref() != Some(head.as_str()) {
+        return Err(format!(
+            "HEAD ({}) isn't pushed to origin/{} — push first; CI only runs on pushed commits",
+            &head[..head.len().min(7)],
+            wt.branch
+        ));
+    }
+
+    let started = Instant::now();
+    loop {
+        let pipelines = forge
+            .list_pipelines(&wt.branch)
+            .await
+            .map_err(|e| e.to_string())?;
+        let ours = pipelines.into_iter().find(|p| p.sha == head);
+        let waited = started.elapsed();
+        match &ours {
+            Some(p) if CI_SETTLED.contains(&p.status.as_str()) => {
+                let mut report = ci_report(&forge, &wt, p, Some(&head)).await?;
+                report["waitedSecs"] = json!(waited.as_secs());
+                return Ok(report);
+            }
+            None if waited >= CI_APPEAR_GRACE => {
+                return Ok(json!({
+                    "branch": wt.branch,
+                    "pipeline": null,
+                    "waitedSecs": waited.as_secs(),
+                    "note": "no CI run appeared for HEAD — CI may not run on this branch",
+                }));
+            }
+            _ => {}
+        }
+        if waited >= Duration::from_secs(timeout) {
+            let mut report = match &ours {
+                Some(p) => ci_report(&forge, &wt, p, Some(&head)).await?,
+                None => json!({ "branch": wt.branch, "pipeline": null }),
+            };
+            report["timedOut"] = json!(true);
+            report["waitedSecs"] = json!(waited.as_secs());
+            report["note"] = json!("still running — call wait_for_ci again to keep waiting");
+            return Ok(report);
+        }
+        tokio::time::sleep(CI_POLL).await;
+        let state = app.state::<AppState>();
+        if !supervisor::is_live(&state.agents, caller.agent_id) {
+            return Err("the calling agent exited".into());
+        }
+    }
+}
+
+/// Retry one job of THIS branch's latest pipeline.
+async fn retry_ci_job(app: &AppHandle, caller: McpCaller, args: &Value) -> Result<Value, String> {
+    let job_id = args
+        .get("job_id")
+        .and_then(Value::as_u64)
+        .ok_or("`job_id` is required — take it from get_ci_status")?;
+    let wt = own_worktree(app, caller, "retry_ci_job")?;
+    let forge = own_forge(app, &wt).await?;
+    let latest = forge
+        .list_pipelines(&wt.branch)
+        .await
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .next()
+        .ok_or_else(|| format!("{} has no CI runs", wt.branch))?;
+    let jobs = forge
+        .pipeline_jobs(latest.id)
+        .await
+        .map_err(|e| e.to_string())?;
+    let job = crate::forge::latest_jobs(jobs)
+        .into_iter()
+        .find(|j| j.id == job_id)
+        .ok_or_else(|| {
+            format!(
+                "job {job_id} isn't a current job of {}'s latest pipeline — take the id from get_ci_status",
+                wt.branch
+            )
+        })?;
+    if !["failed", "canceled", "success"].contains(&job.status.as_str()) {
+        return Err(format!(
+            "`{}` is {} — only finished jobs can be retried",
+            job.name, job.status
+        ));
+    }
+    forge.retry_job(job_id).await.map_err(|e| e.to_string())?;
+    let _ = app.emit(&events::ci_changed(wt.workspace_id), wt.branch.clone());
+    tracing::info!(job_id, branch = %wt.branch, "mcp: retried CI job");
+    Ok(json!({
+        "retried": job.name,
+        "jobId": job_id,
+        "note": "the retry runs as a new attempt with a new job id; call wait_for_ci to wait for it",
+    }))
+}
+
 async fn get_ci_log(app: &AppHandle, caller: McpCaller, args: &Value) -> Result<Value, String> {
     let job_id = args
         .get("job_id")
@@ -628,6 +826,72 @@ async fn get_ci_log(app: &AppHandle, caller: McpCaller, args: &Value) -> Result<
         .await
         .map_err(|e| e.to_string())?;
     Ok(json!({ "jobId": job_id, "log": log::plain_text(&log) }))
+}
+
+/// Read a user terminal's recent output. Terminals are numbered oldest
+/// first; with several and no `terminal`, list them instead.
+async fn get_terminal_output(
+    app: &AppHandle,
+    caller: McpCaller,
+    args: &Value,
+) -> Result<Value, String> {
+    let lines = args
+        .get("lines")
+        .and_then(Value::as_u64)
+        .unwrap_or(200)
+        .clamp(1, 2000) as usize;
+    let wt = own_worktree(app, caller, "get_terminal_output")?;
+    let terms = pty::manager::outputs_for_worktree(&app.state::<AppState>().terminals, wt.id);
+    if terms.is_empty() {
+        return Err("no terminals are open in this worktree".into());
+    }
+    let pick = match args.get("terminal") {
+        None | Some(Value::Null) if terms.len() == 1 => 1,
+        None | Some(Value::Null) => {
+            let mut listing = Vec::new();
+            for (i, t) in terms.iter().enumerate() {
+                let last = pty::text::render_tail(&t.bytes, 1);
+                listing.push(json!({
+                    "terminal": i + 1,
+                    "running": running_command(t).await,
+                    "alive": t.alive,
+                    "lastLine": last,
+                }));
+            }
+            return Ok(json!({
+                "terminals": listing,
+                "note": "pass `terminal` to read one",
+            }));
+        }
+        Some(v) => v
+            .as_u64()
+            .filter(|n| (1..=terms.len() as u64).contains(n))
+            .ok_or_else(|| format!("`terminal` must be 1–{}", terms.len()))?
+            as usize,
+    };
+    let t = &terms[pick - 1];
+    Ok(json!({
+        "terminal": pick,
+        "running": running_command(t).await,
+        "alive": t.alive,
+        "output": pty::text::render_tail(&t.bytes, lines),
+    }))
+}
+
+/// The command in a terminal's foreground, or `None` when the shell is idle
+/// at its prompt (or the process is gone).
+async fn running_command(t: &pty::manager::TerminalOutput) -> Option<String> {
+    let fg = t.foreground_pid?;
+    if !t.alive || t.shell_pid == Some(fg as u32) {
+        return None;
+    }
+    let out = tokio::process::Command::new("ps")
+        .args(["-o", "command=", "-p", &fg.to_string()])
+        .output()
+        .await
+        .ok()?;
+    let cmd = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!cmd.is_empty()).then_some(cmd)
 }
 
 /// An open workspace as the scratch agent sees it.
@@ -781,6 +1045,9 @@ mod tests {
                 "get_pr_threads",
                 "get_ci_status",
                 "get_ci_log",
+                "wait_for_ci",
+                "retry_ci_job",
+                "get_terminal_output",
             ]
         );
         for t in tools.as_array().unwrap() {

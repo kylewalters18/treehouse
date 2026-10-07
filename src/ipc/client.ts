@@ -901,6 +901,15 @@ export function onMrChanged(
   return listen<string>(`workspace://${workspaceId}/mr-changed`, (e) => handler(e.payload));
 }
 
+/// CI for `branch` in this workspace changed outside the CI tab (an agent
+/// retried a job over MCP).
+export function onCiChanged(
+  workspaceId: WorkspaceId,
+  handler: (branch: string) => void,
+): Promise<UnlistenFn> {
+  return listen<string>(`workspace://${workspaceId}/ci-changed`, (e) => handler(e.payload));
+}
+
 export function forgeApproveMr(
   workspaceId: WorkspaceId,
   iid: number,
