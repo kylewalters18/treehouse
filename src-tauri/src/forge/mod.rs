@@ -11,6 +11,7 @@
 pub mod cli;
 pub mod github;
 pub mod gitlab;
+pub mod log;
 pub mod netrc;
 pub mod remote;
 pub mod types;
@@ -25,6 +26,26 @@ use github::GithubForge;
 use gitlab::GitlabForge;
 
 use crate::util::errors::{AppError, AppResult};
+
+/// The current run of each job: GitLab lists superseded attempts too, and
+/// doesn't reliably flag them `retried`, so keep the highest id per
+/// stage + name (a retry always gets a higher id). Mirrors the renderer's
+/// `latestJobsPerName`.
+pub fn latest_jobs(jobs: Vec<ForgeJob>) -> Vec<ForgeJob> {
+    let mut latest: Vec<ForgeJob> = Vec::new();
+    for j in jobs {
+        match latest
+            .iter_mut()
+            .find(|l| l.stage == j.stage && l.name == j.name)
+        {
+            Some(l) if j.id > l.id => *l = j,
+            Some(_) => {}
+            None => latest.push(j),
+        }
+    }
+    latest.sort_by_key(|j| j.id);
+    latest
+}
 
 /// Resolve the forge remote for a repo root: `git remote get-url origin`,
 /// then parse. A host we can't classify by name (e.g. a self-managed GitLab at
@@ -237,6 +258,13 @@ impl Forge {
         match self {
             Forge::Gitlab(g) => g.job_log(job_id).await,
             Forge::Github(g) => g.job_log(job_id).await,
+        }
+    }
+    /// The log split into sections, for the viewer (up to ~1MB of tail).
+    pub async fn job_log_sections(&self, job_id: u64) -> AppResult<ForgeJobLog> {
+        match self {
+            Forge::Gitlab(g) => g.job_log_sections(job_id).await,
+            Forge::Github(g) => g.job_log_sections(job_id).await,
         }
     }
     pub async fn retry_pipeline(&self, pipeline_id: u64) -> AppResult<()> {

@@ -6,4 +6,18 @@ export type ForgeJob = { id: number, name: string, stage: string, status: string
  * of a job is `retried: false`. Retried runs are kept only so stage order
  * can be computed from the earliest job id per stage.
  */
-retried: boolean, };
+retried: boolean, 
+/**
+ * 1-based run number of this job (GitHub's `run_attempt`; on GitLab, its
+ * position among the runs of the same stage + name).
+ */
+attempt: number, 
+/**
+ * ISO-8601; `None` until the job starts / finishes.
+ */
+startedAt: string | null, finishedAt: string | null, webUrl: string, 
+/**
+ * A failure doesn't fail the pipeline (GitLab `allow_failure`). GitHub's
+ * `continue-on-error` isn't exposed by its API, so always false there.
+ */
+allowFailure: boolean, };

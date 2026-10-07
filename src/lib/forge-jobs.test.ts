@@ -3,7 +3,7 @@ import { latestJobsPerName } from "./forge-jobs";
 import type { ForgeJob } from "@/ipc/types";
 
 function job(p: Partial<ForgeJob>): ForgeJob {
-  return { id: 1, name: "test", stage: "test", status: "failed", retried: false, ...p };
+  return { id: 1, name: "test", stage: "test", status: "failed", retried: false, attempt: 1, startedAt: null, finishedAt: null, webUrl: "", allowFailure: false, ...p };
 }
 
 describe("latestJobsPerName", () => {

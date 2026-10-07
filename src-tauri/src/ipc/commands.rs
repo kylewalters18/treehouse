@@ -10,8 +10,8 @@ use crate::agent::{
 };
 use crate::diff::{self, DiffMode, DiffSet};
 use crate::forge::{
-    self, workflow, ForgeApproval, ForgeIssue, ForgeJob, ForgeMr, ForgePipeline, ForgeStatus,
-    ForgeThread, IssueStart, ReviewCommentInput,
+    self, workflow, ForgeApproval, ForgeIssue, ForgeJob, ForgeJobLog, ForgeMr, ForgePipeline,
+    ForgeStatus, ForgeThread, IssueStart, ReviewCommentInput,
 };
 use crate::fs_api::{self, FileContent, TreeEntry};
 use crate::fs_watch;
@@ -880,8 +880,21 @@ pub async fn forge_list_pipelines(
     branch: String,
     state: State<'_, AppState>,
 ) -> AppResult<Vec<ForgePipeline>> {
-    let (f, _) = resolve_forge(workspace_id, &state).await?;
-    f.list_pipelines(&branch).await
+    let (f, root) = resolve_forge(workspace_id, &state).await?;
+    let mut pipelines = f.list_pipelines(&branch).await?;
+    // GitLab doesn't report the commit subject; read it locally when the
+    // commit is here (it usually is — it's this branch).
+    let missing: Vec<String> = pipelines
+        .iter()
+        .filter(|p| p.title.is_none() && !p.sha.is_empty())
+        .map(|p| p.sha.clone())
+        .collect();
+    if let Ok(subjects) = crate::worktree::git_ops::commit_subjects(&root, &missing).await {
+        for p in pipelines.iter_mut().filter(|p| p.title.is_none()) {
+            p.title = subjects.get(&p.sha).cloned();
+        }
+    }
+    Ok(pipelines)
 }
 
 #[tauri::command]
@@ -919,9 +932,9 @@ pub async fn forge_job_log(
     workspace_id: WorkspaceId,
     job_id: u64,
     state: State<'_, AppState>,
-) -> AppResult<String> {
+) -> AppResult<ForgeJobLog> {
     let (f, _) = resolve_forge(workspace_id, &state).await?;
-    f.job_log(job_id).await
+    f.job_log_sections(job_id).await
 }
 
 // --- Agents ---

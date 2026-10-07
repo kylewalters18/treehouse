@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 use tauri::{AppHandle, Manager};
 
 use crate::agent::supervisor;
-use crate::forge::{workflow, Forge, ForgeThread, IssueStart};
+use crate::forge::{log, workflow, Forge, ForgeThread, IssueStart};
 use crate::ipc::commands::{finish_create, resolve_forge};
 use crate::state::AppState;
 use crate::storage;
@@ -584,13 +584,19 @@ async fn get_ci_status(app: &AppHandle, caller: McpCaller) -> Result<Value, Stri
             "note": "no CI runs for this branch — it may not be pushed yet, or CI isn't set up",
         }));
     };
-    let jobs: Vec<Value> = forge
-        .pipeline_jobs(p.id)
-        .await
-        .map_err(|e| e.to_string())?
+    let jobs = forge.pipeline_jobs(p.id).await.map_err(|e| e.to_string())?;
+    let jobs: Vec<Value> = crate::forge::latest_jobs(jobs)
         .into_iter()
-        .filter(|j| !j.retried)
-        .map(|j| json!({ "id": j.id, "name": j.name, "stage": j.stage, "status": j.status }))
+        .map(|j| {
+            json!({
+                "id": j.id,
+                "name": j.name,
+                "stage": j.stage,
+                "status": j.status,
+                "attempt": j.attempt,
+                "allowFailure": j.allow_failure,
+            })
+        })
         .collect();
     let head = git_ops::rev_parse(&wt.path, "HEAD").await.ok();
     let is_head = head.as_deref() == Some(p.sha.as_str());
@@ -621,73 +627,7 @@ async fn get_ci_log(app: &AppHandle, caller: McpCaller, args: &Value) -> Result<
         .job_log(job_id)
         .await
         .map_err(|e| e.to_string())?;
-    Ok(json!({ "jobId": job_id, "log": plain_log(&log) }))
-}
-
-/// Drop terminal noise from a CI trace: ANSI escapes, GitLab's
-/// `section_start:…`/`section_end:…` markers, and carriage returns. Mirrors
-/// the renderer's `stripAnsi` (src/lib/ansi.ts).
-fn plain_log(raw: &str) -> String {
-    // Sections first: the `\r` after a marker is what ends its name.
-    let raw = raw
-        .lines()
-        .map(strip_sections)
-        .collect::<Vec<_>>()
-        .join("\n");
-    let mut out = String::with_capacity(raw.len());
-    let mut chars = raw.chars().peekable();
-    while let Some(c) = chars.next() {
-        match c {
-            '\x1b' => {
-                if chars.peek() == Some(&'[') {
-                    chars.next();
-                    // CSI: parameters up to and including the final letter.
-                    for c in chars.by_ref() {
-                        if c.is_ascii_alphabetic() {
-                            break;
-                        }
-                    }
-                }
-            }
-            '\r' => {}
-            _ => out.push(c),
-        }
-    }
-    out
-}
-
-/// Remove every `section_(start|end):<ts>:<name>` marker from a line.
-fn strip_sections(line: &str) -> String {
-    let mut rest = line;
-    let mut out = String::new();
-    while let Some(i) = rest.find("section_") {
-        out.push_str(&rest[..i]);
-        let tail = &rest[i..];
-        let marker = ["section_start:", "section_end:"]
-            .iter()
-            .find(|m| tail.starts_with(**m));
-        let Some(m) = marker else {
-            out.push_str("section_");
-            rest = &tail["section_".len()..];
-            continue;
-        };
-        let after = &tail[m.len()..];
-        let ts_end = after
-            .find(|c: char| !c.is_ascii_digit())
-            .unwrap_or(after.len());
-        if ts_end == 0 || !after[ts_end..].starts_with(':') {
-            out.push_str(m);
-            rest = after;
-            continue;
-        }
-        let name = &after[ts_end + 1..];
-        let name_end = name
-            .find(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-')))
-            .unwrap_or(name.len());
-        rest = &name[name_end..];
-    }
-    out.push_str(rest);
-    out
+    Ok(json!({ "jobId": job_id, "log": log::plain_text(&log) }))
 }
 
 /// An open workspace as the scratch agent sees it.
@@ -851,18 +791,6 @@ mod tests {
             );
         }
         assert!(tools[1]["inputSchema"]["properties"].get("issue").is_some());
-    }
-
-    #[test]
-    fn plain_log_strips_ansi_sections_and_cr() {
-        let raw =
-            "section_start:1700000000:build_script\r\x1b[0K\x1b[32;1m$ cargo test\x1b[0;m\r\n\
-                   progress 50%\rprogress 100%\n\
-                   section_end:1700000001:build_script\r\x1b[0Kdone section_x\n";
-        assert_eq!(
-            plain_log(raw),
-            "$ cargo test\nprogress 50%progress 100%\ndone section_x"
-        );
     }
 
     #[test]

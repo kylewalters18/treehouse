@@ -8,4 +8,9 @@ refName: string, sha: string,
 /**
  * GitLab: created|pending|running|success|failed|canceled|skipped.
  */
-status: string, webUrl: string, createdAt: string, };
+status: string, webUrl: string, createdAt: string, 
+/**
+ * Subject line of the commit it ran on. GitHub reports it; for GitLab
+ * it's filled from the local repo when the commit is there.
+ */
+title: string | null, };

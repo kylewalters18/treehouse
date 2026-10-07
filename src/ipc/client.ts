@@ -53,6 +53,7 @@ import type {
   ForgeMr,
   ForgePipeline,
   ForgeJob,
+  ForgeJobLog,
   ForgeThread,
   ForgeApproval,
   ReviewCommentInput,
@@ -1014,6 +1015,6 @@ export function forgeRetryJob(
 export function forgeJobLog(
   workspaceId: WorkspaceId,
   jobId: number,
-): Promise<string> {
-  return invoke<string>("forge_job_log", { workspaceId, jobId });
+): Promise<ForgeJobLog> {
+  return invoke<ForgeJobLog>("forge_job_log", { workspaceId, jobId });
 }

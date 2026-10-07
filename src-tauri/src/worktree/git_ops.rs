@@ -172,6 +172,29 @@ pub async fn rev_parse(repo_root: &Path, rev: &str) -> AppResult<String> {
     Ok(stdout.trim().to_string())
 }
 
+/// Subject lines for the given commit shas, skipping any not in the repo.
+pub async fn commit_subjects(
+    repo_root: &Path,
+    shas: &[String],
+) -> AppResult<std::collections::HashMap<String, String>> {
+    if shas.is_empty() {
+        return Ok(Default::default());
+    }
+    let mut args = vec![
+        "log".to_string(),
+        "--no-walk=unsorted".into(),
+        "--ignore-missing".into(),
+        "--format=%H%x09%s".into(),
+    ];
+    args.extend(shas.iter().cloned());
+    let out = git(repo_root, args).await?;
+    Ok(out
+        .lines()
+        .filter_map(|l| l.split_once('\t'))
+        .map(|(sha, subject)| (sha.to_string(), subject.to_string()))
+        .collect())
+}
+
 /// `git merge-base <a> <b>` — the most recent common ancestor of two refs.
 /// This is the right `base_ref` anchor for the Changes pane: diffing against
 /// it shows only what `<b>` has contributed since forking from `<a>`,

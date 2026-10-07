@@ -81,6 +81,8 @@ export type { IssueStartResult } from "./bindings/IssueStartResult";
 export type { ForgeMr } from "./bindings/ForgeMr";
 export type { ForgePipeline } from "./bindings/ForgePipeline";
 export type { ForgeJob } from "./bindings/ForgeJob";
+export type { ForgeJobLog } from "./bindings/ForgeJobLog";
+export type { ForgeLogSection } from "./bindings/ForgeLogSection";
 export type { ForgeThread } from "./bindings/ForgeThread";
 export type { ForgeApproval } from "./bindings/ForgeApproval";
 export type { ForgeNote } from "./bindings/ForgeNote";

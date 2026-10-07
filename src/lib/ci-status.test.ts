@@ -3,7 +3,7 @@ import { ciStatusVisual, stageStatus } from "./ci-status";
 import type { ForgeJob } from "@/ipc/types";
 
 function job(status: string): ForgeJob {
-  return { id: 1, name: status, stage: "test", status, retried: false };
+  return { id: 1, name: status, stage: "test", status, retried: false, attempt: 1, startedAt: null, finishedAt: null, webUrl: "", allowFailure: false };
 }
 
 describe("stageStatus", () => {

@@ -16,6 +16,7 @@ use serde_json::json;
 use tokio::task::JoinSet;
 
 use crate::forge::cli;
+use crate::forge::log;
 use crate::forge::remote::percent_encode;
 use crate::forge::types::*;
 use crate::util::errors::{AppError, AppResult};
@@ -593,7 +594,13 @@ impl GithubForge {
                     .map(|r| ci_status(&r.status, r.conclusion.as_deref()))
                     .collect();
                 let newest = runs.iter().max_by_key(|r| r.id).expect("non-empty group");
+                let title = runs
+                    .iter()
+                    .find_map(|r| r.head_commit.as_ref())
+                    .and_then(|c| c.message.lines().next())
+                    .map(str::to_string);
                 ForgePipeline {
+                    title,
                     id: newest.id,
                     ref_name: newest.head_branch.clone(),
                     sha,
@@ -640,6 +647,11 @@ impl GithubForge {
                 name: j.name,
                 stage: stage.clone(),
                 retried: false,
+                attempt: j.run_attempt.max(1),
+                started_at: j.started_at,
+                finished_at: j.completed_at,
+                web_url: j.html_url,
+                allow_failure: false,
             }));
         }
         jobs.sort_by_key(|j| j.id);
@@ -654,6 +666,33 @@ impl GithubForge {
             )
             .await?;
         Ok(cli::tail_bounded(&strip_log_timestamps(&raw), 16_000))
+    }
+
+    /// The log split by step. The log and the job (for its steps' start
+    /// times) are fetched concurrently.
+    pub async fn job_log_sections(&self, job_id: u64) -> AppResult<ForgeJobLog> {
+        let log_path = format!("repos/{}/actions/jobs/{job_id}/logs", self.project);
+        let job_path = format!("repos/{}/actions/jobs/{job_id}", self.project);
+        let (raw, job) = tokio::join!(self.api(&log_path, &[]), self.api(&job_path, &[]));
+        let raw = raw?;
+        let steps: Vec<log::Step> = job
+            .ok()
+            .and_then(|j| serde_json::from_str::<GhJobDetail>(&j).ok())
+            .map(|j| {
+                j.steps
+                    .into_iter()
+                    .map(|s| log::Step {
+                        status: ci_status(&s.status, s.conclusion.as_deref()),
+                        name: s.name,
+                        started_at: s.started_at,
+                        completed_at: s.completed_at,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        Ok(log::view_log(&raw, |kept| {
+            log::github_sections(kept, &steps)
+        }))
     }
 
     /// Re-run failed jobs in each failed run of the pipeline; when nothing
@@ -910,6 +949,7 @@ struct GhRun {
     html_url: String,
     #[serde(default)]
     created_at: String,
+    head_commit: Option<GhHeadCommit>,
 }
 
 #[derive(Deserialize)]
@@ -924,6 +964,33 @@ struct GhJob {
     name: String,
     status: String,
     conclusion: Option<String>,
+    #[serde(default)]
+    run_attempt: u32,
+    started_at: Option<String>,
+    completed_at: Option<String>,
+    #[serde(default)]
+    html_url: String,
+}
+
+#[derive(Deserialize)]
+struct GhJobDetail {
+    #[serde(default)]
+    steps: Vec<GhStep>,
+}
+
+#[derive(Deserialize)]
+struct GhStep {
+    name: String,
+    status: String,
+    conclusion: Option<String>,
+    started_at: Option<String>,
+    completed_at: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct GhHeadCommit {
+    #[serde(default)]
+    message: String,
 }
 
 #[derive(Deserialize)]

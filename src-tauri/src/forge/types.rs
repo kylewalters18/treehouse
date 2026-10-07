@@ -90,6 +90,9 @@ pub struct ForgePipeline {
     pub status: String,
     pub web_url: String,
     pub created_at: String,
+    /// Subject line of the commit it ran on. GitHub reports it; for GitLab
+    /// it's filled from the local repo when the commit is there.
+    pub title: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -105,6 +108,41 @@ pub struct ForgeJob {
     /// of a job is `retried: false`. Retried runs are kept only so stage order
     /// can be computed from the earliest job id per stage.
     pub retried: bool,
+    /// 1-based run number of this job (GitHub's `run_attempt`; on GitLab, its
+    /// position among the runs of the same stage + name).
+    #[ts(type = "number")]
+    pub attempt: u32,
+    /// ISO-8601; `None` until the job starts / finishes.
+    pub started_at: Option<String>,
+    pub finished_at: Option<String>,
+    pub web_url: String,
+    /// A failure doesn't fail the pipeline (GitLab `allow_failure`). GitHub's
+    /// `continue-on-error` isn't exposed by its API, so always false there.
+    pub allow_failure: bool,
+}
+
+/// A job's log split into the sections the forge marks: GitLab's
+/// `section_start`/`section_end` markers, GitHub's steps. Text outside any
+/// section is an unnamed section (`name` empty). `text` keeps ANSI escapes.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct ForgeJobLog {
+    pub sections: Vec<ForgeLogSection>,
+    /// Only the tail of a very long log was kept.
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct ForgeLogSection {
+    pub name: String,
+    pub text: String,
+    #[ts(type = "number | null")]
+    pub duration_secs: Option<u64>,
+    /// A step's own status (GitHub). `None` on GitLab, whose sections have none.
+    pub status: Option<String>,
 }
 
 /// One review/discussion thread on an MR/PR. `id` is the discussion id used

@@ -9,6 +9,7 @@ use std::sync::OnceLock;
 use serde::Deserialize;
 
 use crate::forge::cli; // tail_bounded
+use crate::forge::log;
 use crate::forge::remote::percent_encode;
 use crate::forge::types::*;
 use crate::util::errors::{AppError, AppResult};
@@ -408,12 +409,20 @@ impl GitlabForge {
             pipeline_id
         );
         let raw: Vec<GlJob> = Self::parse("jobs", &self.get(&path).await?)?;
-        Ok(raw.into_iter().map(GlJob::normalize).collect())
+        let mut jobs: Vec<ForgeJob> = raw.into_iter().map(GlJob::normalize).collect();
+        number_attempts(&mut jobs);
+        Ok(jobs)
     }
 
     pub async fn job_log(&self, job_id: u64) -> AppResult<String> {
         let path = format!("projects/{}/jobs/{}/trace", self.pid(), job_id);
         Ok(cli::tail_bounded(&self.get(&path).await?, 16_000))
+    }
+
+    pub async fn job_log_sections(&self, job_id: u64) -> AppResult<ForgeJobLog> {
+        let path = format!("projects/{}/jobs/{}/trace", self.pid(), job_id);
+        let raw = self.get(&path).await?;
+        Ok(log::view_log(&raw, log::gitlab_sections))
     }
 
     pub async fn retry_pipeline(&self, pipeline_id: u64) -> AppResult<()> {
@@ -555,6 +564,7 @@ impl GlPipeline {
             status: self.status,
             web_url: self.web_url,
             created_at: self.created_at,
+            title: None,
         }
     }
 }
@@ -568,6 +578,12 @@ struct GlJob {
     status: String,
     #[serde(default)]
     retried: bool,
+    started_at: Option<String>,
+    finished_at: Option<String>,
+    #[serde(default)]
+    web_url: String,
+    #[serde(default)]
+    allow_failure: bool,
 }
 
 impl GlJob {
@@ -578,7 +594,27 @@ impl GlJob {
             stage: self.stage,
             status: self.status,
             retried: self.retried,
+            attempt: 1,
+            started_at: self.started_at,
+            finished_at: self.finished_at,
+            web_url: self.web_url,
+            allow_failure: self.allow_failure,
         }
+    }
+}
+
+/// Number each job's runs: GitLab lists every attempt (with
+/// `include_retried`) as its own job, and a retry always gets a higher id.
+fn number_attempts(jobs: &mut [ForgeJob]) {
+    let mut order: Vec<usize> = (0..jobs.len()).collect();
+    order.sort_by_key(|&i| jobs[i].id);
+    let mut seen: std::collections::HashMap<(String, String), u32> = Default::default();
+    for i in order {
+        let n = seen
+            .entry((jobs[i].stage.clone(), jobs[i].name.clone()))
+            .or_insert(0);
+        *n += 1;
+        jobs[i].attempt = *n;
     }
 }
 
