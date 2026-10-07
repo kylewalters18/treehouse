@@ -954,8 +954,8 @@ pub async fn forge_job_log(
 ///
 /// `transport: "acp"` launches through the backend's ACP adapter instead of
 /// a PTY; `argv` then overrides the adapter command (else `[agent.acp]`, else
-/// the managed install — see `agent::acp::adapter`), and `resume` isn't
-/// supported yet.
+/// the managed install — see `agent::acp::adapter`), and `resume` reopens a
+/// saved conversation with `session/load`.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub async fn launch_agent(
@@ -977,11 +977,10 @@ pub async fn launch_agent(
         .ok_or_else(|| AppError::Unknown(format!("unknown worktree: {worktree_id}")))?
         .clone();
     if transport == Some(AgentTransport::Acp) {
-        if resume.is_some() {
-            return Err(AppError::Unknown(
-                "Resuming a conversation over ACP isn't supported yet — resume it in a terminal tab."
-                    .into(),
-            ));
+        if let Some(id) = &resume {
+            if !agent::history::is_valid_session_id(id) {
+                return Err(AppError::Unknown(format!("invalid session id: {id}")));
+            }
         }
         // May `npm install` the pinned adapter first (once per version).
         let argv = match argv.filter(|v| !v.is_empty()) {
@@ -1007,6 +1006,7 @@ pub async fn launch_agent(
             argv,
             env,
             prompt,
+            resume,
             Some(channel),
         );
     }
@@ -1114,6 +1114,17 @@ pub async fn agent_submit_prompt(
     state: State<'_, AppState>,
 ) -> AppResult<()> {
     agent::supervisor::submit_prompt(&state.agents, agent_id, &text)
+}
+
+/// Send an ACP agent a prompt with `@file` / image attachments.
+#[tauri::command]
+pub async fn acp_send_prompt(
+    agent_id: AgentSessionId,
+    text: String,
+    attachments: Vec<agent::acp::AcpAttachment>,
+    state: State<'_, AppState>,
+) -> AppResult<()> {
+    agent::acp::send_prompt(&state.agents, agent_id, &text, &attachments)
 }
 
 /// Cancel an ACP agent's running turn (`session/cancel`).

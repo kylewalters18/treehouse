@@ -19,6 +19,7 @@
 //! replays it into a fresh Channel before live events resume.
 
 pub mod adapter;
+pub mod prompt;
 pub mod rpc;
 pub mod view;
 
@@ -47,6 +48,7 @@ use super::{
     AgentTransport,
 };
 use rpc::{Incoming, RpcConn, AUTH_REQUIRED, METHOD_NOT_FOUND};
+pub use prompt::AcpAttachment;
 pub use view::{AcpEvent, AcpView};
 
 /// Events kept for replay. Text chunks and tool updates coalesce (see
@@ -64,8 +66,8 @@ struct AcpShared {
     log: Vec<AcpEvent>,
     channel: Option<Channel<AgentEvent>>,
     status: AgentStatus,
-    /// Prompts sent before `session/new` returned.
-    queued: Vec<String>,
+    /// Prompts (content blocks) sent before the session was up.
+    queued: Vec<Vec<Value>>,
     /// Permission requests behind the one in `view.pending` (parallel
     /// subagents can ask at once); promoted in order.
     waiting: VecDeque<(Value, RequestPermissionRequest)>,
@@ -83,6 +85,24 @@ impl AcpShared {
             }
         }
         push_log(&mut self.log, ev);
+    }
+
+    /// Stream a state event (`Commands`, `Usage`) without logging it; the
+    /// view holds the latest and `attach` sends it after the log.
+    fn emit_state(&mut self, ev: AcpEvent) {
+        if let Some(ch) = &self.channel {
+            if ch.send(AgentEvent::Acp { event: ev }).is_err() {
+                self.channel = None;
+            }
+        }
+    }
+
+    /// Route a view-produced event to the log or the state stream.
+    fn emit_any(&mut self, ev: AcpEvent) {
+        match ev {
+            AcpEvent::Commands { .. } | AcpEvent::Usage { .. } => self.emit_state(ev),
+            ev => self.emit(ev),
+        }
     }
 
     fn set_status(&mut self, status: AgentStatus) {
@@ -121,6 +141,7 @@ impl AcpShared {
 fn push_log(log: &mut Vec<AcpEvent>, ev: AcpEvent) {
     match (log.last_mut(), &ev) {
         (Some(AcpEvent::AgentText { text }), AcpEvent::AgentText { text: more })
+        | (Some(AcpEvent::UserText { text }), AcpEvent::UserText { text: more })
         | (Some(AcpEvent::Thought { text }), AcpEvent::Thought { text: more }) => {
             text.push_str(more);
             return;
@@ -255,6 +276,8 @@ struct Ctx {
     pid: Option<u32>,
     /// The CLI path handed to the adapter, if any (see `adapter`).
     cli: Option<String>,
+    /// The saved conversation this session reopened (`session/load`).
+    resumed_from: Option<String>,
 }
 
 /// Spawn `argv` as an ACP agent in `cwd` and start the handshake. Returns
@@ -270,6 +293,7 @@ pub fn launch(
     argv: Vec<String>,
     env: Vec<(String, String)>,
     prompt: Option<String>,
+    resume: Option<String>,
     channel: Option<Channel<AgentEvent>>,
 ) -> AppResult<AgentSession> {
     if argv.is_empty() {
@@ -314,7 +338,7 @@ pub fn launch(
         cols: 0,
         rows: 0,
         status: AgentStatus::Running,
-        resumed: false,
+        resumed: resume.is_some(),
         transport: AgentTransport::Acp,
     };
     let mut shared = AcpShared {
@@ -330,9 +354,9 @@ pub fn launch(
     };
     shared.set_status(AgentStatus::Running);
     if let Some(p) = prompt.map(|p| p.trim().to_string()).filter(|p| !p.is_empty()) {
-        let ev = shared.view.prompt_started(&p, now);
+        let ev = shared.view.prompt_started(&p, vec![], now);
         shared.emit(ev);
-        shared.queued.push(p);
+        shared.queued.push(vec![json!({ "type": "text", "text": p })]);
     }
     let shared = Arc::new(Mutex::new(shared));
     let ctx = Ctx {
@@ -347,6 +371,7 @@ pub fn launch(
             .iter()
             .find(|(k, _)| k == adapter::CLAUDE_EXECUTABLE_ENV)
             .map(|(_, v)| v.clone()),
+        resumed_from: resume,
     };
 
     registry.acp.insert(
@@ -445,10 +470,12 @@ async fn try_handshake(ctx: &Ctx, mcp: Option<(String, String)>) -> Result<(), S
         .or_else(|| init.pointer("/agentInfo/name"))
         .and_then(Value::as_str)
         .map(str::to_string);
-    let takes_http = init
-        .pointer("/agentCapabilities/mcpCapabilities/http")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
+    let cap = |ptr: &str| init.pointer(ptr).and_then(Value::as_bool).unwrap_or(false);
+    let takes_http = cap("/agentCapabilities/mcpCapabilities/http");
+    ctx.shared.lock().view.caps = view::PromptCaps {
+        image: cap("/agentCapabilities/promptCapabilities/image"),
+        embedded_context: cap("/agentCapabilities/promptCapabilities/embeddedContext"),
+    };
     let mcp_servers = match (&mcp, takes_http) {
         (Some((url, token)), true) => json!([{
             "type": "http",
@@ -458,25 +485,61 @@ async fn try_handshake(ctx: &Ctx, mcp: Option<(String, String)>) -> Result<(), S
         }]),
         _ => json!([]),
     };
-    let new = ctx
-        .conn
-        .request(
-            "session/new",
-            json!({ "cwd": ctx.cwd, "mcpServers": mcp_servers }),
-        )
-        .await
-        .map_err(|e| {
-            if e.code == AUTH_REQUIRED {
-                auth_hint(&e)
+    let (new, sid) = match &ctx.resumed_from {
+        None => {
+            let new = ctx
+                .conn
+                .request(
+                    "session/new",
+                    json!({ "cwd": ctx.cwd, "mcpServers": mcp_servers }),
+                )
+                .await
+                .map_err(|e| {
+                    if e.code == AUTH_REQUIRED {
+                        auth_hint(&e)
+                    } else {
+                        format!("ACP session/new failed: {e}")
+                    }
+                })?;
+            let sid = new
+                .get("sessionId")
+                .and_then(Value::as_str)
+                .ok_or("ACP session/new returned no sessionId")?
+                .to_string();
+            (new, sid)
+        }
+        Some(id) => {
+            // `session/load` replays the conversation as updates before it
+            // returns; `session/resume` reopens it without a replay.
+            let method = if cap("/agentCapabilities/loadSession") {
+                "session/load"
+            } else if init
+                .pointer("/agentCapabilities/sessionCapabilities/resume")
+                .is_some_and(|v| !v.is_null())
+            {
+                "session/resume"
             } else {
-                format!("ACP session/new failed: {e}")
-            }
-        })?;
-    let sid = new
-        .get("sessionId")
-        .and_then(Value::as_str)
-        .ok_or("ACP session/new returned no sessionId")?
-        .to_string();
+                return Err("This agent can't reopen saved conversations over ACP.".into());
+            };
+            ctx.shared.lock().view.replaying = method == "session/load";
+            let res = ctx
+                .conn
+                .request(
+                    method,
+                    json!({ "sessionId": id, "cwd": ctx.cwd, "mcpServers": mcp_servers }),
+                )
+                .await;
+            ctx.shared.lock().view.replay_finished(now_millis());
+            let res = res.map_err(|e| {
+                if e.code == AUTH_REQUIRED {
+                    auth_hint(&e)
+                } else {
+                    format!("Couldn't reopen the conversation ({method}): {e}")
+                }
+            })?;
+            (res, id.clone())
+        }
+    };
 
     let modes = new
         .get("modes")
@@ -488,17 +551,19 @@ async fn try_handshake(ctx: &Ctx, mcp: Option<(String, String)>) -> Result<(), S
         if let Some(ev) = modes.and_then(|m| sh.view.set_modes(m)) {
             sh.emit(ev);
         }
+        let accepts_images = sh.view.caps.image;
         sh.emit(AcpEvent::Ready {
             session_id: sid.clone(),
             agent_name,
             mcp_attached: takes_http && mcp.is_some(),
             cli: ctx.cli.clone(),
+            accepts_images,
         });
         std::mem::take(&mut sh.queued)
     };
     tracing::info!(id = %ctx.id, acp_session = %sid, "acp session ready");
-    for text in queued {
-        spawn_prompt(ctx.clone(), sid.clone(), text);
+    for blocks in queued {
+        spawn_prompt(ctx.clone(), sid.clone(), blocks);
     }
     Ok(())
 }
@@ -522,7 +587,7 @@ async fn handle_incoming(ctx: Ctx, mut incoming: tokio::sync::mpsc::UnboundedRec
                     Ok(update) => {
                         let mut sh = ctx.shared.lock();
                         if let Some(ev) = sh.view.apply_update(update, now_millis()) {
-                            sh.emit(ev);
+                            sh.emit_any(ev);
                         }
                     }
                     // Newer agents send update kinds this schema predates.
@@ -549,14 +614,11 @@ async fn handle_incoming(ctx: Ctx, mut incoming: tokio::sync::mpsc::UnboundedRec
     }
 }
 
-fn spawn_prompt(ctx: Ctx, sid: String, text: String) {
+fn spawn_prompt(ctx: Ctx, sid: String, blocks: Vec<Value>) {
     tauri::async_runtime::spawn(async move {
         let res = ctx
             .conn
-            .request(
-                "session/prompt",
-                json!({ "sessionId": sid, "prompt": [{ "type": "text", "text": text }] }),
-            )
+            .request("session/prompt", json!({ "sessionId": sid, "prompt": blocks }))
             .await;
         let turn = {
             let mut sh = ctx.shared.lock();
@@ -592,8 +654,14 @@ fn spawn_prompt(ctx: Ctx, sid: String, text: String) {
         // Claude's adapter persists the conversation under the same id the
         // CLI uses, so it lands in history and resumes in a PTY tab.
         if matches!(ctx.backend, AgentBackendKind::ClaudeCode) {
-            ctx.history
-                .observe(&ctx.cwd, None, &sid, turn.0.as_deref(), &turn.1, now_millis());
+            ctx.history.observe(
+                &ctx.cwd,
+                ctx.resumed_from.as_deref(),
+                &sid,
+                turn.0.as_deref(),
+                &turn.1,
+                now_millis(),
+            );
         }
     });
 }
@@ -617,9 +685,9 @@ pub fn attach(
 ) -> AppResult<AgentSession> {
     let h = handle(registry, id)?;
     let mut sh = h.shared.lock();
-    let _ = channel.send(AgentEvent::AcpBatch {
-        events: sh.log.clone(),
-    });
+    let mut events = sh.log.clone();
+    events.extend(sh.view.state_events());
+    let _ = channel.send(AgentEvent::AcpBatch { events });
     let _ = channel.send(AgentEvent::Status {
         status: sh.status.clone(),
     });
@@ -629,11 +697,15 @@ pub fn attach(
     Ok(s)
 }
 
-/// Send a user prompt (`session/prompt`); queued if the handshake is still
-/// running.
-pub fn send_prompt(registry: &AgentRegistry, id: AgentSessionId, text: &str) -> AppResult<()> {
-    let text = text.trim();
-    if text.is_empty() {
+/// Send a user prompt (`session/prompt`) with any attachments; queued if
+/// the handshake is still running.
+pub fn send_prompt(
+    registry: &AgentRegistry,
+    id: AgentSessionId,
+    text: &str,
+    attachments: &[AcpAttachment],
+) -> AppResult<()> {
+    if text.trim().is_empty() && attachments.is_empty() {
         return Ok(());
     }
     let h = handle(registry, id)?;
@@ -641,7 +713,9 @@ pub fn send_prompt(registry: &AgentRegistry, id: AgentSessionId, text: &str) -> 
     if !sh.live() {
         return Err(AppError::Unknown("This agent has exited.".into()));
     }
-    let ev = sh.view.prompt_started(text, now_millis());
+    let (blocks, labels) = prompt::build_prompt(text, attachments, &h.cwd, sh.view.caps)
+        .map_err(AppError::Unknown)?;
+    let ev = sh.view.prompt_started(text.trim(), labels, now_millis());
     sh.emit(ev);
     match sh.view.session_id.clone() {
         Some(sid) => {
@@ -655,10 +729,11 @@ pub fn send_prompt(registry: &AgentRegistry, id: AgentSessionId, text: &str) -> 
                 history: registry.history_handle(),
                 pid: h.pid,
                 cli: None,
+                resumed_from: if h.session.resumed { Some(sid.clone()) } else { None },
             };
-            spawn_prompt(ctx, sid, text.to_string());
+            spawn_prompt(ctx, sid, blocks);
         }
-        None => sh.queued.push(text.to_string()),
+        None => sh.queued.push(blocks),
     }
     Ok(())
 }
@@ -800,7 +875,7 @@ mod tests {
     #[test]
     fn log_coalesces_chunks_and_tool_updates() {
         let mut log = Vec::new();
-        push_log(&mut log, AcpEvent::UserMessage { text: "hi".into() });
+        push_log(&mut log, AcpEvent::UserMessage { text: "hi".into(), attachments: vec![] });
         push_log(&mut log, AcpEvent::AgentText { text: "a".into() });
         push_log(&mut log, AcpEvent::AgentText { text: "b".into() });
         push_log(&mut log, tool("t1", "pending"));
@@ -808,16 +883,19 @@ mod tests {
         push_log(&mut log, tool("t1", "completed"));
         push_log(&mut log, AcpEvent::Thought { text: "x".into() });
         push_log(&mut log, AcpEvent::Thought { text: "y".into() });
+        push_log(&mut log, AcpEvent::UserText { text: "replayed ".into() });
+        push_log(&mut log, AcpEvent::UserText { text: "prompt".into() });
         assert_eq!(
             log,
             vec![
-                AcpEvent::UserMessage { text: "hi".into() },
+                AcpEvent::UserMessage { text: "hi".into(), attachments: vec![] },
                 AcpEvent::AgentText { text: "ab".into() },
                 // Replaced in place: replay shows the final state where the
                 // call first appeared.
                 tool("t1", "completed"),
                 AcpEvent::AgentText { text: "c".into() },
                 AcpEvent::Thought { text: "xy".into() },
+                AcpEvent::UserText { text: "replayed prompt".into() },
             ]
         );
     }
@@ -851,11 +929,46 @@ mod tests {
             .await
             .unwrap();
         println!("agent: {}", init["agentInfo"]);
-        let new = conn
-            .request("session/new", json!({ "cwd": cwd, "mcpServers": [] }))
-            .await
-            .unwrap();
-        let sid = new["sessionId"].as_str().unwrap().to_string();
+        // ACP_SMOKE_LOAD=<id>: reopen a saved conversation instead, and
+        // print its replay.
+        let mut view = AcpView::new(0);
+        let sid = if let Ok(id) = std::env::var("ACP_SMOKE_LOAD") {
+            view.replaying = true;
+            let c = conn.clone();
+            let cwd2 = cwd.clone();
+            let id2 = id.clone();
+            let load = tokio::spawn(async move {
+                c.request("session/load", json!({ "sessionId": id2, "cwd": cwd2, "mcpServers": [] }))
+                    .await
+            });
+            loop {
+                if load.is_finished() {
+                    break;
+                }
+                if let Ok(Some(Incoming::Notification { method, mut params })) =
+                    tokio::time::timeout(std::time::Duration::from_millis(200), incoming.recv()).await
+                {
+                    if method == "session/update" {
+                        let raw = params.get_mut("update").map(Value::take).unwrap();
+                        if let Ok(u) = serde_json::from_value::<SessionUpdate>(raw) {
+                            if let Some(ev) = view.apply_update(u, 1) {
+                                println!("replay: {ev:?}");
+                            }
+                        }
+                    }
+                }
+            }
+            println!("load result: {:?}", load.await.unwrap().map(|v| v.get("modes").is_some()));
+            view.replay_finished(2);
+            println!("last_message after replay: {:?}", view.last_message);
+            id
+        } else {
+            let new = conn
+                .request("session/new", json!({ "cwd": cwd, "mcpServers": [] }))
+                .await
+                .unwrap();
+            new["sessionId"].as_str().unwrap().to_string()
+        };
         println!("session: {sid}");
         let c = conn.clone();
         let s2 = sid.clone();
@@ -866,8 +979,7 @@ mod tests {
             )
             .await
         });
-        let mut view = AcpView::new(0);
-        view.prompt_started("Reply with just: ok", 0);
+        view.prompt_started("Reply with just: ok", vec![], 0);
         let drain = async {
             while let Some(m) = incoming.recv().await {
                 if let Incoming::Notification { method, mut params } = m {
@@ -912,9 +1024,9 @@ mod tests {
     fn log_is_bounded() {
         let mut log = Vec::new();
         for i in 0..LOG_MAX + 5 {
-            push_log(&mut log, AcpEvent::UserMessage { text: i.to_string() });
+            push_log(&mut log, AcpEvent::Title { title: i.to_string() });
         }
         assert!(log.len() <= LOG_MAX);
-        assert_eq!(log.last(), Some(&AcpEvent::UserMessage { text: (LOG_MAX + 4).to_string() }));
+        assert_eq!(log.last(), Some(&AcpEvent::Title { title: (LOG_MAX + 4).to_string() }));
     }
 }

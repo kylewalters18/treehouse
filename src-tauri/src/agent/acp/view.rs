@@ -43,9 +43,20 @@ pub enum AcpEvent {
         /// The Claude CLI the adapter was pointed at (`CLAUDE_CODE_EXECUTABLE`);
         /// `None` = the adapter's own bundled CLI, or not a Claude session.
         cli: Option<String>,
+        /// The agent takes image content in prompts.
+        #[serde(rename = "acceptsImages")]
+        accepts_images: bool,
     },
     /// A prompt treehouse sent (typed in the pane, or a review batch).
-    UserMessage { text: String },
+    /// `attachments` labels what rode along (`@src/lib.rs`, `image`).
+    UserMessage {
+        text: String,
+        attachments: Vec<String>,
+    },
+    /// A chunk of a past user message, replayed by `session/load`.
+    /// Consecutive chunks form one message; unlike `UserMessage` it starts
+    /// no turn.
+    UserText { text: String },
     /// A chunk of the agent's reply; consecutive chunks form one message.
     AgentText { text: String },
     /// A chunk of the agent's visible reasoning.
@@ -71,7 +82,42 @@ pub enum AcpEvent {
     /// The session's permission modes and which is current. Sent after
     /// `session/new` and whenever the mode changes.
     Modes { modes: AcpModes },
+    /// Slash commands the agent accepts (`/compact`, custom commands, …).
+    Commands { commands: Vec<AcpCommand> },
+    /// Context-window use, and cost when the agent reports it.
+    Usage { usage: AcpUsage },
     Error { message: String },
+}
+
+#[derive(Debug, Clone, Serialize, TS, PartialEq)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct AcpCommand {
+    pub name: String,
+    pub description: String,
+    /// Placeholder for the command's argument, when it takes one.
+    pub hint: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, TS, PartialEq)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct AcpUsage {
+    /// Tokens in context.
+    #[ts(type = "number")]
+    pub used: u64,
+    /// Context window size, in tokens.
+    #[ts(type = "number")]
+    pub size: u64,
+    pub cost: Option<f64>,
+    pub currency: Option<String>,
+}
+
+/// Content the agent accepts in prompts beyond text (`initialize`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PromptCaps {
+    pub image: bool,
+    pub embedded_context: bool,
 }
 
 #[derive(Debug, Clone, Serialize, TS, PartialEq)]
@@ -194,6 +240,12 @@ pub struct AcpView {
     reply: String,
     tools: HashMap<String, AcpToolCall>,
     pub modes: Option<AcpModes>,
+    pub commands: Vec<AcpCommand>,
+    pub usage: Option<AcpUsage>,
+    pub caps: PromptCaps,
+    /// `session/load` is replaying history: user chunks are shown, and the
+    /// overview settles once it's done (`replay_finished`).
+    pub replaying: bool,
 }
 
 impl AcpView {
@@ -225,7 +277,7 @@ impl AcpView {
     }
 
     /// A prompt is about to be sent (or queued until the session is up).
-    pub fn prompt_started(&mut self, text: &str, now_ms: u64) -> AcpEvent {
+    pub fn prompt_started(&mut self, text: &str, attachments: Vec<String>, now_ms: u64) -> AcpEvent {
         self.turns += 1;
         self.task = first_line(text, TASK_MAX);
         if self.first_prompt.is_none() {
@@ -239,7 +291,38 @@ impl AcpView {
         }
         AcpEvent::UserMessage {
             text: text.to_string(),
+            attachments,
         }
+    }
+
+    /// `session/load` finished replaying: the agent is idle at its prompt,
+    /// and the last replayed reply is the last message.
+    pub fn replay_finished(&mut self, now_ms: u64) {
+        self.replaying = false;
+        self.current_tool = None;
+        let reply = self.reply.trim();
+        if !reply.is_empty() {
+            self.last_message = Some(truncate(reply, MESSAGE_MAX));
+        }
+        self.reply.clear();
+        self.set_activity(AgentActivity::Idle, now_ms);
+    }
+
+    /// The state events (`Commands`, `Usage`) a fresh attach needs; they're
+    /// kept here rather than in the log.
+    pub fn state_events(&self) -> Vec<AcpEvent> {
+        let mut out = Vec::new();
+        if !self.commands.is_empty() {
+            out.push(AcpEvent::Commands {
+                commands: self.commands.clone(),
+            });
+        }
+        if let Some(usage) = &self.usage {
+            out.push(AcpEvent::Usage {
+                usage: usage.clone(),
+            });
+        }
+        out
     }
 
     /// Fold one `session/update`. Returns the transcript event to stream, if
@@ -294,8 +377,40 @@ impl AcpView {
                 }
                 MaybeUndefined::Undefined => None,
             },
-            // Our own prompts are already in the transcript (UserMessage);
-            // modes, commands, usage and the rest aren't shown.
+            // Live prompts are already in the transcript (UserMessage); only
+            // a `session/load` replay shows the agent's echo of them.
+            SessionUpdate::UserMessageChunk(c) if self.replaying => {
+                // A new user message: the reply so far belongs to an older turn.
+                self.reply.clear();
+                block_text(&c.content).map(|text| AcpEvent::UserText { text })
+            }
+            SessionUpdate::AvailableCommandsUpdate(u) => {
+                self.commands = u
+                    .available_commands
+                    .into_iter()
+                    .map(|c| AcpCommand {
+                        hint: c
+                            .input
+                            .and_then(|i| serde_json::to_value(i).ok())
+                            .and_then(|v| v.get("hint")?.as_str().map(str::to_string)),
+                        name: c.name,
+                        description: c.description,
+                    })
+                    .collect();
+                Some(AcpEvent::Commands {
+                    commands: self.commands.clone(),
+                })
+            }
+            SessionUpdate::UsageUpdate(u) => {
+                let usage = AcpUsage {
+                    used: u.used,
+                    size: u.size,
+                    cost: u.cost.as_ref().map(|c| c.amount),
+                    currency: u.cost.map(|c| c.currency),
+                };
+                self.usage = Some(usage.clone());
+                Some(AcpEvent::Usage { usage })
+            }
             _ => None,
         }
     }
@@ -615,8 +730,11 @@ mod tests {
         let mut v = AcpView::new(0);
         assert_eq!(v.activity(), AgentActivity::Idle);
 
-        let ev = v.prompt_started("Fix the build\nmore detail", 1);
-        assert_eq!(ev, AcpEvent::UserMessage { text: "Fix the build\nmore detail".into() });
+        let ev = v.prompt_started("Fix the build\nmore detail", vec![], 1);
+        assert_eq!(
+            ev,
+            AcpEvent::UserMessage { text: "Fix the build\nmore detail".into(), attachments: vec![] }
+        );
         assert_eq!(v.activity(), AgentActivity::Working);
         assert_eq!(v.changed_at, 1);
         assert_eq!(v.task.as_deref(), Some("Fix the build"));
@@ -672,7 +790,7 @@ mod tests {
         assert_eq!(v.last_message.as_deref(), Some("All tests pass."));
 
         // The next prompt clears the previous reply, like UserPromptSubmit.
-        v.prompt_started("again", 6);
+        v.prompt_started("again", vec![], 6);
         assert_eq!(v.last_message, None);
         assert_eq!(v.first_prompt.as_deref(), Some("Fix the build"));
     }
@@ -702,10 +820,8 @@ mod tests {
         assert_eq!(entries[0].priority, "high");
 
         let ev = v.apply_update(
-            update(json!({
-                "sessionUpdate": "available_commands_update",
-                "availableCommands": [],
-            })),
+            // A mode change before modes are known has nothing to update.
+            update(json!({ "sessionUpdate": "current_mode_update", "currentModeId": "plan" })),
             3,
         );
         assert_eq!(ev, None);
@@ -714,7 +830,7 @@ mod tests {
     #[test]
     fn permission_request_blocks_until_answered() {
         let mut v = AcpView::new(0);
-        v.prompt_started("clean up", 1);
+        v.prompt_started("clean up", vec![], 1);
         let ev = v.permission_requested(json!(7), bash_permission(), 2);
         let AcpEvent::Permission { request } = ev else { panic!() };
         assert_eq!(request.id, "7");
@@ -822,6 +938,71 @@ mod tests {
     }
 
     #[test]
+    fn load_replay_shows_user_messages_and_settles() {
+        let mut v = AcpView::new(0);
+        // Outside a replay, the agent's echo of our prompt is dropped.
+        let echo = json!({ "sessionUpdate": "user_message_chunk", "content": { "type": "text", "text": "hi" } });
+        assert_eq!(v.apply_update(update(echo.clone()), 1), None);
+
+        v.replaying = true;
+        assert_eq!(
+            v.apply_update(update(echo), 1),
+            Some(AcpEvent::UserText { text: "hi".into() })
+        );
+        let reply = |t: &str| {
+            update(json!({ "sessionUpdate": "agent_message_chunk", "content": { "type": "text", "text": t } }))
+        };
+        v.apply_update(reply("first answer"), 2);
+        v.apply_update(
+            update(json!({ "sessionUpdate": "user_message_chunk", "content": { "type": "text", "text": "again" } })),
+            3,
+        );
+        v.apply_update(reply("second answer"), 4);
+        v.apply_update(
+            update(json!({ "sessionUpdate": "tool_call", "toolCallId": "t", "title": "x", "status": "pending" })),
+            5,
+        );
+        v.replay_finished(6);
+        assert!(!v.replaying);
+        assert_eq!(v.activity(), AgentActivity::Idle);
+        assert_eq!(v.current_tool, None);
+        assert_eq!(v.last_message.as_deref(), Some("second answer"));
+    }
+
+    #[test]
+    fn commands_and_usage_are_kept_as_state() {
+        let mut v = AcpView::new(0);
+        assert!(v.state_events().is_empty());
+        let ev = v.apply_update(
+            update(json!({
+                "sessionUpdate": "available_commands_update",
+                "availableCommands": [
+                    { "name": "compact", "description": "Compact context" },
+                    { "name": "review", "description": "Review a PR", "input": { "hint": "PR number" } },
+                ],
+            })),
+            1,
+        );
+        let Some(AcpEvent::Commands { commands }) = ev else { panic!("{ev:?}") };
+        assert_eq!(commands[1].hint.as_deref(), Some("PR number"));
+        assert_eq!(commands[0].hint, None);
+
+        v.apply_update(
+            update(json!({
+                "sessionUpdate": "usage_update",
+                "used": 50000, "size": 200000,
+                "cost": { "amount": 0.42, "currency": "USD" },
+            })),
+            2,
+        );
+        assert_eq!(
+            v.usage,
+            Some(AcpUsage { used: 50000, size: 200000, cost: Some(0.42), currency: Some("USD".into()) })
+        );
+        assert_eq!(v.state_events().len(), 2);
+    }
+
+    #[test]
     fn cancelling_a_permission_outside_a_turn_goes_idle() {
         let mut v = AcpView::new(0);
         v.permission_requested(json!("p"), bash_permission(), 1);
@@ -858,8 +1039,8 @@ mod tests {
     #[test]
     fn queued_prompts_keep_working_until_the_last_turn_ends() {
         let mut v = AcpView::new(0);
-        v.prompt_started("one", 1);
-        v.prompt_started("two", 2);
+        v.prompt_started("one", vec![], 1);
+        v.prompt_started("two", vec![], 2);
         v.turn_ended("end_turn", 3);
         assert_eq!(v.activity(), AgentActivity::Working);
         v.turn_ended("cancelled", 4);
