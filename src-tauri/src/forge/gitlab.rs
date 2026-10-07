@@ -108,26 +108,8 @@ impl GitlabForge {
 
     // --- issues ---
 
-    pub async fn list_issues(
-        &self,
-        query: &str,
-        state_filter: &str,
-        limit: u32,
-    ) -> AppResult<Vec<ForgeIssue>> {
-        let mut path = format!(
-            "projects/{}/issues?per_page={}&order_by=updated_at",
-            self.pid(),
-            limit
-        );
-        match state_filter {
-            "closed" => path.push_str("&state=closed"),
-            "all" => {}
-            _ => path.push_str("&state=opened"),
-        }
-        let q = query.trim();
-        if !q.is_empty() {
-            path.push_str(&format!("&search={}", percent_encode(q)));
-        }
+    pub async fn list_issues(&self, q: &IssueQuery) -> AppResult<Vec<ForgeIssue>> {
+        let path = format!("projects/{}/issues?{}", self.pid(), issues_params(q));
         let raw: Vec<GlIssue> = Self::parse("issues", &self.get(&path).await?)?;
         Ok(raw.into_iter().map(GlIssue::normalize).collect())
     }
@@ -688,5 +670,61 @@ impl GlPosition {
             old_path: self.old_path,
             old_line: self.old_line,
         }
+    }
+}
+
+/// Query string for `GET projects/:id/issues`, most recently updated first.
+fn issues_params(q: &IssueQuery) -> String {
+    let mut p = format!("per_page={}&order_by=updated_at", q.limit);
+    match q.state.as_str() {
+        "closed" => p.push_str("&state=closed"),
+        "all" => {}
+        _ => p.push_str("&state=opened"),
+    }
+    let search = q.search.trim();
+    if !search.is_empty() {
+        p.push_str(&format!("&search={}", percent_encode(search)));
+    }
+    if !q.labels.is_empty() {
+        let labels: Vec<String> = q.labels.iter().map(|l| percent_encode(l)).collect();
+        p.push_str(&format!("&labels={}", labels.join(",")));
+    }
+    match &q.assignee {
+        AssigneeFilter::Any => {}
+        AssigneeFilter::Unassigned => p.push_str("&assignee_id=None"),
+        AssigneeFilter::Me => p.push_str("&scope=assigned_to_me"),
+        AssigneeFilter::User(u) => p.push_str(&format!("&assignee_username={}", percent_encode(u))),
+    }
+    p
+}
+
+#[cfg(test)]
+mod issue_query_tests {
+    use super::*;
+
+    #[test]
+    fn issues_params_maps_filters() {
+        let q = IssueQuery {
+            search: " login bug ".into(),
+            state: "open".into(),
+            labels: vec!["bug".into(), "needs triage".into()],
+            assignee: AssigneeFilter::Unassigned,
+            limit: 20,
+        };
+        assert_eq!(
+            issues_params(&q),
+            "per_page=20&order_by=updated_at&state=opened&search=login%20bug\
+             &labels=bug,needs%20triage&assignee_id=None"
+        );
+        let q = IssueQuery {
+            state: "all".into(),
+            assignee: AssigneeFilter::User("kyle".into()),
+            limit: 5,
+            ..Default::default()
+        };
+        assert_eq!(
+            issues_params(&q),
+            "per_page=5&order_by=updated_at&assignee_username=kyle"
+        );
     }
 }

@@ -9,7 +9,10 @@ use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::agent::supervisor;
-use crate::forge::{log, workflow, Forge, ForgePipeline, ForgeThread, IssueStart};
+use crate::forge::{
+    log, workflow, AssigneeFilter, Forge, ForgeIssue, ForgePipeline, ForgeThread, IssueQuery,
+    IssueStart,
+};
 use crate::ipc::commands::{finish_create, resolve_forge};
 use crate::ipc::events;
 use crate::pty;
@@ -32,6 +35,8 @@ pub fn list(scope: CallerScope) -> Value {
             create_worktree_schema(scope),
             create_pr_schema(),
             get_linked_issue_schema(),
+            search_issues_schema(scope),
+            get_issue_schema(scope),
             get_pr_threads_schema(),
             get_ci_status_schema(),
             get_ci_log_schema(),
@@ -41,7 +46,12 @@ pub fn list(scope: CallerScope) -> Value {
         ]),
         // A planner has a repo but no worktree, so nothing to open a PR from.
         CallerScope::Planner(_) => {
-            json!([create_issue_schema(scope), create_worktree_schema(scope),])
+            json!([
+                create_issue_schema(scope),
+                create_worktree_schema(scope),
+                search_issues_schema(scope),
+                get_issue_schema(scope),
+            ])
         }
         CallerScope::Scratch => json!([
             {
@@ -53,6 +63,8 @@ pub fn list(scope: CallerScope) -> Value {
             },
             create_issue_schema(scope),
             create_worktree_schema(scope),
+            search_issues_schema(scope),
+            get_issue_schema(scope),
         ]),
     }
 }
@@ -83,6 +95,71 @@ fn create_issue_schema(scope: CallerScope) -> Value {
         "description": "File a new issue on this repo's GitLab/GitHub project (it is visible to the \
             team). Returns its number and URL; pass the number to create_worktree's `issue` to start \
             work on it.",
+        "inputSchema": { "type": "object", "properties": properties, "required": required }
+    })
+}
+
+const SEARCH_ISSUES_DEFAULT_LIMIT: u32 = 20;
+const SEARCH_ISSUES_MAX_LIMIT: u32 = 50;
+
+fn search_issues_schema(scope: CallerScope) -> Value {
+    let mut properties = json!({
+        "query": {
+            "type": "string",
+            "description": "Keywords matched against title and description. Omit to list the most \
+                recently updated issues."
+        },
+        "labels": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Only issues carrying ALL of these labels."
+        },
+        "assignee": {
+            "type": "string",
+            "description": "A username, \"@me\" for the authenticated user, or \"none\" for \
+                unassigned issues."
+        },
+        "state": {
+            "type": "string",
+            "enum": ["open", "closed", "all"],
+            "description": "Default open."
+        },
+        "limit": {
+            "type": "integer",
+            "description": format!(
+                "Max results, newest-updated first. Default {SEARCH_ISSUES_DEFAULT_LIMIT}, \
+                 max {SEARCH_ISSUES_MAX_LIMIT}."
+            )
+        }
+    });
+    let mut required: Vec<&str> = vec![];
+    if scope == CallerScope::Scratch {
+        properties["repo"] = repo_property();
+        required.push("repo");
+    }
+    json!({
+        "name": "search_issues",
+        "description": "Search this repo's GitLab/GitHub issues. Returns compact rows (number, title, \
+            state, labels, assignees, updated) without descriptions — call get_issue for the full \
+            text of the ones that matter. Narrow with filters rather than paging through a big \
+            backlog, and search for an existing issue before calling create_issue.",
+        "inputSchema": { "type": "object", "properties": properties, "required": required }
+    })
+}
+
+fn get_issue_schema(scope: CallerScope) -> Value {
+    let mut properties = json!({
+        "number": { "type": "integer", "description": "Issue number (GitLab iid)." }
+    });
+    let mut required = vec!["number"];
+    if scope == CallerScope::Scratch {
+        properties["repo"] = repo_property();
+        required.insert(0, "repo");
+    }
+    json!({
+        "name": "get_issue",
+        "description": "Read one of this repo's issues in full: title, state, description, labels, \
+            assignees, URL.",
         "inputSchema": { "type": "object", "properties": properties, "required": required }
     })
 }
@@ -297,6 +374,8 @@ pub async fn call(app: &AppHandle, caller: McpCaller, params: &Value) -> Value {
         "create_issue" => create_issue(app, caller, &args).await,
         "create_pr" => create_pr(app, caller, &args).await,
         "get_linked_issue" => get_linked_issue(app, caller).await,
+        "search_issues" => search_issues(app, caller, &args).await,
+        "get_issue" => get_issue(app, caller, &args).await,
         "get_pr_threads" => get_pr_threads(app, caller, &args).await,
         "get_ci_status" => get_ci_status(app, caller).await,
         "get_ci_log" => get_ci_log(app, caller, &args).await,
@@ -563,6 +642,102 @@ async fn own_forge(app: &AppHandle, wt: &Worktree) -> Result<Forge, String> {
         .map_err(|e| e.to_string())
 }
 
+/// A forge for whichever repo the call targets (see `target_workspace`).
+async fn target_forge(app: &AppHandle, caller: McpCaller, args: &Value) -> Result<Forge, String> {
+    let (workspace_id, _) = target_workspace(app, caller, args)?;
+    let state = app.state::<AppState>();
+    resolve_forge(workspace_id, &state)
+        .await
+        .map(|(forge, _)| forge)
+        .map_err(|e| e.to_string())
+}
+
+fn issue_query(args: &Value) -> Result<IssueQuery, String> {
+    let labels = match args.get("labels") {
+        None | Some(Value::Null) => vec![],
+        Some(Value::Array(xs)) => xs
+            .iter()
+            .map(|x| x.as_str().map(str::trim).ok_or("`labels` must be strings"))
+            .filter(|l| l.map_or(true, |l| !l.is_empty()))
+            .map(|l| l.map(str::to_string))
+            .collect::<Result<_, _>>()?,
+        Some(_) => return Err("`labels` must be an array of strings".into()),
+    };
+    let assignee = match str_arg(args, "assignee").as_deref() {
+        None => AssigneeFilter::Any,
+        Some(a) if a.eq_ignore_ascii_case("none") => AssigneeFilter::Unassigned,
+        Some("@me") => AssigneeFilter::Me,
+        Some(u) => AssigneeFilter::User(u.trim_start_matches('@').to_string()),
+    };
+    let state = str_arg(args, "state").unwrap_or_else(|| "open".into());
+    if !matches!(state.as_str(), "open" | "closed" | "all") {
+        return Err(format!(
+            "`state` must be open, closed, or all (got {state})"
+        ));
+    }
+    let limit = args
+        .get("limit")
+        .and_then(Value::as_u64)
+        .map_or(SEARCH_ISSUES_DEFAULT_LIMIT, |n| {
+            (n as u32).clamp(1, SEARCH_ISSUES_MAX_LIMIT)
+        });
+    Ok(IssueQuery {
+        search: str_arg(args, "query").unwrap_or_default(),
+        state,
+        labels,
+        assignee,
+        limit,
+    })
+}
+
+async fn search_issues(app: &AppHandle, caller: McpCaller, args: &Value) -> Result<Value, String> {
+    let q = issue_query(args)?;
+    let issues = target_forge(app, caller, args)
+        .await?
+        .list_issues(&q)
+        .await
+        .map_err(|e| e.to_string())?;
+    let rows: Vec<Value> = issues
+        .into_iter()
+        .map(|i| {
+            json!({
+                "number": i.number,
+                "title": i.title,
+                "state": i.state,
+                "labels": i.labels,
+                "assignees": i.assignees,
+                "updatedAt": i.updated_at,
+            })
+        })
+        .collect();
+    Ok(json!({ "count": rows.len(), "limit": q.limit, "issues": rows }))
+}
+
+async fn get_issue(app: &AppHandle, caller: McpCaller, args: &Value) -> Result<Value, String> {
+    let n = args
+        .get("number")
+        .and_then(Value::as_u64)
+        .ok_or("`number` is required")?;
+    let issue = target_forge(app, caller, args)
+        .await?
+        .get_issue(n)
+        .await
+        .map_err(|e| format!("couldn't read #{n}: {e}"))?;
+    Ok(issue_json(issue))
+}
+
+fn issue_json(issue: ForgeIssue) -> Value {
+    json!({
+        "number": issue.number,
+        "title": issue.title,
+        "state": issue.state,
+        "body": issue.body,
+        "labels": issue.labels,
+        "assignees": issue.assignees,
+        "url": issue.url,
+    })
+}
+
 async fn get_linked_issue(app: &AppHandle, caller: McpCaller) -> Result<Value, String> {
     let wt = own_worktree(app, caller, "get_linked_issue")?;
     let n = workflow::linked_issue(app, &wt.path)
@@ -573,15 +748,7 @@ async fn get_linked_issue(app: &AppHandle, caller: McpCaller) -> Result<Value, S
         .get_issue(n)
         .await
         .map_err(|e| format!("couldn't read #{n}: {e}"))?;
-    Ok(json!({
-        "number": issue.number,
-        "title": issue.title,
-        "state": issue.state,
-        "body": issue.body,
-        "labels": issue.labels,
-        "assignees": issue.assignees,
-        "url": issue.url,
-    }))
+    Ok(issue_json(issue))
 }
 
 async fn get_pr_threads(app: &AppHandle, caller: McpCaller, args: &Value) -> Result<Value, String> {
@@ -1008,19 +1175,38 @@ mod tests {
         let tools = list(CallerScope::Scratch);
         assert_eq!(
             names(&tools),
-            ["list_repos", "create_issue", "create_worktree"]
+            [
+                "list_repos",
+                "create_issue",
+                "create_worktree",
+                "search_issues",
+                "get_issue"
+            ]
         );
         assert_eq!(
             tools[1]["inputSchema"]["required"],
             json!(["repo", "title", "body"])
         );
         assert_eq!(tools[2]["inputSchema"]["required"], json!(["repo"]));
+        assert_eq!(tools[3]["inputSchema"]["required"], json!(["repo"]));
+        assert_eq!(
+            tools[4]["inputSchema"]["required"],
+            json!(["repo", "number"])
+        );
     }
 
     #[test]
     fn planners_act_on_their_repo_without_create_pr() {
         let tools = list(CallerScope::Planner(WorkspaceId::new()));
-        assert_eq!(names(&tools), ["create_issue", "create_worktree"]);
+        assert_eq!(
+            names(&tools),
+            [
+                "create_issue",
+                "create_worktree",
+                "search_issues",
+                "get_issue"
+            ]
+        );
         for t in tools.as_array().unwrap() {
             assert!(
                 t["inputSchema"]["properties"].get("repo").is_none(),
@@ -1042,6 +1228,8 @@ mod tests {
                 "create_worktree",
                 "create_pr",
                 "get_linked_issue",
+                "search_issues",
+                "get_issue",
                 "get_pr_threads",
                 "get_ci_status",
                 "get_ci_log",
@@ -1058,6 +1246,33 @@ mod tests {
             );
         }
         assert!(tools[1]["inputSchema"]["properties"].get("issue").is_some());
+    }
+
+    #[test]
+    fn issue_query_parses_filters_and_clamps_limit() {
+        let q = issue_query(&json!({
+            "query": " flaky ",
+            "labels": ["bug", " ", "ci"],
+            "assignee": "None",
+            "limit": 500
+        }))
+        .unwrap();
+        assert_eq!(q.search, "flaky");
+        assert_eq!(q.labels, ["bug", "ci"]);
+        assert_eq!(q.assignee, AssigneeFilter::Unassigned);
+        assert_eq!(q.state, "open");
+        assert_eq!(q.limit, SEARCH_ISSUES_MAX_LIMIT);
+
+        let q = issue_query(&json!({ "assignee": "@kyle", "state": "all" })).unwrap();
+        assert_eq!(q.assignee, AssigneeFilter::User("kyle".into()));
+        assert_eq!(q.limit, SEARCH_ISSUES_DEFAULT_LIMIT);
+        assert_eq!(
+            issue_query(&json!({ "assignee": "@me" })).unwrap().assignee,
+            AssigneeFilter::Me
+        );
+
+        assert!(issue_query(&json!({ "state": "merged" })).is_err());
+        assert!(issue_query(&json!({ "labels": "bug" })).is_err());
     }
 
     #[test]

@@ -99,15 +99,10 @@ impl Forge {
             Forge::Github(g) => g.status().await,
         }
     }
-    pub async fn list_issues(
-        &self,
-        query: &str,
-        state_filter: &str,
-        limit: u32,
-    ) -> AppResult<Vec<ForgeIssue>> {
+    pub async fn list_issues(&self, q: &IssueQuery) -> AppResult<Vec<ForgeIssue>> {
         match self {
-            Forge::Gitlab(g) => g.list_issues(query, state_filter, limit).await,
-            Forge::Github(g) => g.list_issues(query, state_filter, limit).await,
+            Forge::Gitlab(g) => g.list_issues(q).await,
+            Forge::Github(g) => g.list_issues(q).await,
         }
     }
     pub async fn get_issue(&self, number: u64) -> AppResult<ForgeIssue> {

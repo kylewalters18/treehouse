@@ -11,7 +11,7 @@ use crate::agent::{
 use crate::diff::{self, DiffMode, DiffSet};
 use crate::forge::{
     self, workflow, ForgeApproval, ForgeIssue, ForgeJob, ForgeJobLog, ForgeMr, ForgePipeline,
-    ForgeStatus, ForgeThread, IssueStart, ReviewCommentInput,
+    ForgeStatus, ForgeThread, IssueQuery, IssueStart, ReviewCommentInput,
 };
 use crate::fs_api::{self, FileContent, TreeEntry};
 use crate::fs_watch;
@@ -662,7 +662,13 @@ pub async fn forge_list_issues(
     state: State<'_, AppState>,
 ) -> AppResult<Vec<ForgeIssue>> {
     let (f, _) = resolve_forge(workspace_id, &state).await?;
-    f.list_issues(&query, &state_filter, limit).await
+    f.list_issues(&IssueQuery {
+        search: query,
+        state: state_filter,
+        limit,
+        ..Default::default()
+    })
+    .await
 }
 
 #[tauri::command]

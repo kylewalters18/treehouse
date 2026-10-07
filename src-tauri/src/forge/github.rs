@@ -136,30 +136,10 @@ impl GithubForge {
 
     // --- issues ---
 
-    pub async fn list_issues(
-        &self,
-        query: &str,
-        state_filter: &str,
-        limit: u32,
-    ) -> AppResult<Vec<ForgeIssue>> {
-        let state = match state_filter {
-            "closed" | "all" => state_filter,
-            _ => "open",
-        };
+    pub async fn list_issues(&self, q: &IssueQuery) -> AppResult<Vec<ForgeIssue>> {
         let mut args = strs(&["issue", "list", "-R"]);
-        args.extend([
-            self.repo_arg(),
-            "--state".into(),
-            state.into(),
-            "--limit".into(),
-            limit.to_string(),
-            "--json".into(),
-            ISSUE_FIELDS.into(),
-        ]);
-        let q = query.trim();
-        if !q.is_empty() {
-            args.extend(["--search".into(), q.into()]);
-        }
+        args.push(self.repo_arg());
+        args.extend(issue_list_args(q));
         let raw: Vec<GhIssue> = parse("issues", &self.gh(&args).await?)?;
         Ok(raw.into_iter().map(GhIssue::normalize).collect())
     }
@@ -735,6 +715,31 @@ impl GithubForge {
     }
 }
 
+/// `gh issue list` args after `-R <repo>`. gh has no "unassigned" flag, so
+/// that one rides along in the search query.
+fn issue_list_args(q: &IssueQuery) -> Vec<String> {
+    let state = match q.state.as_str() {
+        "closed" | "all" => q.state.as_str(),
+        _ => "open",
+    };
+    let mut args = strs(&["--state", state, "--json", ISSUE_FIELDS]);
+    args.extend(["--limit".into(), q.limit.to_string()]);
+    for l in &q.labels {
+        args.extend(["--label".into(), l.clone()]);
+    }
+    let mut search = q.search.trim().to_string();
+    match &q.assignee {
+        AssigneeFilter::Any => {}
+        AssigneeFilter::Unassigned => search = format!("{search} no:assignee").trim().to_string(),
+        AssigneeFilter::Me => args.extend(["--assignee".into(), "@me".into()]),
+        AssigneeFilter::User(u) => args.extend(["--assignee".into(), u.clone()]),
+    }
+    if !search.is_empty() {
+        args.extend(["--search".into(), search]);
+    }
+    args
+}
+
 fn strs(xs: &[&str]) -> Vec<String> {
     xs.iter().map(|s| s.to_string()).collect()
 }
@@ -1159,6 +1164,51 @@ impl GqlComment {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn issue_list_args_maps_filters() {
+        let q = IssueQuery {
+            search: "login".into(),
+            state: "".into(),
+            labels: vec!["bug".into()],
+            assignee: AssigneeFilter::Unassigned,
+            limit: 20,
+        };
+        assert_eq!(
+            issue_list_args(&q),
+            strs(&[
+                "--state",
+                "open",
+                "--json",
+                ISSUE_FIELDS,
+                "--limit",
+                "20",
+                "--label",
+                "bug",
+                "--search",
+                "login no:assignee",
+            ])
+        );
+        let q = IssueQuery {
+            state: "all".into(),
+            assignee: AssigneeFilter::Me,
+            limit: 5,
+            ..Default::default()
+        };
+        assert_eq!(
+            issue_list_args(&q),
+            strs(&[
+                "--state",
+                "all",
+                "--json",
+                ISSUE_FIELDS,
+                "--limit",
+                "5",
+                "--assignee",
+                "@me"
+            ])
+        );
+    }
 
     #[test]
     fn ci_status_maps_actions_vocabulary() {

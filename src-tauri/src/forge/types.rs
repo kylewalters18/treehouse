@@ -39,6 +39,30 @@ pub struct ForgeStatus {
     pub username: Option<String>,
 }
 
+/// Filters for `Forge::list_issues`. Internal only — the renderer passes
+/// search/state/limit as command args; MCP adds labels and assignee.
+#[derive(Debug, Clone, Default)]
+pub struct IssueQuery {
+    /// Free-text search over title + description. Empty = no search.
+    pub search: String,
+    /// "open" (default) | "closed" | "all".
+    pub state: String,
+    /// Every label must match.
+    pub labels: Vec<String>,
+    pub assignee: AssigneeFilter,
+    pub limit: u32,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum AssigneeFilter {
+    #[default]
+    Any,
+    Unassigned,
+    /// The authenticated user.
+    Me,
+    User(String),
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
