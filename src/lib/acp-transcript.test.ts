@@ -2,11 +2,15 @@ import { describe, expect, it } from "vitest";
 import type { AcpEvent, AcpToolCall } from "@/ipc/types";
 import {
   applyAcpEvent,
+  canSubmitAnswer,
   commandOf,
   diffText,
   emptyTranscript,
+  lineOfSnippet,
+  questionAnswer,
   stopReasonLabel,
 } from "./acp-transcript";
+import type { AcpFormField } from "@/ipc/types";
 import { langForPath } from "@/components/CodeBlock";
 
 function tool(status: string, title = "`cargo test`"): AcpToolCall {
@@ -21,6 +25,25 @@ function tool(status: string, title = "`cargo test`"): AcpToolCall {
     rawInput: null,
   };
 }
+
+const FIELDS: AcpFormField[] = [
+  {
+    key: "question_0",
+    title: "Cache",
+    description: null,
+    required: false,
+    input: { kind: "choice", multi: false, options: [{ value: "Redis", title: "Redis", description: null, preview: null }] },
+  },
+  { key: "question_0_custom", title: "Other", description: null, required: false, input: { kind: "text", multiline: true } },
+  {
+    key: "targets",
+    title: null,
+    description: null,
+    required: false,
+    input: { kind: "choice", multi: true, options: [] },
+  },
+  { key: "count", title: null, description: null, required: false, input: { kind: "number", integer: true } },
+];
 
 function fold(events: AcpEvent[]) {
   const t = emptyTranscript();
@@ -162,5 +185,49 @@ describe("tool body helpers", () => {
     expect(langForPath("/r/src/main.rs")).toBe("rust");
     expect(langForPath("App.TSX")).toBe("tsx");
     expect(langForPath("Makefile")).toBe("text");
+  });
+});
+
+describe("questions", () => {
+  it("tracks a question until it is answered", () => {
+    const question = { id: "4", message: "Which cache?", toolCallId: null, fields: FIELDS };
+    const t = fold([
+      { kind: "userMessage", text: "set up", attachments: [] },
+      { kind: "question", question },
+    ]);
+    expect(t.pendingQuestion).toBe("4");
+    applyAcpEvent(t, { kind: "questionResolved", requestId: "4", action: "accept", summary: "Redis" });
+    expect(t.pendingQuestion).toBeNull();
+    expect(t.items[1]).toEqual({
+      kind: "question",
+      question,
+      resolved: { action: "accept", summary: "Redis" },
+    });
+  });
+
+  it("builds answers from filled fields only", () => {
+    expect(
+      questionAnswer(FIELDS, {
+        question_0: "Redis",
+        question_0_custom: "  ",
+        targets: [],
+        count: "3",
+      }),
+    ).toEqual({ question_0: "Redis", count: 3 });
+    expect(canSubmitAnswer(FIELDS, {})).toBe(false);
+    expect(canSubmitAnswer(FIELDS, { question_0_custom: "Memcached" })).toBe(true);
+    const required = [{ ...FIELDS[0], required: true }, FIELDS[1]];
+    expect(canSubmitAnswer(required, { question_0_custom: "x" })).toBe(false);
+  });
+});
+
+describe("lineOfSnippet", () => {
+  const file = "fn a() {}\n\nfn b() {\n    let x = 1;\n}\n";
+  it("finds where an edit's text starts", () => {
+    expect(lineOfSnippet(file, "fn b() {\n    let x = 1;")).toBe(3);
+    // Indentation differences fall back to the first line.
+    expect(lineOfSnippet(file, "  let x = 1;\n  other")).toBe(4);
+    expect(lineOfSnippet(file, "nowhere")).toBeNull();
+    expect(lineOfSnippet(file, "\n\n")).toBeNull();
   });
 });

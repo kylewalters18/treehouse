@@ -336,13 +336,35 @@ async function openPathInEditor(
   worktreeId: WorktreeId,
 ): Promise<void> {
   const { path, line, column } = parsePathWithLineCol(raw);
+  await openWorktreeFile(worktreeId, path, line, column);
+}
+
+/// Open `path` (absolute, `~/`, or worktree-relative) in the editor,
+/// revealing `line` when given. Returns false — and does nothing — when
+/// the path isn't inside the worktree.
+export async function openWorktreeFile(
+  worktreeId: WorktreeId,
+  path: string,
+  line: number | null,
+  column: number | null = null,
+): Promise<boolean> {
   const worktree = useWorktreesStore
     .getState()
     .worktrees.find((w) => w.id === worktreeId);
-  if (!worktree) return;
+  if (!worktree) return false;
   const home = path.startsWith("~/") ? await getHomeDir() : null;
   const rel = resolveToWorktreeRelative(path, worktree.path, home);
-  if (rel === null) return;
+  if (rel === null) return false;
+  revealInEditor(worktreeId, rel, line, column);
+  return true;
+}
+
+function revealInEditor(
+  worktreeId: WorktreeId,
+  rel: string,
+  line: number | null,
+  column: number | null,
+): void {
   const diffs = useDiffsStore.getState();
   diffs.setView(worktreeId, "file");
   diffs.selectFile(worktreeId, rel);

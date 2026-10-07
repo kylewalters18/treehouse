@@ -148,6 +148,7 @@ pub fn run() {
         ipc::commands::acp_send_prompt,
         ipc::commands::acp_set_mode,
         ipc::commands::acp_set_config,
+        ipc::commands::acp_answer_question,
         ipc::commands::acp_respond_permission,
         ipc::commands::acp_adapters_get,
         ipc::commands::lsp_ensure,

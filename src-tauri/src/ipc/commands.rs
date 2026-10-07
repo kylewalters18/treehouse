@@ -1154,6 +1154,18 @@ pub async fn acp_set_config(
     agent::acp::set_config(&state.agents, agent_id, &config_id, &value)
 }
 
+/// Answer an ACP agent's question (form elicitation).
+#[tauri::command]
+pub async fn acp_answer_question(
+    agent_id: AgentSessionId,
+    request_id: String,
+    action: String,
+    content: Option<serde_json::Value>,
+    state: State<'_, AppState>,
+) -> AppResult<()> {
+    agent::acp::answer_question(&state.agents, agent_id, &request_id, &action, content)
+}
+
 /// Answer an ACP agent's permission request with one of its options.
 #[tauri::command]
 pub async fn acp_respond_permission(

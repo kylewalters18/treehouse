@@ -1,17 +1,31 @@
-import { memo, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
-import { ChevronRight } from "lucide-react";
+import {
+  createContext,
+  memo,
+  useContext,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
+import { ArrowUpRight, ChevronRight } from "lucide-react";
 
 import {
+  acpAnswerQuestion,
   acpCancel,
   acpRespondPermission,
   acpSendPrompt,
   acpSetConfig,
   acpSetMode,
+  readFile,
 } from "@/ipc/client";
 import type {
   AcpAttachment,
+  AcpFormField,
   AcpPermissionRequest,
   AcpPlanEntry,
+  AcpQuestion,
   AcpToolCall,
   AgentSessionId,
   WorktreeId,
@@ -20,12 +34,26 @@ import { ForgeMarkdown } from "@/components/ForgeMarkdown";
 import { CodeBlock, langForPath } from "@/components/CodeBlock";
 import { cn } from "@/lib/cn";
 import { asMessage } from "@/lib/errors";
-import { commandOf, diffText, stopReasonLabel, type AcpItem } from "@/lib/acp-transcript";
+import {
+  canSubmitAnswer,
+  commandOf,
+  diffText,
+  lineOfSnippet,
+  questionAnswer,
+  stopReasonLabel,
+  type AcpItem,
+  type FormValue,
+} from "@/lib/acp-transcript";
+import { useWorktreesStore } from "@/stores/worktrees";
+import { openWorktreeFile } from "./term-path-links";
 import { useToastsStore } from "@/stores/toasts";
 import { createAcpLeafState, type AcpLeafState } from "./acp-leaf-state";
 import { AcpPromptBox } from "./AcpPromptBox";
 import { composerControls, type ComposerPicker } from "@/lib/acp-composer";
 import type { AgentLeafMode } from "./agent-leaf-state";
+
+/// The worktree a transcript belongs to, for opening files it mentions.
+const WorktreeContext = createContext<{ worktreeId: WorktreeId; root: string } | null>(null);
 
 /// Slot view for one ACP agent tab: the structured counterpart of
 /// `AgentLeafSlot`. State lives in the `acp-leaf-state` pool so it survives
@@ -62,6 +90,8 @@ export function AcpAgentSlot({
     },
     () => state.version,
   );
+  const root = useWorktreesStore((s) => s.worktrees.find((w) => w.id === worktreeId)?.path ?? "");
+  const worktreeCtx = useMemo(() => ({ worktreeId, root }), [worktreeId, root]);
   const t = state.transcript;
   const running = t.turns > 0 && !state.exited;
 
@@ -107,6 +137,17 @@ export function AcpAgentSlot({
     await req.catch((e) => reportError(`Couldn't change ${picker.option.name.toLowerCase()}`, e));
   }
 
+  async function answerQuestion(
+    q: AcpQuestion,
+    action: "accept" | "decline",
+    content?: Record<string, unknown>,
+  ) {
+    if (!state.sessionId) return;
+    await acpAnswerQuestion(state.sessionId, q.id, action, content).catch((e) =>
+      reportError("Couldn't answer the question", e),
+    );
+  }
+
   async function answer(req: AcpPermissionRequest, optionId: string) {
     if (!state.sessionId) return;
     await acpRespondPermission(state.sessionId, req.id, optionId).catch((e) =>
@@ -127,6 +168,7 @@ export function AcpAgentSlot({
             : "Ready";
 
   return (
+    <WorktreeContext.Provider value={worktreeCtx}>
     <div className="flex h-full w-full flex-col text-[12.5px] text-neutral-300">
       <div className="flex h-7 shrink-0 items-center gap-2 border-b border-neutral-800 px-3 text-[11px] text-neutral-500">
         <span className="rounded border border-neutral-700 px-1 text-[10px] font-medium uppercase tracking-wide text-neutral-400">
@@ -173,8 +215,12 @@ export function AcpAgentSlot({
             <Row
               key={i}
               item={item}
-              pending={item.kind === "permission" && item.request.id === t.pendingPermission}
+              pending={
+                (item.kind === "permission" && item.request.id === t.pendingPermission) ||
+                (item.kind === "question" && item.question.id === t.pendingQuestion)
+              }
               onAnswer={answer}
+              onAnswerQuestion={answerQuestion}
             />
           ))}
         </div>
@@ -197,6 +243,7 @@ export function AcpAgentSlot({
         focusNonce={focusNonce}
       />
     </div>
+    </WorktreeContext.Provider>
   );
 }
 
@@ -204,10 +251,16 @@ const Row = memo(function Row({
   item,
   pending,
   onAnswer,
+  onAnswerQuestion,
 }: {
   item: AcpItem;
   pending: boolean;
   onAnswer: (req: AcpPermissionRequest, optionId: string) => void;
+  onAnswerQuestion: (
+    q: AcpQuestion,
+    action: "accept" | "decline",
+    content?: Record<string, unknown>,
+  ) => void;
 }) {
   switch (item.kind) {
     case "user":
@@ -240,6 +293,8 @@ const Row = memo(function Row({
       return <ToolCard tool={item.tool} />;
     case "permission":
       return <PermissionCard item={item} pending={pending} onAnswer={onAnswer} />;
+    case "question":
+      return <QuestionCard item={item} pending={pending} onAnswer={onAnswerQuestion} />;
     case "turnEnd": {
       const label = stopReasonLabel(item.stopReason);
       return label ? <div className="text-[11px] italic text-neutral-500">{label}</div> : null;
@@ -280,6 +335,7 @@ const STATUS_DOT: Record<string, string> = {
 function ToolCard({ tool }: { tool: AcpToolCall }) {
   const [open, setOpen] = useState(false);
   const hasBody = toolHasBody(tool);
+  const target = primaryTarget(tool);
   return (
     <div className="rounded border border-neutral-800 bg-neutral-900/60">
       <button
@@ -291,6 +347,7 @@ function ToolCard({ tool }: { tool: AcpToolCall }) {
         <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-neutral-300">
           {tool.title || tool.kind}
         </span>
+        {target && <OpenFileButton target={target} />}
         {hasBody && (
           <ChevronRight size={11} className={cn("shrink-0 text-neutral-500 transition-transform", open && "rotate-90")} />
         )}
@@ -301,6 +358,104 @@ function ToolCard({ tool }: { tool: AcpToolCall }) {
         </div>
       )}
     </div>
+  );
+}
+
+/// A file a tool call touches, and how to find the spot in it: a line the
+/// agent gave, or an edit's text to search for.
+type FileTarget = { path: string; line: number | null; newText?: string; oldText?: string | null };
+
+/// The file a tool card's open button goes to: its first edit, else its
+/// first location.
+function primaryTarget(tool: AcpToolCall): FileTarget | null {
+  const diff = tool.content.find((c) => c.kind === "diff");
+  if (diff && diff.kind === "diff") {
+    const loc = tool.locations.find((l) => l.path === diff.path);
+    return { path: diff.path, line: loc?.line ?? null, newText: diff.newText, oldText: diff.oldText };
+  }
+  const loc = tool.locations[0];
+  return loc ? { path: loc.path, line: loc.line } : null;
+}
+
+/// `target.path` relative to the worktree, or null when it's outside.
+function relativeTo(root: string, path: string): string | null {
+  if (!root) return null;
+  const base = root.endsWith("/") ? root : `${root}/`;
+  if (path.startsWith(base)) return path.slice(base.length);
+  return path.startsWith("/") ? null : path;
+}
+
+/// Open a target in the editor. Without a line, an edit's position is
+/// found by searching the file for its new text (applied) or old text
+/// (still pending, e.g. awaiting permission).
+async function openTarget(worktreeId: WorktreeId, rel: string, target: FileTarget) {
+  let line = target.line;
+  if (line === null && target.newText !== undefined) {
+    const file = await readFile(worktreeId, rel).catch(() => null);
+    const text = file?.text ?? "";
+    line =
+      lineOfSnippet(text, target.newText) ??
+      (target.oldText ? lineOfSnippet(text, target.oldText) : null);
+  }
+  await openWorktreeFile(worktreeId, rel, line);
+}
+
+function useOpenTarget(target: FileTarget): { rel: string | null; open: () => void } {
+  const ctx = useContext(WorktreeContext);
+  const rel = ctx ? relativeTo(ctx.root, target.path) : null;
+  return {
+    rel,
+    open: () => {
+      if (ctx && rel !== null) void openTarget(ctx.worktreeId, rel, target);
+    },
+  };
+}
+
+function OpenFileButton({ target }: { target: FileTarget }) {
+  const { rel, open } = useOpenTarget(target);
+  if (rel === null) return null;
+  return (
+    <span
+      role="button"
+      tabIndex={0}
+      title={`Open ${rel} in the editor`}
+      onClick={(e) => {
+        e.stopPropagation();
+        open();
+      }}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") {
+          e.stopPropagation();
+          open();
+        }
+      }}
+      className="flex h-4 w-4 shrink-0 items-center justify-center rounded text-neutral-500 hover:bg-neutral-700 hover:text-neutral-100"
+    >
+      <ArrowUpRight size={11} />
+    </span>
+  );
+}
+
+/// A path that opens in the editor when it's inside the worktree; shown
+/// worktree-relative, with `:line` when known.
+function FileLink({ target }: { target: FileTarget }) {
+  const { rel, open } = useOpenTarget(target);
+  const label = `${rel ?? target.path}${target.line ? `:${target.line}` : ""}`;
+  if (rel === null) {
+    return (
+      <div className="truncate font-mono text-neutral-500" title={`${target.path} (outside this worktree)`}>
+        {label}
+      </div>
+    );
+  }
+  return (
+    <button
+      onClick={open}
+      title="Open in the editor"
+      className="block max-w-full truncate text-left font-mono text-neutral-400 underline-offset-2 hover:text-blue-300 hover:underline"
+    >
+      {label}
+    </button>
   );
 }
 
@@ -320,11 +475,9 @@ function ToolBody({ tool }: { tool: AcpToolCall }) {
   return (
     <div className="flex min-w-0 flex-col gap-1.5 text-[11px]">
       {tool.locations
-        .filter((l) => !tool.content.some((c) => c.kind === "diff" && c.path === l))
+        .filter((l) => !tool.content.some((c) => c.kind === "diff" && c.path === l.path))
         .map((l) => (
-          <div key={l} className="truncate font-mono text-neutral-500">
-            {l}
-          </div>
+          <FileLink key={`${l.path}:${l.line}`} target={{ path: l.path, line: l.line }} />
         ))}
       {command && <CodeBlock code={command} lang="bash" maxLines={BODY_MAX_LINES} />}
       {tool.content.map((c, i) =>
@@ -336,7 +489,14 @@ function ToolBody({ tool }: { tool: AcpToolCall }) {
           )
         ) : c.kind === "diff" ? (
           <div key={i} className="flex flex-col gap-0.5">
-            <div className="truncate font-mono text-neutral-500">{c.path}</div>
+            <FileLink
+              target={{
+                path: c.path,
+                line: tool.locations.find((l) => l.path === c.path)?.line ?? null,
+                newText: c.newText,
+                oldText: c.oldText,
+              }}
+            />
             {c.oldText ? (
               <CodeBlock code={diffText(c.oldText, c.newText)} lang="diff" maxLines={BODY_MAX_LINES} />
             ) : (
@@ -427,6 +587,170 @@ function PermissionCard({
               : "Cancelled"
             : "No longer pending"}
         </div>
+      )}
+    </div>
+  );
+}
+
+/// A question the agent asked (a form): choices as selectable rows, free
+/// text, toggles. Submit sends the filled fields; Skip declines.
+function QuestionCard({
+  item,
+  pending,
+  onAnswer,
+}: {
+  item: Extract<AcpItem, { kind: "question" }>;
+  pending: boolean;
+  onAnswer: (q: AcpQuestion, action: "accept" | "decline", content?: Record<string, unknown>) => void;
+}) {
+  const { question, resolved } = item;
+  const [values, setValues] = useState<Record<string, FormValue>>({});
+  const set = (key: string, v: FormValue) => setValues((prev) => ({ ...prev, [key]: v }));
+  const ready = canSubmitAnswer(question.fields, values);
+  return (
+    <div
+      className={cn(
+        "min-w-0 rounded border px-2.5 py-2",
+        pending ? "border-blue-600/60 bg-[#0d1420]" : "border-neutral-800 bg-neutral-900/40",
+      )}
+    >
+      <div className="mb-1 text-[11px] text-neutral-400">Question</div>
+      {question.message && (
+        <ForgeMarkdown source={question.message} className="mb-2 text-[12.5px] text-neutral-100" />
+      )}
+      {pending ? (
+        <>
+          <div className="flex flex-col gap-2.5">
+            {question.fields.map((f) => (
+              <FormFieldInput key={f.key} field={f} value={values[f.key]} onChange={(v) => set(f.key, v)} />
+            ))}
+          </div>
+          <div className="mt-2.5 flex gap-1.5">
+            <button
+              onClick={() => onAnswer(question, "accept", questionAnswer(question.fields, values))}
+              disabled={!ready}
+              className="h-6 rounded bg-blue-600 px-2.5 text-[11px] font-medium text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              Submit
+            </button>
+            <button
+              onClick={() => onAnswer(question, "decline")}
+              className="h-6 rounded border border-neutral-700 px-2 text-[11px] text-neutral-300 hover:bg-neutral-800"
+            >
+              Skip
+            </button>
+          </div>
+        </>
+      ) : (
+        <div className="text-[11px] text-neutral-500">
+          {resolved?.action === "accept"
+            ? `→ ${resolved.summary ?? "Answered"}`
+            : resolved?.action === "decline"
+              ? "Skipped"
+              : resolved
+                ? "Cancelled"
+                : "No longer pending"}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function FormFieldInput({
+  field,
+  value,
+  onChange,
+}: {
+  field: AcpFormField;
+  value: FormValue | undefined;
+  onChange: (v: FormValue) => void;
+}) {
+  const { input } = field;
+  const label = (field.title || field.description) && (
+    <div className="mb-1">
+      {field.title && (
+        <span className="text-[10px] font-medium uppercase tracking-[0.08em] text-neutral-500">
+          {field.title}
+          {field.required && " *"}
+        </span>
+      )}
+      {field.description && <div className="text-[12px] text-neutral-300">{field.description}</div>}
+    </div>
+  );
+  if (input.kind === "choice") {
+    const picked = input.multi ? ((value as string[] | undefined) ?? []) : value;
+    const isOn = (v: string) => (input.multi ? (picked as string[]).includes(v) : picked === v);
+    const selected = input.options.find((o) => isOn(o.value) && o.preview);
+    return (
+      <div>
+        {label}
+        <div className="flex flex-col gap-1" role={input.multi ? "group" : "radiogroup"}>
+          {input.options.map((o) => (
+            <button
+              key={o.value}
+              role={input.multi ? "checkbox" : "radio"}
+              aria-checked={isOn(o.value)}
+              onClick={() => {
+                if (!input.multi) return onChange(isOn(o.value) ? "" : o.value);
+                const cur = picked as string[];
+                onChange(isOn(o.value) ? cur.filter((x) => x !== o.value) : [...cur, o.value]);
+              }}
+              className={cn(
+                "flex items-start gap-2 rounded border px-2 py-1.5 text-left",
+                isOn(o.value)
+                  ? "border-blue-500/70 bg-blue-950/40"
+                  : "border-neutral-800 hover:border-neutral-600 hover:bg-neutral-800/50",
+              )}
+            >
+              <span
+                className={cn(
+                  "mt-0.5 flex h-3 w-3 shrink-0 items-center justify-center border",
+                  input.multi ? "rounded-sm" : "rounded-full",
+                  isOn(o.value) ? "border-blue-400 bg-blue-500" : "border-neutral-600",
+                )}
+              />
+              <span className="min-w-0">
+                <span className="block text-[12px] text-neutral-100">{o.title}</span>
+                {o.description && (
+                  <span className="block text-[11px] leading-snug text-neutral-500">{o.description}</span>
+                )}
+              </span>
+            </button>
+          ))}
+        </div>
+        {selected?.preview && <CodeBlock code={selected.preview} className="mt-1.5" maxLines={12} />}
+      </div>
+    );
+  }
+  if (input.kind === "boolean") {
+    return (
+      <label className="flex cursor-pointer items-center gap-2 text-[12px] text-neutral-200">
+        <input
+          type="checkbox"
+          checked={value === true}
+          onChange={(e) => onChange(e.target.checked)}
+          className="accent-blue-500"
+        />
+        {field.title ?? field.key}
+        {field.description && <span className="text-neutral-500">— {field.description}</span>}
+      </label>
+    );
+  }
+  const common = {
+    value: typeof value === "string" ? value : "",
+    onChange: (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => onChange(e.target.value),
+    placeholder: field.title === "Other" ? "Type your own answer (optional)" : (field.title ?? ""),
+    spellCheck: false,
+    className:
+      "w-full rounded border border-neutral-800 bg-neutral-950 px-2 py-1 text-[12px] text-neutral-200 placeholder:text-neutral-600 focus:border-blue-500 focus:outline-none",
+  };
+  return (
+    <div>
+      {field.title !== "Other" && label}
+      {input.kind === "text" && input.multiline ? (
+        <textarea rows={1} {...common} className={cn(common.className, "resize-y")} />
+      ) : (
+        <input type={input.kind === "number" ? "number" : "text"} {...common} />
       )}
     </div>
   );

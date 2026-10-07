@@ -20,6 +20,7 @@
 
 pub mod adapter;
 pub mod prompt;
+pub mod question;
 pub mod rpc;
 pub mod view;
 
@@ -454,9 +455,12 @@ async fn try_handshake(ctx: &Ctx, mcp: Option<(String, String)>) -> Result<(), S
             json!({
                 "protocolVersion": 1,
                 // No fs/* or terminal/*: the agent uses its own tools on disk.
+                // Form elicitations: questions render as forms in the pane
+                // (Claude's adapter only enables AskUserQuestion with this).
                 "clientCapabilities": {
                     "fs": { "readTextFile": false, "writeTextFile": false },
                     "terminal": false,
+                    "elicitation": { "form": {} },
                 },
                 "clientInfo": {
                     "name": "treehouse",
@@ -610,6 +614,18 @@ async fn handle_incoming(ctx: Ctx, mut incoming: tokio::sync::mpsc::UnboundedRec
                     Err(e) => ctx.conn.respond_error(id, -32602, &format!("invalid params: {e}")),
                 }
             }
+            Incoming::Request { id, method, params } if method == "elicitation/create" => {
+                let mut sh = ctx.shared.lock();
+                let parsed = question::parse_question(view::id_string(&id), &params);
+                match parsed {
+                    // One question at a time; a second is declined.
+                    Some(q) if sh.view.question.is_none() => {
+                        let ev = sh.view.question_asked(id, q, now_millis());
+                        sh.emit(ev);
+                    }
+                    _ => ctx.conn.respond(id, json!({ "action": "decline" })),
+                }
+            }
             Incoming::Request { id, method, .. } => {
                 tracing::debug!(id = %ctx.id, %method, "acp: unsupported client method");
                 ctx.conn
@@ -761,6 +777,12 @@ pub fn cancel(registry: &AgentRegistry, id: AgentSessionId) -> AppResult<()> {
             sh.emit(ev);
         }
     }
+    if let Some(q) = sh.view.question.as_ref().map(|(_, q)| q.id.clone()) {
+        if let Some((rpc_id, ev)) = sh.view.resolve_question(&q, "cancel", None, now) {
+            h.conn.respond(rpc_id, json!({ "action": "cancel" }));
+            sh.emit(ev);
+        }
+    }
     // Queued requests were never shown; answer them without surfacing.
     for (rpc_id, _) in std::mem::take(&mut sh.waiting) {
         h.conn.respond(rpc_id, cancelled());
@@ -860,6 +882,52 @@ pub fn set_config(
         }
     });
     Ok(())
+}
+
+/// Answer the pending question `request_id`: `accept` with `content` (the
+/// form's values by field key), or `decline` / `cancel`.
+pub fn answer_question(
+    registry: &AgentRegistry,
+    id: AgentSessionId,
+    request_id: &str,
+    action: &str,
+    content: Option<Value>,
+) -> AppResult<()> {
+    if !matches!(action, "accept" | "decline" | "cancel") {
+        return Err(AppError::Unknown(format!("unknown answer action `{action}`")));
+    }
+    let content = content.unwrap_or_else(|| json!({}));
+    let summary = (action == "accept").then(|| answer_summary(&content)).flatten();
+    let h = handle(registry, id)?;
+    let mut sh = h.shared.lock();
+    let Some((rpc_id, ev)) = sh.view.resolve_question(request_id, action, summary, now_millis())
+    else {
+        return Err(AppError::Unknown(
+            "This agent is no longer waiting on that question.".into(),
+        ));
+    };
+    let answer = match action {
+        "accept" => json!({ "action": "accept", "content": content }),
+        other => json!({ "action": other }),
+    };
+    h.conn.respond(rpc_id, answer);
+    sh.emit(ev);
+    Ok(())
+}
+
+/// The non-empty values of an accepted form, comma-joined: `Redis, macOS`.
+fn answer_summary(content: &Value) -> Option<String> {
+    let mut parts = Vec::new();
+    for v in content.as_object()?.values() {
+        match v {
+            Value::String(s) if !s.trim().is_empty() => parts.push(s.trim().to_string()),
+            Value::Array(a) => parts.extend(a.iter().filter_map(Value::as_str).map(str::to_string)),
+            Value::Bool(b) => parts.push(if *b { "Yes" } else { "No" }.into()),
+            Value::Number(n) => parts.push(n.to_string()),
+            _ => {}
+        }
+    }
+    (!parts.is_empty()).then(|| parts.join(", "))
 }
 
 /// Answer the pending permission request `request_id` with `option_id`.
@@ -1076,6 +1144,16 @@ mod tests {
             serde_json::to_value(cancelled).unwrap(),
             json!({ "outcome": { "outcome": "cancelled" } })
         );
+    }
+
+    #[test]
+    fn answer_summaries_join_values() {
+        assert_eq!(
+            answer_summary(&json!({ "question_0": "Redis", "question_0_custom": " ", "question_1": ["mac", "linux"] })),
+            Some("Redis, mac, linux".into())
+        );
+        assert_eq!(answer_summary(&json!({ "ok": true, "n": 3 })), Some("Yes, 3".into()));
+        assert_eq!(answer_summary(&json!({})), None);
     }
 
     #[test]

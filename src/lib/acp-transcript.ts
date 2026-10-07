@@ -5,7 +5,9 @@ import type {
   AcpModes,
   AcpUsage,
   AcpPermissionRequest,
+  AcpFormField,
   AcpPlanEntry,
+  AcpQuestion,
   AcpToolCall,
 } from "@/ipc/types";
 
@@ -22,6 +24,12 @@ export type AcpItem =
       request: AcpPermissionRequest;
       /// `undefined` while pending; `optionId` null = cancelled.
       resolved?: { optionId: string | null };
+    }
+  | {
+      kind: "question";
+      question: AcpQuestion;
+      /// `undefined` while pending.
+      resolved?: { action: string; summary: string | null };
     }
   | { kind: "turnEnd"; stopReason: string }
   | { kind: "error"; message: string };
@@ -43,6 +51,8 @@ export type AcpTranscript = {
   turns: number;
   /// Request id of the permission prompt awaiting an answer, if any.
   pendingPermission: string | null;
+  /// Request id of the question awaiting an answer, if any.
+  pendingQuestion: string | null;
   /// Permission modes the agent offers, and the current one.
   modes: AcpModes | null;
   /// Slash commands for prompt autocomplete.
@@ -60,6 +70,7 @@ export function emptyTranscript(): AcpTranscript {
     ready: null,
     turns: 0,
     pendingPermission: null,
+    pendingQuestion: null,
     modes: null,
     commands: [],
     usage: null,
@@ -141,9 +152,27 @@ export function applyAcpEvent(t: AcpTranscript, ev: AcpEvent): void {
       if (t.pendingPermission === ev.requestId) t.pendingPermission = null;
       break;
     }
+    case "question":
+      t.pendingQuestion = ev.question.id;
+      t.items.push({ kind: "question", question: ev.question });
+      break;
+    case "questionResolved": {
+      const i = t.items.findIndex(
+        (it) => it.kind === "question" && it.question.id === ev.requestId && !it.resolved,
+      );
+      if (i >= 0) {
+        const it = t.items[i] as Extract<AcpItem, { kind: "question" }>;
+        t.items[i] = { ...it, resolved: { action: ev.action, summary: ev.summary } };
+      }
+      if (t.pendingQuestion === ev.requestId) t.pendingQuestion = null;
+      break;
+    }
     case "turnEnded":
       t.turns = Math.max(0, t.turns - 1);
-      if (t.turns === 0) t.pendingPermission = null;
+      if (t.turns === 0) {
+        t.pendingPermission = null;
+        t.pendingQuestion = null;
+      }
       t.items.push({ kind: "turnEnd", stopReason: ev.stopReason });
       break;
     case "title":
@@ -198,4 +227,59 @@ export function diffText(oldText: string, newText: string): string {
       .split("\n")
       .map((l) => p + l);
   return [...lines(oldText, "-"), ...lines(newText, "+")].join("\n");
+}
+
+/// A form value as the pane holds it.
+export type FormValue = string | string[] | boolean;
+
+/// The `content` to accept a question with: filled fields only (blank
+/// text and empty selections are left out), numbers parsed.
+export function questionAnswer(
+  fields: AcpFormField[],
+  values: Record<string, FormValue>,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const f of fields) {
+    const v = values[f.key];
+    if (v === undefined) continue;
+    if (f.input.kind === "number") {
+      const n = Number(v);
+      if (typeof v === "string" && v.trim() !== "" && Number.isFinite(n)) out[f.key] = n;
+    } else if (typeof v === "string") {
+      if (v.trim()) out[f.key] = v.trim();
+    } else if (Array.isArray(v)) {
+      if (v.length > 0) out[f.key] = v;
+    } else {
+      out[f.key] = v;
+    }
+  }
+  return out;
+}
+
+/// A question can be submitted once its required fields are filled and
+/// something is answered at all.
+export function canSubmitAnswer(
+  fields: AcpFormField[],
+  values: Record<string, FormValue>,
+): boolean {
+  const answer = questionAnswer(fields, values);
+  return (
+    Object.keys(answer).length > 0 && fields.every((f) => !f.required || f.key in answer)
+  );
+}
+
+/// 1-based line where `snippet` starts in `text`: the whole snippet if it
+/// occurs, else its first non-blank line (trimmed). Null if not found.
+export function lineOfSnippet(text: string, snippet: string): number | null {
+  const lineAt = (i: number) => text.slice(0, i).split("\n").length;
+  const trimmed = snippet.replace(/^\n+/, "").replace(/\s+$/, "");
+  if (trimmed) {
+    const i = text.indexOf(trimmed);
+    if (i >= 0) return lineAt(i);
+  }
+  const first = snippet.split("\n").map((l) => l.trim()).find((l) => l.length > 0);
+  if (!first) return null;
+  const lines = text.split("\n");
+  const idx = lines.findIndex((l) => l.includes(first));
+  return idx >= 0 ? idx + 1 : null;
 }

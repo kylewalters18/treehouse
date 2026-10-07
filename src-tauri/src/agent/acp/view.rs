@@ -17,6 +17,7 @@ use ts_rs::TS;
 
 use super::super::hooks::{first_line, truncate, MESSAGE_MAX, TASK_MAX, TOOL_MAX};
 use super::super::{AgentActivity, PendingPrompt};
+use super::question::AcpQuestion;
 
 /// Cap on text carried in one tool-call content block. Tool output (a long
 /// `cargo test`, a file read) can be huge; the pane only needs a preview.
@@ -77,6 +78,16 @@ pub enum AcpEvent {
     TurnEnded {
         #[serde(rename = "stopReason")]
         stop_reason: String,
+    },
+    /// The agent asked a question (a form elicitation) and is blocked on it.
+    Question { question: AcpQuestion },
+    /// `action` is `accept`, `decline` or `cancel`; `summary` is the
+    /// accepted answer's values, for the transcript.
+    QuestionResolved {
+        #[serde(rename = "requestId")]
+        request_id: String,
+        action: String,
+        summary: Option<String>,
     },
     Title { title: String },
     /// The session's permission modes and which is current. Sent after
@@ -214,11 +225,22 @@ pub struct AcpToolCall {
     pub status: String,
     /// The agent's internal tool name (`Bash`, `Edit`), when it sends one.
     pub name: Option<String>,
-    pub locations: Vec<String>,
+    /// Files the call reads or changes — "follow along" targets.
+    pub locations: Vec<AcpLocation>,
     pub content: Vec<AcpToolContent>,
     /// The tool's input as pretty JSON (truncated) — shown when `content`
     /// doesn't say what the call does.
     pub raw_input: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, TS, PartialEq)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct AcpLocation {
+    /// Absolute path.
+    pub path: String,
+    /// 1-based line, when the agent sends one.
+    pub line: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, TS, PartialEq)]
@@ -301,6 +323,8 @@ pub struct AcpView {
     pub current_tool: Option<String>,
     pub last_message: Option<String>,
     pub pending: Option<PendingPermission>,
+    /// A question the agent is blocked on, with its JSON-RPC id.
+    pub question: Option<(Value, AcpQuestion)>,
     /// The agent's reply so far in the current turn.
     reply: String,
     tools: HashMap<String, AcpToolCall>,
@@ -334,12 +358,63 @@ impl AcpView {
         }
     }
 
-    /// The board's `pending` field: only while blocked on a permission.
+    /// The board's `pending` field: a permission (answerable from the
+    /// board), else a question (answered in the pane).
     pub fn pending_prompt(&self) -> Option<PendingPrompt> {
-        self.pending.as_ref().map(|p| PendingPrompt::Permission {
-            tool_name: p.tool_name.clone(),
-            detail: p.detail.clone(),
+        if let Some(p) = &self.pending {
+            return Some(PendingPrompt::Permission {
+                tool_name: p.tool_name.clone(),
+                detail: p.detail.clone(),
+            });
+        }
+        self.question.as_ref().map(|(_, q)| PendingPrompt::Input {
+            message: first_line(&q.message, TOOL_MAX)
+                .or_else(|| q.fields.first().and_then(|f| f.title.clone())),
         })
+    }
+
+    /// Activity once a prompt is answered: still blocked if something else
+    /// is pending, else working mid-turn, else idle.
+    fn settle(&mut self, now_ms: u64) {
+        let a = if self.pending.is_some() || self.question.is_some() {
+            AgentActivity::NeedsAttention
+        } else if self.turns > 0 {
+            AgentActivity::Working
+        } else {
+            AgentActivity::Idle
+        };
+        self.set_activity(a, now_ms);
+    }
+
+    /// The agent asked a question; it blocks until `resolve_question`.
+    pub fn question_asked(&mut self, rpc_id: Value, question: AcpQuestion, now_ms: u64) -> AcpEvent {
+        self.question = Some((rpc_id, question.clone()));
+        self.set_activity(AgentActivity::NeedsAttention, now_ms);
+        AcpEvent::Question { question }
+    }
+
+    /// Answer the pending question. Returns its JSON-RPC id and the
+    /// transcript event, or `None` when `request_id` isn't what's pending.
+    pub fn resolve_question(
+        &mut self,
+        request_id: &str,
+        action: &str,
+        summary: Option<String>,
+        now_ms: u64,
+    ) -> Option<(Value, AcpEvent)> {
+        if self.question.as_ref()?.1.id != request_id {
+            return None;
+        }
+        let (rpc_id, q) = self.question.take()?;
+        self.settle(now_ms);
+        Some((
+            rpc_id,
+            AcpEvent::QuestionResolved {
+                request_id: q.id,
+                action: action.to_string(),
+                summary,
+            },
+        ))
     }
 
     /// A prompt is about to be sent (or queued until the session is up).
@@ -546,7 +621,7 @@ impl AcpView {
             t.name = Some(name);
         }
         if let Some(locs) = f.locations {
-            t.locations = locs.into_iter().map(|l| l.path.display().to_string()).collect();
+            t.locations = locs.into_iter().map(location).collect();
         }
         if let Some(content) = f.content {
             t.content = content.into_iter().filter_map(tool_content).collect();
@@ -668,12 +743,7 @@ impl AcpView {
             }
         }
         let p = self.pending.take()?;
-        let a = if self.turns > 0 {
-            AgentActivity::Working
-        } else {
-            AgentActivity::Idle
-        };
-        self.set_activity(a, now_ms);
+        self.settle(now_ms);
         Some((
             p.rpc_id,
             AcpEvent::PermissionResolved {
@@ -689,6 +759,7 @@ impl AcpView {
         if self.turns == 0 {
             self.current_tool = None;
             self.pending = None;
+            self.question = None;
             let reply = self.reply.trim();
             if !reply.is_empty() {
                 self.last_message = Some(truncate(reply, MESSAGE_MAX));
@@ -719,13 +790,16 @@ fn from_tool_call(tc: ToolCall) -> AcpToolCall {
         kind: kind_str(tc.kind),
         status: status_str(tc.status),
         name: tc.name.or_else(|| meta_tool_name(tc.meta.as_ref())),
-        locations: tc
-            .locations
-            .into_iter()
-            .map(|l| l.path.display().to_string())
-            .collect(),
+        locations: tc.locations.into_iter().map(location).collect(),
         content: tc.content.into_iter().filter_map(tool_content).collect(),
         raw_input: tc.raw_input.as_ref().and_then(raw_input),
+    }
+}
+
+fn location(l: agent_client_protocol_schema::v1::ToolCallLocation) -> AcpLocation {
+    AcpLocation {
+        path: l.path.display().to_string(),
+        line: l.line,
     }
 }
 
@@ -865,6 +939,26 @@ mod tests {
         assert_eq!(tool.title, "`cargo test`");
         assert_eq!(tool.status, "completed");
         assert_eq!(tool.content, vec![AcpToolContent::Text { text: "ok".into() }]);
+
+        // Locations keep their line numbers.
+        let ev = v.apply_update(
+            update(json!({
+                "sessionUpdate": "tool_call",
+                "toolCallId": "r1",
+                "title": "Read lib.rs",
+                "kind": "read",
+                "locations": [{ "path": "/r/src/lib.rs", "line": 40 }, { "path": "/r/README.md" }],
+            })),
+            3,
+        );
+        let Some(AcpEvent::Tool { tool }) = ev else { panic!("{ev:?}") };
+        assert_eq!(
+            tool.locations,
+            vec![
+                AcpLocation { path: "/r/src/lib.rs".into(), line: Some(40) },
+                AcpLocation { path: "/r/README.md".into(), line: None },
+            ]
+        );
 
         for chunk in ["All ", "tests pass."] {
             let ev = v.apply_update(
@@ -1139,6 +1233,53 @@ mod tests {
         );
         assert!(matches!(ev, Some(AcpEvent::Config { options }) if options.len() == 1 && options[0].current == "on"));
         assert!(v.set_config(&json!([])).is_none());
+    }
+
+    fn question(id: &str) -> AcpQuestion {
+        super::super::question::parse_question(
+            id.into(),
+            &json!({
+                "message": "Which cache?\nPick one.",
+                "requestedSchema": { "type": "object", "properties": {
+                    "question_0": { "type": "string", "oneOf": [{ "const": "Redis", "title": "Redis" }] },
+                } },
+            }),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn questions_block_until_answered() {
+        let mut v = AcpView::new(0);
+        v.prompt_started("set up caching", vec![], 1);
+        let ev = v.question_asked(json!(4), question("4"), 2);
+        assert!(matches!(ev, AcpEvent::Question { .. }));
+        assert_eq!(v.activity(), AgentActivity::NeedsAttention);
+        assert_eq!(
+            v.pending_prompt(),
+            Some(PendingPrompt::Input { message: Some("Which cache?".into()) })
+        );
+
+        // A permission arriving too takes precedence on the board, and
+        // answering it leaves the question still blocking.
+        v.permission_requested(json!(5), bash_permission(), 3);
+        assert!(matches!(v.pending_prompt(), Some(PendingPrompt::Permission { .. })));
+        v.resolve_permission("5", Some("allow"), 4).unwrap();
+        assert_eq!(v.activity(), AgentActivity::NeedsAttention);
+
+        assert!(v.resolve_question("nope", "accept", None, 5).is_none());
+        let (rpc_id, ev) = v.resolve_question("4", "accept", Some("Redis".into()), 6).unwrap();
+        assert_eq!(rpc_id, json!(4));
+        assert_eq!(
+            ev,
+            AcpEvent::QuestionResolved {
+                request_id: "4".into(),
+                action: "accept".into(),
+                summary: Some("Redis".into()),
+            }
+        );
+        assert_eq!(v.activity(), AgentActivity::Working);
+        assert_eq!(v.pending_prompt(), None);
     }
 
     #[test]

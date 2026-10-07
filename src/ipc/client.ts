@@ -602,6 +602,22 @@ export function acpSetConfig(
   return invoke<void>("acp_set_config", { agentId, configId, value });
 }
 
+/// Answer an ACP agent's question: `accept` with the form's values, or
+/// `decline` / `cancel`.
+export function acpAnswerQuestion(
+  agentId: AgentSessionId,
+  requestId: string,
+  action: "accept" | "decline" | "cancel",
+  content?: Record<string, unknown>,
+): Promise<void> {
+  return invoke<void>("acp_answer_question", {
+    agentId,
+    requestId,
+    action,
+    content: content ?? null,
+  });
+}
+
 /// Answer an ACP permission request with one of its option ids.
 export function acpRespondPermission(
   agentId: AgentSessionId,

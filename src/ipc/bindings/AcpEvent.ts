@@ -4,6 +4,7 @@ import type { AcpConfigOption } from "./AcpConfigOption";
 import type { AcpModes } from "./AcpModes";
 import type { AcpPermissionRequest } from "./AcpPermissionRequest";
 import type { AcpPlanEntry } from "./AcpPlanEntry";
+import type { AcpQuestion } from "./AcpQuestion";
 import type { AcpToolCall } from "./AcpToolCall";
 import type { AcpUsage } from "./AcpUsage";
 
@@ -24,4 +25,4 @@ cli: string | null,
 /**
  * The agent takes image content in prompts.
  */
-acceptsImages: boolean, } | { "kind": "userMessage", text: string, attachments: Array<string>, } | { "kind": "userText", text: string, } | { "kind": "agentText", text: string, } | { "kind": "thought", text: string, } | { "kind": "tool", tool: AcpToolCall, } | { "kind": "plan", entries: Array<AcpPlanEntry>, } | { "kind": "permission", request: AcpPermissionRequest, } | { "kind": "permissionResolved", requestId: string, optionId: string | null, } | { "kind": "turnEnded", stopReason: string, } | { "kind": "title", title: string, } | { "kind": "modes", modes: AcpModes, } | { "kind": "commands", commands: Array<AcpCommand>, } | { "kind": "usage", usage: AcpUsage, } | { "kind": "config", options: Array<AcpConfigOption>, } | { "kind": "error", message: string, };
+acceptsImages: boolean, } | { "kind": "userMessage", text: string, attachments: Array<string>, } | { "kind": "userText", text: string, } | { "kind": "agentText", text: string, } | { "kind": "thought", text: string, } | { "kind": "tool", tool: AcpToolCall, } | { "kind": "plan", entries: Array<AcpPlanEntry>, } | { "kind": "permission", request: AcpPermissionRequest, } | { "kind": "permissionResolved", requestId: string, optionId: string | null, } | { "kind": "turnEnded", stopReason: string, } | { "kind": "question", question: AcpQuestion, } | { "kind": "questionResolved", requestId: string, action: string, summary: string | null, } | { "kind": "title", title: string, } | { "kind": "modes", modes: AcpModes, } | { "kind": "commands", commands: Array<AcpCommand>, } | { "kind": "usage", usage: AcpUsage, } | { "kind": "config", options: Array<AcpConfigOption>, } | { "kind": "error", message: string, };
