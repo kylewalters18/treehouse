@@ -7,6 +7,8 @@ import type {
   AgentProfile,
   AgentEvent,
   AgentSession,
+  AgentTransport,
+  AcpAdapterInfo,
   AgentHistoryEntry,
   AgentSessionId,
   AppFileContent,
@@ -434,6 +436,9 @@ export function launchAgent(
   argv?: string[],
   resume?: string,
   prompt?: string,
+  /// `"acp"` launches via the backend's ACP adapter; `argv` then overrides
+  /// the adapter command.
+  transport?: AgentTransport,
 ): Promise<AgentSession> {
   const channel = new Channel<AgentEvent>();
   channel.onmessage = onEvent;
@@ -443,6 +448,7 @@ export function launchAgent(
     argv,
     prompt,
     resume,
+    transport: transport ?? null,
     cols,
     rows,
     channel,
@@ -557,6 +563,38 @@ export function agentRespondPermission(
   allow: boolean,
 ): Promise<void> {
   return invoke<void>("agent_respond_permission", { agentId, allow });
+}
+
+/// Submit `text` as the agent's next prompt: a bracketed paste + Enter into a
+/// PTY agent, `session/prompt` for an ACP agent.
+export function agentSubmitPrompt(agentId: AgentSessionId, text: string): Promise<void> {
+  return invoke<void>("agent_submit_prompt", { agentId, text });
+}
+
+/// Cancel an ACP agent's running turn.
+export function acpCancel(agentId: AgentSessionId): Promise<void> {
+  return invoke<void>("acp_cancel", { agentId });
+}
+
+/// Switch an ACP agent's permission mode; the change streams back as a
+/// `modes` event.
+export function acpSetMode(agentId: AgentSessionId, modeId: string): Promise<void> {
+  return invoke<void>("acp_set_mode", { agentId, modeId });
+}
+
+/// Answer an ACP permission request with one of its option ids.
+export function acpRespondPermission(
+  agentId: AgentSessionId,
+  requestId: string,
+  optionId: string,
+): Promise<void> {
+  return invoke<void>("acp_respond_permission", { agentId, requestId, optionId });
+}
+
+/// What an ACP launch runs per backend: a treehouse.toml `[agent.acp]`
+/// override, the managed pinned adapter, or the CLI's native ACP mode.
+export function getAcpAdapters(): Promise<AcpAdapterInfo[]> {
+  return invoke<AcpAdapterInfo[]>("acp_adapters_get");
 }
 
 // --- LSP ---

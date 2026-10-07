@@ -1,4 +1,4 @@
-import type { AgentBackendKind, AgentProfile } from "@/ipc/types";
+import type { AcpAdapterInfo, AgentBackendKind, AgentProfile, AgentTransport } from "@/ipc/types";
 import { splitCommand } from "./shell-words";
 
 /// A launchable entry in the agent `+ ▾` menu: a `[[agent.profile]]` from
@@ -10,7 +10,13 @@ export type LaunchProfile = {
   name: string;
   backend: AgentBackendKind;
   command: string;
-  scope: "repo" | "global" | "default";
+  /// `acp` launches through the backend's ACP adapter (`command` is then
+  /// the adapter command).
+  transport: AgentTransport;
+  /// Shown in place of an empty `command`: what Rust will resolve it to.
+  hint?: string;
+  /// `acp` = the built-in ACP adapter entries (experimental).
+  scope: "repo" | "global" | "default" | "acp";
 };
 
 export const BACKENDS: AgentBackendKind[] = ["claudeCode", "codex", "kiro"];
@@ -29,17 +35,19 @@ export const BACKEND_TAB_LABELS: Record<AgentBackendKind, string> = {
 };
 
 /// Menu order: this repo's profiles, then global ones, then the three
-/// backend defaults. `configured` arrives from Rust already ordered
-/// repo-first.
+/// backend defaults, then the ACP adapters (when known). `configured`
+/// arrives from Rust already ordered repo-first.
 export function buildLaunchProfiles(
   configured: AgentProfile[],
   agentCommands: Record<AgentBackendKind, string>,
+  acpAdapters?: AcpAdapterInfo[] | null,
 ): LaunchProfile[] {
   const out: LaunchProfile[] = configured.map((p) => ({
     key: `${p.workspace ? "repo" : "global"}:${p.name}`,
     name: p.name,
     backend: p.backend,
     command: p.command,
+    transport: p.transport ?? "pty",
     scope: p.workspace ? "repo" : "global",
   }));
   for (const b of BACKENDS) {
@@ -48,7 +56,20 @@ export function buildLaunchProfiles(
       name: BACKEND_NAMES[b],
       backend: b,
       command: agentCommands[b] ?? "",
+      transport: "pty",
       scope: "default",
+    });
+  }
+  for (const a of acpAdapters ?? []) {
+    out.push({
+      key: `acp:${a.backend}`,
+      name: `${BACKEND_NAMES[a.backend]} (ACP)`,
+      backend: a.backend,
+      // Empty → Rust resolves the override / managed install at launch.
+      command: "",
+      hint: a.needsInstall ? `${a.label} · installs on first launch` : a.label,
+      transport: "acp",
+      scope: "acp",
     });
   }
   return out;
@@ -69,17 +90,20 @@ export function tabLabelBase(
   backend: AgentBackendKind,
   argv: string[] | undefined,
   profiles: LaunchProfile[],
+  transport: AgentTransport = "pty",
 ): string {
   if (argv) {
     const joined = JSON.stringify(argv);
     const match = profiles.find(
       (p) =>
-        p.scope !== "default" &&
+        (p.scope === "repo" || p.scope === "global") &&
         p.backend === backend &&
+        p.transport === transport &&
         JSON.stringify(splitCommand(p.command)) === joined,
     );
     if (match) return match.name;
   }
+  if (transport === "acp") return `${BACKEND_TAB_LABELS[backend]} ACP`;
   const base = BACKEND_TAB_LABELS[backend];
   const i = argv?.indexOf("--agent") ?? -1;
   return argv && i >= 0 && i + 1 < argv.length ? `${base} (${argv[i + 1]})` : base;
@@ -87,7 +111,11 @@ export function tabLabelBase(
 
 /// Flags treehouse appends to every launch of `backend`, shown read-only
 /// after the command in the Edit & launch field.
-export function injectedTail(backend: AgentBackendKind): string {
+export function injectedTail(
+  backend: AgentBackendKind,
+  transport: AgentTransport = "pty",
+): string {
+  if (transport === "acp") return "(ACP · MCP via session/new)";
   return backend === "claudeCode" ? "--mcp-config <treehouse>" : "";
 }
 

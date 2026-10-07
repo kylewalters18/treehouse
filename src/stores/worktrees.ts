@@ -12,6 +12,7 @@ import { toastError, toastInfo } from "@/stores/toasts";
 import { useEditorViewStateStore } from "@/stores/editor-view-state";
 import { usePinsStore } from "@/stores/pins";
 import { clearAgentLeafStatesForWorktree } from "@/panels/agent-leaf-state";
+import { clearAcpLeafStatesForWorktree } from "@/panels/acp-leaf-state";
 
 /// Mirrors Rust `list_for_workspace` ordering (main clone first, then
 /// branch, case-insensitive) so a freshly created worktree lands where a
@@ -138,6 +139,7 @@ export const useWorktreesStore = create<WorktreesState>((set, get) => ({
       // Same for the agent xterm pool — kill any pooled sessions and
       // dispose their xterms so the removed worktree doesn't leak.
       clearAgentLeafStatesForWorktree(worktreeId);
+      clearAcpLeafStatesForWorktree(worktreeId);
       // Surface on_destroy hook outcomes only when something failed —
       // a clean run is silent. Worktree is already gone either way.
       if (summary.failed.length > 0) {

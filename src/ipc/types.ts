@@ -34,6 +34,16 @@ export type { TerminalSession } from "./bindings/TerminalSession";
 export type { PtyEvent } from "./bindings/PtyEvent";
 
 export type { AgentSession } from "./bindings/AgentSession";
+export type { AgentTransport } from "./bindings/AgentTransport";
+export type { AcpEvent } from "./bindings/AcpEvent";
+export type { AcpToolCall } from "./bindings/AcpToolCall";
+export type { AcpToolContent } from "./bindings/AcpToolContent";
+export type { AcpPlanEntry } from "./bindings/AcpPlanEntry";
+export type { AcpPermissionRequest } from "./bindings/AcpPermissionRequest";
+export type { AcpPermissionOption } from "./bindings/AcpPermissionOption";
+export type { AcpAdapterInfo } from "./bindings/AcpAdapterInfo";
+export type { AcpModes } from "./bindings/AcpModes";
+export type { AcpMode } from "./bindings/AcpMode";
 export type { AgentHistoryEntry } from "./bindings/AgentHistoryEntry";
 export type { AgentBackendKind } from "./bindings/AgentBackendKind";
 export type { AgentStatus } from "./bindings/AgentStatus";

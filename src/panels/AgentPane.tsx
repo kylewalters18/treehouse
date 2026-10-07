@@ -8,6 +8,7 @@ import { useWorktreesStore } from "@/stores/worktrees";
 import {
   deleteAgentProfile,
   forgetAgentSession,
+  getAcpAdapters,
   killAgent,
   listAgentHistory,
   listAgentProfiles,
@@ -15,10 +16,12 @@ import {
   saveAgentProfile,
 } from "@/ipc/client";
 import type {
+  AcpAdapterInfo,
   AgentBackendKind,
   AgentHistoryEntry,
   AgentProfile,
   AgentSessionId,
+  AgentTransport,
   WorktreeId,
 } from "@/ipc/types";
 import { toastInfo, useToastsStore } from "@/stores/toasts";
@@ -49,6 +52,13 @@ import {
   type AgentLeafState,
 } from "./agent-leaf-state";
 import { AgentHistoryList, AgentHistoryMenu, HistoryIcon } from "./AgentHistory";
+import { AcpAgentSlot } from "./AcpAgentSlot";
+import {
+  disposeAcpLeafState,
+  getAcpLeafStates,
+  reconcileAcpLeafStates,
+  rekeyAcpLeafState,
+} from "./acp-leaf-state";
 
 export function AgentPane() {
   const worktreeId = useUiStore((s) => s.selectedWorktreeId);
@@ -80,11 +90,16 @@ type Tab = {
   localId: string;
   mode: AgentLeafMode;
   backend: AgentBackendKind;
+  /// `acp` tabs render a structured transcript (`AcpAgentSlot`) instead
+  /// of an xterm.
+  transport: AgentTransport;
   label: string;
   /// Continues a saved conversation (`claude --resume`,
   /// `kiro-cli chat --resume-id`).
   resumed?: boolean;
 };
+
+let acpAdaptersCache: AcpAdapterInfo[] | null = null;
 
 /// Backends whose closed tabs land in history (see `agent::history`).
 function resumable(backend: AgentBackendKind): boolean {
@@ -146,14 +161,21 @@ function AgentTabs({
   /// position, scrollback, selection, and search state aren't lost on
   /// worktree switch. Mirrors TerminalPane's `leafStatesByWorktree`.
   const leafStates = useMemo(() => getAgentLeafStates(worktreeId), [worktreeId]);
+  const acpLeafStates = useMemo(() => getAcpLeafStates(worktreeId), [worktreeId]);
   const defaultBackend = useSettingsStore((s) => s.settings.defaultAgentBackend);
   const agentCommands = useSettingsStore((s) => s.settings.agentCommands);
   // `[[agent.profile]]` entries visible from this repo, re-read whenever
   // the launch menu opens so hand edits to treehouse.toml show up.
   const [configuredProfiles, setConfiguredProfiles] = useState<AgentProfile[]>([]);
+  // Effective ACP adapter commands, for the menu's ACP entries. Kept in a
+  // module cache so remounts don't refetch; null until loaded (or if the
+  // read failed, which just hides the ACP entries).
+  const [acpAdapters, setAcpAdapters] = useState<AcpAdapterInfo[] | null>(acpAdaptersCache);
+  const acpAdaptersRef = useRef(acpAdapters);
+  acpAdaptersRef.current = acpAdapters;
   const profiles = useMemo(
-    () => buildLaunchProfiles(configuredProfiles, agentCommands),
-    [configuredProfiles, agentCommands],
+    () => buildLaunchProfiles(configuredProfiles, agentCommands, acpAdapters),
+    [configuredProfiles, agentCommands, acpAdapters],
   );
   // Read by async paths (adoption, the ⌘⇧A nonce) that can run before
   // the state above commits. Adoption writes it directly for that reason.
@@ -165,6 +187,12 @@ function AgentTabs({
   const defaultProfile = resolveDefaultProfile(profiles, lastProfileKey, defaultBackend);
   const [launchMenuOpen, setLaunchMenuOpen] = useState(false);
   const refreshProfiles = useCallback(async () => {
+    void getAcpAdapters()
+      .then((a) => {
+        acpAdaptersCache = a;
+        if (mounted.current) setAcpAdapters(a);
+      })
+      .catch(() => {});
     const list = await listAgentProfiles(workspaceRoot).catch(() => null);
     if (list && mounted.current) setConfiguredProfiles(list);
     return list;
@@ -249,11 +277,16 @@ function AgentTabs({
         profilesRef.current = buildLaunchProfiles(
           configured ?? [],
           useSettingsStore.getState().settings.agentCommands,
+          acpAdaptersRef.current,
         );
         // Drop pool entries whose agent died while we were elsewhere,
         // plus any pre-session orphans from an in-flight launch whose
         // AgentTabs got unmounted before onSession could rekey.
         reconcileAgentLeafStates(
+          worktreeId,
+          new Set(existing.map((s) => s.id)),
+        );
+        reconcileAcpLeafStates(
           worktreeId,
           new Set(existing.map((s) => s.id)),
         );
@@ -265,7 +298,7 @@ function AgentTabs({
         const labelBySession = new Map<string, string>();
         for (const s of existing) {
           const label = nextLabel(
-            tabLabelBase(s.backend, s.argv, profilesRef.current),
+            tabLabelBase(s.backend, s.argv, profilesRef.current, s.transport),
           );
           labelBySession.set(s.id, label);
           setAgentLabel(s.id, label);
@@ -290,6 +323,7 @@ function AgentTabs({
             localId,
             mode: { kind: "attach", agentId: s.id },
             backend: s.backend,
+            transport: s.transport,
             label: labelBySession.get(s.id) as string,
             resumed: s.resumed,
           };
@@ -382,16 +416,18 @@ function AgentTabs({
     command: string,
     profileKey: string | null,
     prompt?: string,
+    transport: AgentTransport = "pty",
   ) {
     setLaunchMenuOpen(false);
     // Empty command → undefined argv, which the Rust side resolves to the
-    // backend's built-in default command.
+    // backend's built-in default command (or, for ACP, its adapter).
     const argv = commandArgv(command);
     const next: Tab = {
       localId: crypto.randomUUID(),
       mode: { kind: "launch", backend, argv, prompt },
       backend,
-      label: nextLabel(tabLabelBase(backend, argv, profilesRef.current)),
+      transport,
+      label: nextLabel(tabLabelBase(backend, argv, profilesRef.current, transport)),
     };
     setTabs((prev) => [...prev, next]);
     setActiveId(next.localId);
@@ -409,22 +445,29 @@ function AgentTabs({
       getLastProfileKey(workspaceRoot),
       useSettingsStore.getState().settings.defaultAgentBackend,
     );
-    if (prompt && !acceptsPositionalPrompt(p.backend)) {
+    if (prompt && p.transport === "pty" && !acceptsPositionalPrompt(p.backend)) {
       toastInfo(
         "Agent started without the issue",
         "This backend can't take a starting prompt — use Send to agent on the issue chip.",
       );
     }
-    launch(p.backend, p.command, p.key, prompt);
+    launch(p.backend, p.command, p.key, prompt, p.transport);
   }
 
   async function saveProfile(
     name: string,
     backend: AgentBackendKind,
     command: string,
+    transport: AgentTransport,
   ): Promise<boolean> {
     try {
-      await saveAgentProfile({ workspace: workspaceRoot, name, backend, command });
+      await saveAgentProfile({
+        workspace: workspaceRoot,
+        name,
+        backend,
+        command,
+        transport: transport === "acp" ? "acp" : undefined,
+      });
     } catch (e) {
       useToastsStore.getState().push({
         kind: "error",
@@ -434,7 +477,7 @@ function AgentTabs({
       return false;
     }
     const list = await refreshProfiles();
-    if (list) profilesRef.current = buildLaunchProfiles(list, agentCommands);
+    if (list) profilesRef.current = buildLaunchProfiles(list, agentCommands, acpAdaptersRef.current);
     return true;
   }
 
@@ -450,7 +493,7 @@ function AgentTabs({
       return;
     }
     const list = await refreshProfiles();
-    if (list) profilesRef.current = buildLaunchProfiles(list, agentCommands);
+    if (list) profilesRef.current = buildLaunchProfiles(list, agentCommands, acpAdaptersRef.current);
   }
 
   /// Reopen a saved conversation in a new tab, or switch to the tab that
@@ -477,6 +520,9 @@ function AgentTabs({
         resume: entry.sessionId,
       },
       backend,
+      // History resumes in a terminal: an ACP Claude session persists the
+      // same transcript, so `claude --resume` picks it up there.
+      transport: "pty",
       label: nextLabel(tabLabelBase(backend, argv, profilesRef.current)),
       resumed: true,
     };
@@ -519,8 +565,12 @@ function AgentTabs({
     // Pool entry is keyed by sessionId once known, falls back to
     // localId for in-flight launches whose onSession hasn't fired.
     const poolKey = agentId ?? localId;
+    const acpState = acpLeafStates.get(poolKey);
     const state = leafStates.get(poolKey);
-    if (state) {
+    if (acpState) {
+      disposeAcpLeafState(acpState);
+      acpLeafStates.delete(poolKey);
+    } else if (state) {
       // disposeAgentLeafState handles killAgent internally — guarded by
       // sessionId so it's a no-op for pre-session entries.
       disposeAgentLeafState(state);
@@ -811,12 +861,14 @@ function AgentTabs({
                 visibility: tab.localId === activeId ? "visible" : "hidden",
               }}
             >
-              <AgentLeafSlot
+              <SlotForTransport
+                transport={tab.transport}
                 worktreeId={worktreeId}
                 mode={tab.mode}
                 poolKey={poolKey}
                 visible={tab.localId === activeId}
                 leafStates={leafStates}
+                acpLeafStates={acpLeafStates}
                 onSession={(id) => {
                   sessionIds.current.set(tab.localId, id);
                   setAgentLabel(id, tab.label);
@@ -826,6 +878,7 @@ function AgentTabs({
                   // tab's mode to attach so this very render's slot
                   // also looks up the stable key going forward.
                   rekeyAgentLeafState(worktreeId, tab.localId, id);
+                  rekeyAcpLeafState(worktreeId, tab.localId, id);
                   setTabs((prev) =>
                     prev.map((t) =>
                       t.localId === tab.localId
@@ -856,6 +909,27 @@ function AgentTabs({
       </div>
     </div>
   );
+}
+
+/// Picks the tab body: an xterm for PTY agents, a transcript for ACP.
+function SlotForTransport({
+  transport,
+  acpLeafStates,
+  ...props
+}: {
+  transport: AgentTransport;
+  worktreeId: WorktreeId;
+  mode: AgentLeafMode;
+  poolKey: string;
+  visible: boolean;
+  leafStates: Map<string, AgentLeafState>;
+  acpLeafStates: ReturnType<typeof getAcpLeafStates>;
+  onSession: (id: AgentSessionId) => void;
+}) {
+  if (transport === "acp") {
+    return <AcpAgentSlot {...props} leafStates={acpLeafStates} />;
+  }
+  return <AgentLeafSlot {...props} />;
 }
 
 /// Slot view for one agent tab. The xterm + its host element live in

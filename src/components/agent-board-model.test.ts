@@ -30,6 +30,7 @@ function ov(
       rows: 24,
       status: { kind: "running" },
       resumed: false,
+      transport: "pty",
     },
     activity: "idle",
     changedAt: 1000,

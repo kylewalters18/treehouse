@@ -1,19 +1,20 @@
-import { agentWrite, listAgentsForWorktree } from "@/ipc/client";
+import { agentSubmitPrompt, agentWrite, listAgentsForWorktree } from "@/ipc/client";
 import type { AgentBackendKind, AgentSessionId, WorktreeId } from "@/ipc/types";
 
 // Bracketed-paste sequences — tells a TTY REPL (Claude Code, etc.) that the
 // following bytes are a single paste, so embedded newlines aren't each
-// interpreted as "submit". Ending with `\r` triggers the actual submit, the
-// same byte the Enter key sends in a cooked-mode terminal.
+// interpreted as "submit". (Submitting goes through Rust; see
+// `supervisor::submit_prompt`.)
 const PASTE_START = "\x1b[200~";
 const PASTE_END = "\x1b[201~";
 
+/// Send `text` as the agent's next prompt. Rust picks the transport: the
+/// same bracketed paste + `\r` for a PTY agent, `session/prompt` for ACP.
 export async function pasteAndSubmit(
   agentId: AgentSessionId,
   text: string,
 ): Promise<void> {
-  const enc = new TextEncoder();
-  await agentWrite(agentId, enc.encode(PASTE_START + text + PASTE_END + "\r"));
+  await agentSubmitPrompt(agentId, text);
 }
 
 /// Paste `text` into an agent's prompt without submitting it.

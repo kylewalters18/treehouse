@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Pencil, TerminalSquare, Trash2 } from "lucide-react";
-import type { AgentBackendKind } from "@/ipc/types";
+import type { AgentBackendKind, AgentTransport } from "@/ipc/types";
 import { cn } from "@/lib/cn";
 import {
   BACKENDS,
@@ -15,6 +15,7 @@ const SCOPE_HEADINGS: Record<LaunchProfile["scope"], string> = {
   repo: "This repo",
   global: "All repos",
   default: "Defaults",
+  acp: "ACP · experimental",
 };
 
 /// The agent pane's `▾` popover: pick a launch profile, or drop into
@@ -38,12 +39,15 @@ export function AgentLaunchMenu({
     backend: AgentBackendKind,
     command: string,
     profileKey: string | null,
+    prompt: undefined,
+    transport: AgentTransport,
   ) => void;
   /// Persist a repo-scoped profile; resolves false when saving failed.
   onSaveProfile: (
     name: string,
     backend: AgentBackendKind,
     command: string,
+    transport: AgentTransport,
   ) => Promise<boolean>;
   /// Remove a saved (repo or global) profile from treehouse.toml.
   onDeleteProfile: (profile: LaunchProfile) => Promise<void>;
@@ -60,6 +64,7 @@ export function AgentLaunchMenu({
   const [editing, setEditing] = useState(false);
   const [backend, setBackend] = useState<AgentBackendKind>("claudeCode");
   const [command, setCommand] = useState("");
+  const [transport, setTransport] = useState<AgentTransport>("pty");
   const [saveName, setSaveName] = useState("");
   const [saving, setSaving] = useState(false);
   // Delete takes two clicks: the first arms the row's trash button.
@@ -96,6 +101,7 @@ export function AgentLaunchMenu({
     const seed = from ?? profiles.find((p) => p.key === defaultKey);
     setBackend(seed?.backend ?? "claudeCode");
     setCommand(seed?.command ?? "");
+    setTransport(seed?.transport ?? "pty");
     setSaveName("");
     setEditing(true);
   }
@@ -104,7 +110,7 @@ export function AgentLaunchMenu({
     if (i === editRow) startEditing(undefined);
     else {
       const p = profiles[i];
-      onLaunch(p.backend, p.command, p.key);
+      onLaunch(p.backend, p.command, p.key, undefined, p.transport);
     }
   }
 
@@ -131,12 +137,12 @@ export function AgentLaunchMenu({
     const name = saveName.trim();
     if (!name || !command.trim() || saving) return;
     setSaving(true);
-    const ok = await onSaveProfile(name, backend, command);
+    const ok = await onSaveProfile(name, backend, command, transport);
     setSaving(false);
-    if (ok) onLaunch(backend, command, `repo:${name}`);
+    if (ok) onLaunch(backend, command, `repo:${name}`, undefined, transport);
   }
 
-  const tail = injectedTail(backend);
+  const tail = injectedTail(backend, transport);
 
   return (
     <div
@@ -179,7 +185,7 @@ export function AgentLaunchMenu({
                 <BackendIcon backend={p.backend} />
                 <span className="shrink-0 font-medium">{p.name}</span>
                 <span className="min-w-0 flex-1 truncate font-mono text-[10.5px] text-neutral-500">
-                  {p.command}
+                  {p.command || p.hint}
                 </span>
                 {p.key === defaultKey && (
                   <kbd
@@ -199,7 +205,7 @@ export function AgentLaunchMenu({
                 >
                   <Pencil size={10} />
                 </button>
-                {p.scope !== "default" && (
+                {(p.scope === "repo" || p.scope === "global") && (
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
@@ -270,7 +276,25 @@ export function AgentLaunchMenu({
           }}
         >
           <div className="flex items-center justify-between">
-            <span className="font-semibold text-neutral-300">Edit &amp; launch</span>
+            <span className="flex items-center gap-1.5 font-semibold text-neutral-300">
+              Edit &amp; launch
+              <button
+                onClick={() => setTransport((t) => (t === "acp" ? "pty" : "acp"))}
+                title={
+                  transport === "acp"
+                    ? "Launches via the backend's ACP adapter — click for a terminal"
+                    : "Launches in a terminal — click to use the ACP adapter instead"
+                }
+                className={cn(
+                  "rounded border px-1 text-[10px] font-medium uppercase tracking-wide",
+                  transport === "acp"
+                    ? "border-blue-500 text-blue-300"
+                    : "border-neutral-700 text-neutral-500 hover:text-neutral-300",
+                )}
+              >
+                {transport === "acp" ? "ACP" : "PTY"}
+              </button>
+            </span>
             <div className="flex rounded-md border border-neutral-800 p-0.5">
               {BACKENDS.map((b) => (
                 <button
@@ -302,10 +326,13 @@ export function AgentLaunchMenu({
               onKeyDown={(e) => {
                 if (e.key === "Enter") {
                   e.preventDefault();
-                  onLaunch(backend, command, null);
+                  onLaunch(backend, command, null, undefined, transport);
                 }
               }}
-              placeholder={BACKEND_NAMES[backend] + " default command"}
+              placeholder={
+                BACKEND_NAMES[backend] +
+                (transport === "acp" ? " ACP adapter (treehouse.toml [agent.acp])" : " default command")
+              }
               spellCheck={false}
               autoCapitalize="off"
               autoCorrect="off"
@@ -342,7 +369,7 @@ export function AgentLaunchMenu({
               Save &amp; launch
             </button>
             <button
-              onClick={() => onLaunch(backend, command, null)}
+              onClick={() => onLaunch(backend, command, null, undefined, transport)}
               className="h-6 shrink-0 rounded-md bg-blue-600 px-2 font-medium text-white hover:bg-blue-500"
             >
               Launch once

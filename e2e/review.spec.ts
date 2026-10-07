@@ -53,9 +53,10 @@ test("local review: pending comment → Send to agent → Sent, without a forge"
     w.__e2e.mock("save_comments", (args) => (args as { comments: unknown }).comments);
     w.__e2e.mock("attach_agent", () => agent);
     w.__e2e.mock("agent_resize", () => null);
-    w.__e2e.mock("agent_write", (args) => {
-      const data = (args as { data: number[] }).data;
-      w.__writes.push(new TextDecoder().decode(new Uint8Array(data)));
+    w.__e2e.mock("agent_write", () => null);
+    // Sends go through Rust, which picks paste-into-PTY or ACP prompt.
+    w.__e2e.mock("agent_submit_prompt", (args) => {
+      w.__writes.push((args as { text: string }).text);
       return null;
     });
   }, agent);
