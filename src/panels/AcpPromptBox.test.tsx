@@ -174,3 +174,20 @@ describe("AcpPromptBox history, interrupt, and editing", () => {
     await waitFor(() => expect(onSend).toHaveBeenLastCalledWith("fix the bug properly", [], true));
   });
 });
+
+describe("AcpPromptBox ⌃C", () => {
+  it("clears the draft when idle", async () => {
+    const { input, onCancel } = setup();
+    await userEvent.type(input, "never mind");
+    await userEvent.keyboard("{Control>}c{/Control}");
+    expect(input.value).toBe("");
+    expect(onCancel).not.toHaveBeenCalled();
+  });
+
+  it("keeps the draft while running (the slot interrupts)", async () => {
+    const { input } = setup({ running: true });
+    await userEvent.type(input, "next");
+    await userEvent.keyboard("{Control>}c{/Control}");
+    expect(input.value).toBe("next");
+  });
+});

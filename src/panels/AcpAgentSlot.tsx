@@ -73,7 +73,7 @@ import { useWorktreesStore } from "@/stores/worktrees";
 import { openWorktreeFile } from "./term-path-links";
 import { useToastsStore } from "@/stores/toasts";
 import { createAcpLeafState, type AcpLeafState } from "./acp-leaf-state";
-import { AcpPromptBox } from "./AcpPromptBox";
+import { AcpPromptBox, isInterruptKey } from "./AcpPromptBox";
 import { composerControls, type ComposerPicker } from "@/lib/acp-composer";
 import { promptHistory } from "@/lib/acp-prompt";
 import type { AgentLeafMode } from "./agent-leaf-state";
@@ -209,7 +209,16 @@ export function AcpAgentSlot({
 
   return (
     <WorktreeContext.Provider value={worktreeCtx}>
-    <div className="flex h-full w-full flex-col bg-neutral-950 text-[12.5px] text-neutral-300">
+    <div
+      className="flex h-full w-full flex-col bg-neutral-950 text-[12.5px] text-neutral-300"
+      // ⌃C anywhere in the pane interrupts, as in the agents' TUIs.
+      onKeyDown={(e) => {
+        if (running && isInterruptKey(e)) {
+          e.preventDefault();
+          void cancel();
+        }
+      }}
+    >
       <div className="flex h-7 shrink-0 items-center gap-2 border-b border-neutral-800 px-3 text-[11px]">
         <span
           className="min-w-0 truncate text-neutral-300"

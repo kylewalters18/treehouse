@@ -181,3 +181,15 @@ describe("editing the last prompt", () => {
     expect(screen.getByText(/Editing a sent message/)).toBeTruthy();
   });
 });
+
+describe("⌃C", () => {
+  it("interrupts a running turn from anywhere in the pane", async () => {
+    renderSlot([
+      { kind: "ready", sessionId: "s", agentName: "Claude", mcpAttached: true, cli: null, acceptsImages: true },
+      { kind: "userMessage", text: "go", attachments: [] },
+    ]);
+    await userEvent.click(screen.getByRole("textbox"));
+    await userEvent.keyboard("{Control>}c{/Control}");
+    expect(client.acpCancel).toHaveBeenCalledWith("agent-1");
+  });
+});

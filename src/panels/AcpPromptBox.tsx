@@ -57,7 +57,8 @@ type Suggestion =
 /// attachments. ⏎ sends (mid-turn: queues behind the turn), ⌘⏎ interrupts
 /// the running turn and sends, ⇧⏎ is a newline, ↑/↓ on the first/last line
 /// walk sent prompts, Esc stops a running turn (or closes the suggestion
-/// list, or leaves editing).
+/// list, or leaves editing). ⌃C, as in the agents' TUIs, stops a running
+/// turn (handled pane-wide by the slot) or else clears the draft.
 export function AcpPromptBox({
   worktreeId,
   commands,
@@ -397,6 +398,18 @@ export function AcpPromptBox({
           onPaste={onPaste}
           onKeyDown={(e) => {
             if (e.nativeEvent.isComposing) return;
+            if (isInterruptKey(e) && !running) {
+              // Running turns: the slot's pane-wide handler interrupts.
+              e.preventDefault();
+              if (editing) stopEditing();
+              else {
+                setHistoryIndex(null);
+                replaceDraft("");
+                setImages([]);
+                setAttached([]);
+              }
+              return;
+            }
             if (open && suggestions.length > 0) {
               if (e.key === "ArrowDown" || e.key === "ArrowUp") {
                 e.preventDefault();
@@ -520,7 +533,7 @@ export function AcpPromptBox({
             {running && empty ? (
               <button
                 onClick={onCancel}
-                title="Stop the running turn (Esc)"
+                title="Stop the running turn (Esc or ⌃C)"
                 aria-label="Stop"
                 className="flex h-6 w-6 items-center justify-center rounded-full bg-neutral-200 text-neutral-950 transition-colors hover:bg-white"
               >
@@ -548,6 +561,11 @@ export function AcpPromptBox({
       </div>
     </div>
   );
+}
+
+/// ⌃C — the TUIs' interrupt. ⌘C stays copy.
+export function isInterruptKey(e: { key: string; ctrlKey: boolean; metaKey: boolean; altKey: boolean }) {
+  return e.ctrlKey && !e.metaKey && !e.altKey && e.key.toLowerCase() === "c";
 }
 
 function RemoveChip({ onClick, className }: { onClick: () => void; className?: string }) {
