@@ -167,7 +167,7 @@ export function AcpAgentSlot({
           const el = e.currentTarget;
           stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
         }}
-        className="min-h-0 flex-1 overflow-y-auto px-3 py-2"
+        className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-3 py-2"
       >
         {state.error && <ErrorRow message={state.error} />}
         {t.items.length === 0 && !state.error && (
@@ -179,7 +179,7 @@ export function AcpAgentSlot({
                 : "Starting the agent… (a backend's first ACP launch installs its adapter, which can take a minute)"}
           </div>
         )}
-        <div className="flex flex-col gap-2">
+        <div className="flex min-w-0 flex-col gap-2">
           {t.items.map((item, i) => (
             <Row
               key={i}
@@ -344,12 +344,15 @@ function toolHasBody(tool: AcpToolCall): boolean {
 
 /// What a tool call does / did: its command, diffs (highlighted as diffs),
 /// output, or — when the agent sent no content — its raw input.
+/// Long code collapses past this many lines (see `CodeBlock`).
+const BODY_MAX_LINES = 16;
+
 function ToolBody({ tool }: { tool: AcpToolCall }) {
   const command = commandOf(tool);
   // Plans (leaving plan mode) and reasoning come as prose, not code.
   const prose = tool.kind === "switch_mode" || tool.kind === "think";
   return (
-    <div className="flex flex-col gap-1.5 text-[11px]">
+    <div className="flex min-w-0 flex-col gap-1.5 text-[11px]">
       {tool.locations
         .filter((l) => !tool.content.some((c) => c.kind === "diff" && c.path === l))
         .map((l) => (
@@ -357,22 +360,22 @@ function ToolBody({ tool }: { tool: AcpToolCall }) {
             {l}
           </div>
         ))}
-      {command && <CodeBlock code={command} lang="bash" />}
+      {command && <CodeBlock code={command} lang="bash" maxLines={BODY_MAX_LINES} />}
       {tool.content.map((c, i) =>
         c.kind === "text" ? (
           prose ? (
             <ForgeMarkdown key={i} source={c.text} className="text-[12px]" codeBlocks />
           ) : (
-            <CodeBlock key={i} code={c.text} />
+            <CodeBlock key={i} code={c.text} maxLines={BODY_MAX_LINES} />
           )
         ) : c.kind === "diff" ? (
           <div key={i} className="flex flex-col gap-0.5">
             <div className="truncate font-mono text-neutral-500">{c.path}</div>
             {c.oldText ? (
-              <CodeBlock code={diffText(c.oldText, c.newText)} lang="diff" />
+              <CodeBlock code={diffText(c.oldText, c.newText)} lang="diff" maxLines={BODY_MAX_LINES} />
             ) : (
               // A new file: its own language reads better than all-`+`.
-              <CodeBlock code={c.newText} lang={langForPath(c.path)} />
+              <CodeBlock code={c.newText} lang={langForPath(c.path)} maxLines={BODY_MAX_LINES} />
             )}
           </div>
         ) : (
@@ -382,7 +385,7 @@ function ToolBody({ tool }: { tool: AcpToolCall }) {
         ),
       )}
       {tool.content.length === 0 && !command && tool.rawInput && (
-        <CodeBlock code={tool.rawInput} lang="json" />
+        <CodeBlock code={tool.rawInput} lang="json" maxLines={BODY_MAX_LINES} />
       )}
     </div>
   );
@@ -405,8 +408,9 @@ function PermissionCard({
   return (
     <div
       className={cn(
-        "rounded border px-2.5 py-2",
-        pending ? "border-amber-600/60 bg-amber-950/20" : "border-neutral-800 bg-neutral-900/40",
+        "min-w-0 rounded border px-2.5 pt-2",
+        // Opaque while pending: the sticky buttons below share this fill.
+        pending ? "border-amber-600/60 bg-[#1a120b]" : "border-neutral-800 bg-neutral-900/40 pb-2",
       )}
     >
       <div className="mb-1.5 flex items-center gap-1.5 text-[11px] text-neutral-400">
@@ -424,12 +428,14 @@ function PermissionCard({
       </div>
       <div className="mb-2 font-mono text-[11.5px] text-neutral-200">{request.title}</div>
       {showBody && (
-        <div className="mb-2 max-h-96 overflow-y-auto">
+        <div className="mb-2 min-w-0">
           <ToolBody tool={request.tool} />
         </div>
       )}
       {pending ? (
-        <div className="flex flex-wrap gap-1.5">
+        // Sticky to the transcript's bottom edge, so a long card can't
+        // push the answer out of view while it's pending.
+        <div className="sticky bottom-0 -mx-2.5 flex flex-wrap gap-1.5 rounded-b border-t border-amber-900/40 bg-[#1a120b] px-2.5 pb-2 pt-1.5">
           {request.options.map((o) => (
             <button
               key={o.id}

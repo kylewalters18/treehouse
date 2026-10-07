@@ -65,30 +65,60 @@ export function langForPath(path: string): string {
   return map[ext] ?? "text";
 }
 
+/// Rendered height of one line in a `.shiki` block (12.5px × 1.6) and its
+/// vertical padding — for collapsing to a line count.
+const LINE_PX = 20;
+const PAD_PX = 24;
+
 /// A highlighted code block with a copy button (on hover). `lang` is a
 /// fence language; unknown languages render plain. Copies `code` as-is.
+/// With `maxLines`, longer code starts collapsed behind a "Show all" toggle
+/// rather than scrolling inside its own box. Long lines scroll sideways
+/// inside the block; it never widens its container.
 export const CodeBlock = memo(function CodeBlock({
   code,
   lang,
   className,
+  maxLines,
 }: {
   code: string;
   lang?: string;
   className?: string;
+  maxLines?: number;
 }) {
   const highlighter = useMarkdownHighlighter();
   const html = useMemo(
     () => (highlighter && lang ? highlightCode(highlighter, code, lang) : null),
     [highlighter, code, lang],
   );
+  const lineCount = useMemo(() => code.split("\n").length, [code]);
+  const collapsible = maxLines !== undefined && lineCount > maxLines + 2;
+  const [expanded, setExpanded] = useState(false);
+  const collapsed = collapsible && !expanded;
   return (
-    <div className={cn("shiki-block group relative", className)}>
-      {html ? (
-        <div dangerouslySetInnerHTML={{ __html: html }} />
-      ) : (
-        <pre className="shiki">
-          <code>{code}</code>
-        </pre>
+    <div className={cn("shiki-block code-block group relative min-w-0 max-w-full", className)}>
+      <div
+        className={cn(collapsed && "overflow-hidden")}
+        style={collapsed ? { maxHeight: (maxLines ?? 0) * LINE_PX + PAD_PX } : undefined}
+      >
+        {html ? (
+          <div dangerouslySetInnerHTML={{ __html: html }} />
+        ) : (
+          <pre className="shiki">
+            <code>{code}</code>
+          </pre>
+        )}
+      </div>
+      {collapsible && (
+        <button
+          onClick={() => setExpanded((e) => !e)}
+          className={cn(
+            "flex w-full items-center justify-center border-t border-[#22262B] py-1 text-[11px] text-neutral-400 hover:bg-neutral-800/60 hover:text-neutral-200",
+            collapsed && "relative -mt-6 border-t-0 bg-gradient-to-b from-transparent via-[#16191D]/90 to-[#16191D] pt-5",
+          )}
+        >
+          {collapsed ? `Show all ${lineCount} lines` : "Collapse"}
+        </button>
       )}
       <CopyButton text={code} />
     </div>
