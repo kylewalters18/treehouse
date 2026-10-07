@@ -45,6 +45,8 @@ export type { AcpAdapterInfo } from "./bindings/AcpAdapterInfo";
 export type { AcpModes } from "./bindings/AcpModes";
 export type { AcpCommand } from "./bindings/AcpCommand";
 export type { AcpUsage } from "./bindings/AcpUsage";
+export type { AcpConfigOption } from "./bindings/AcpConfigOption";
+export type { AcpConfigValue } from "./bindings/AcpConfigValue";
 export type { AcpAttachment } from "./bindings/AcpAttachment";
 export type { AcpMode } from "./bindings/AcpMode";
 export type { AgentHistoryEntry } from "./bindings/AgentHistoryEntry";

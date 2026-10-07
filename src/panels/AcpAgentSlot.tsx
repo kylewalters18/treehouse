@@ -1,13 +1,18 @@
 import { memo, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import { ChevronRight } from "lucide-react";
 
-import { acpCancel, acpRespondPermission, acpSendPrompt, acpSetMode } from "@/ipc/client";
+import {
+  acpCancel,
+  acpRespondPermission,
+  acpSendPrompt,
+  acpSetConfig,
+  acpSetMode,
+} from "@/ipc/client";
 import type {
   AcpAttachment,
   AcpPermissionRequest,
   AcpPlanEntry,
   AcpToolCall,
-  AcpUsage,
   AgentSessionId,
   WorktreeId,
 } from "@/ipc/types";
@@ -19,7 +24,7 @@ import { commandOf, diffText, stopReasonLabel, type AcpItem } from "@/lib/acp-tr
 import { useToastsStore } from "@/stores/toasts";
 import { createAcpLeafState, type AcpLeafState } from "./acp-leaf-state";
 import { AcpPromptBox } from "./AcpPromptBox";
-import { formatTokens } from "@/lib/acp-prompt";
+import { composerControls, type ComposerPicker } from "@/lib/acp-composer";
 import type { AgentLeafMode } from "./agent-leaf-state";
 
 /// Slot view for one ACP agent tab: the structured counterpart of
@@ -93,9 +98,13 @@ export function AcpAgentSlot({
     await acpCancel(state.sessionId).catch((e) => reportError("Couldn't cancel", e));
   }
 
-  async function setMode(modeId: string) {
+  async function setSetting(picker: ComposerPicker, value: string) {
     if (!state.sessionId) return;
-    await acpSetMode(state.sessionId, modeId).catch((e) => reportError("Couldn't switch mode", e));
+    const req =
+      picker.via === "config"
+        ? acpSetConfig(state.sessionId, picker.option.id, value)
+        : acpSetMode(state.sessionId, value);
+    await req.catch((e) => reportError(`Couldn't change ${picker.option.name.toLowerCase()}`, e));
   }
 
   async function answer(req: AcpPermissionRequest, optionId: string) {
@@ -127,26 +136,6 @@ export function AcpAgentSlot({
         <span className={cn("ml-auto shrink-0", t.pendingPermission && "text-amber-400")}>
           {status}
         </span>
-        {t.usage && <UsageMeter usage={t.usage} />}
-        {t.modes && (
-          <select
-            value={t.modes.current}
-            onChange={(e) => void setMode(e.target.value)}
-            disabled={state.exited}
-            title={
-              t.modes.available.find((m) => m.id === t.modes?.current)?.description ??
-              "Permission mode"
-            }
-            aria-label="Permission mode"
-            className="h-5 shrink-0 rounded border border-neutral-700 bg-neutral-900 px-1 text-[11px] text-neutral-300 focus:border-blue-500 focus:outline-none"
-          >
-            {t.modes.available.map((m) => (
-              <option key={m.id} value={m.id} title={m.description ?? undefined}>
-                {m.name}
-              </option>
-            ))}
-          </select>
-        )}
         {t.ready && (
           <span
             className="shrink-0 cursor-default font-mono text-neutral-600"
@@ -196,6 +185,9 @@ export function AcpAgentSlot({
       <AcpPromptBox
         worktreeId={worktreeId}
         commands={t.commands}
+        controls={composerControls(t.config, t.modes)}
+        usage={t.usage}
+        onSetting={(p, v) => void setSetting(p, v)}
         canSend={!!state.sessionId}
         disabled={state.exited || !!state.error}
         running={running}
@@ -256,32 +248,6 @@ const Row = memo(function Row({
       return <ErrorRow message={item.message} />;
   }
 });
-
-/// Context-window fill, with tokens (and cost, when known) on hover.
-function UsageMeter({ usage }: { usage: AcpUsage }) {
-  const pct = usage.size > 0 ? Math.min(100, Math.round((usage.used / usage.size) * 100)) : 0;
-  const cost =
-    usage.cost != null
-      ? ` · ${usage.currency === "USD" || !usage.currency ? "$" : `${usage.currency} `}${usage.cost.toFixed(2)}`
-      : "";
-  return (
-    <span
-      className="flex shrink-0 items-center gap-1 tabular-nums"
-      title={`Context: ${formatTokens(usage.used)} / ${formatTokens(usage.size)} tokens${cost}`}
-    >
-      <span className="h-1.5 w-10 overflow-hidden rounded-full bg-neutral-800">
-        <span
-          className={cn(
-            "block h-full rounded-full",
-            pct >= 90 ? "bg-red-500" : pct >= 70 ? "bg-amber-500" : "bg-neutral-400",
-          )}
-          style={{ width: `${pct}%` }}
-        />
-      </span>
-      {pct}%
-    </span>
-  );
-}
 
 function ErrorRow({ message }: { message: string }) {
   return (

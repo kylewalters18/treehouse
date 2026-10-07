@@ -100,7 +100,9 @@ impl AcpShared {
     /// Route a view-produced event to the log or the state stream.
     fn emit_any(&mut self, ev: AcpEvent) {
         match ev {
-            AcpEvent::Commands { .. } | AcpEvent::Usage { .. } => self.emit_state(ev),
+            AcpEvent::Commands { .. } | AcpEvent::Usage { .. } | AcpEvent::Config { .. } => {
+                self.emit_state(ev)
+            }
             ev => self.emit(ev),
         }
     }
@@ -551,6 +553,9 @@ async fn try_handshake(ctx: &Ctx, mcp: Option<(String, String)>) -> Result<(), S
         if let Some(ev) = modes.and_then(|m| sh.view.set_modes(m)) {
             sh.emit(ev);
         }
+        if let Some(ev) = new.get("configOptions").and_then(|c| sh.view.set_config(c)) {
+            sh.emit_state(ev);
+        }
         let accepts_images = sh.view.caps.image;
         sh.emit(AcpEvent::Ready {
             session_id: sid.clone(),
@@ -798,6 +803,59 @@ pub fn set_mode(registry: &AgentRegistry, id: AgentSessionId, mode_id: &str) -> 
             }
             Err(e) => sh.emit(AcpEvent::Error {
                 message: format!("Couldn't switch mode: {e}"),
+            }),
+        }
+    });
+    Ok(())
+}
+
+/// Change a session setting (`session/set_config_option`): model, effort,
+/// mode, fast, … The agent answers with the full option set, which streams
+/// back as a `Config` event.
+pub fn set_config(
+    registry: &AgentRegistry,
+    id: AgentSessionId,
+    config_id: &str,
+    value: &str,
+) -> AppResult<()> {
+    let h = handle(registry, id)?;
+    let (sid, conn, shared) = {
+        let sh = h.shared.lock();
+        let sid = sh
+            .view
+            .session_id
+            .clone()
+            .ok_or_else(|| AppError::Unknown("The agent is still starting.".into()))?;
+        let valid = sh
+            .view
+            .config
+            .iter()
+            .any(|o| o.id == config_id && o.options.iter().any(|x| x.value == value));
+        if !valid {
+            return Err(AppError::Unknown(format!(
+                "This agent has no `{config_id}` setting `{value}`."
+            )));
+        }
+        (sid, h.conn.clone(), h.shared.clone())
+    };
+    let config_id = config_id.to_string();
+    let value = value.to_string();
+    tauri::async_runtime::spawn(async move {
+        let res = conn
+            .request(
+                "session/set_config_option",
+                json!({ "sessionId": sid, "configId": config_id, "value": value }),
+            )
+            .await;
+        let mut sh = shared.lock();
+        match res {
+            Ok(v) => {
+                if let Some(ev) = v.get("configOptions").and_then(|c| sh.view.set_config(c)) {
+                    sh.emit_state(ev);
+                }
+            }
+            Err(e) => sh.emit(AcpEvent::Error {
+                message: format!("Couldn't change {config_id}: {e}"),
             }),
         }
     });

@@ -41,6 +41,8 @@ toml_edit = { version = "0.22", features = ["serde"] }
 # Typed Agent Client Protocol messages for ACP-transport agents (agent::acp).
 # Schema only — the JSON-RPC framing is ours (tokio, ndjson over stdio).
 agent-client-protocol-schema = { version = "1.10", default-features = false }
+# Image files attached to ACP prompts go as base64 image blocks.
+base64 = "0.22"
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
 
 [dev-dependencies]

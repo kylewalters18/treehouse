@@ -86,6 +86,9 @@ pub enum AcpEvent {
     Commands { commands: Vec<AcpCommand> },
     /// Context-window use, and cost when the agent reports it.
     Usage { usage: AcpUsage },
+    /// The agent's session settings (model, effort, mode, fast, …), all of
+    /// them, whenever any changes.
+    Config { options: Vec<AcpConfigOption> },
     Error { message: String },
 }
 
@@ -111,6 +114,68 @@ pub struct AcpUsage {
     pub size: u64,
     pub cost: Option<f64>,
     pub currency: Option<String>,
+}
+
+/// One select-type session setting (`configOptions` in ACP).
+#[derive(Debug, Clone, Serialize, TS, PartialEq)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct AcpConfigOption {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    /// ACP category: `mode`, `model`, `thought_level`, `model_config`, …
+    pub category: Option<String>,
+    pub current: String,
+    pub options: Vec<AcpConfigValue>,
+}
+
+#[derive(Debug, Clone, Serialize, TS, PartialEq)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct AcpConfigValue {
+    pub value: String,
+    pub name: String,
+    pub description: Option<String>,
+}
+
+/// Select-type config options from an ACP `configOptions` array. Parsed
+/// from JSON rather than the schema types so grouped option lists and
+/// newer option kinds degrade gracefully (non-select kinds are skipped).
+pub fn parse_config_options(v: &Value) -> Vec<AcpConfigOption> {
+    let str_of = |v: &Value, k: &str| v.get(k).and_then(Value::as_str).map(str::to_string);
+    let mut values = Vec::new();
+    v.as_array()
+        .into_iter()
+        .flatten()
+        .filter(|o| o.get("type").and_then(Value::as_str).unwrap_or("select") == "select")
+        .filter_map(|o| {
+            values.clear();
+            for entry in o.get("options").and_then(Value::as_array).into_iter().flatten() {
+                // Grouped lists nest `{ group, name, options: [...] }`.
+                let inner = entry.get("options").and_then(Value::as_array);
+                for x in inner.map(|a| a.iter().collect()).unwrap_or_else(|| vec![entry]) {
+                    if let (Some(value), Some(name)) = (str_of(x, "value"), str_of(x, "name")) {
+                        values.push(AcpConfigValue {
+                            value,
+                            name,
+                            description: str_of(x, "description").filter(|d| !d.is_empty()),
+                        });
+                    }
+                }
+            }
+            Some(AcpConfigOption {
+                id: str_of(o, "id")?,
+                name: str_of(o, "name")?,
+                description: str_of(o, "description"),
+                category: str_of(o, "category"),
+                current: o
+                    .get("currentValue")
+                    .map(|c| c.as_str().map(str::to_string).unwrap_or_else(|| c.to_string()))?,
+                options: values.clone(),
+            })
+        })
+        .collect()
 }
 
 /// Content the agent accepts in prompts beyond text (`initialize`).
@@ -240,6 +305,7 @@ pub struct AcpView {
     reply: String,
     tools: HashMap<String, AcpToolCall>,
     pub modes: Option<AcpModes>,
+    pub config: Vec<AcpConfigOption>,
     pub commands: Vec<AcpCommand>,
     pub usage: Option<AcpUsage>,
     pub caps: PromptCaps,
@@ -308,10 +374,35 @@ impl AcpView {
         self.set_activity(AgentActivity::Idle, now_ms);
     }
 
-    /// The state events (`Commands`, `Usage`) a fresh attach needs; they're
-    /// kept here rather than in the log.
+    /// Replace the config options (from `session/new`, `set_config_option`
+    /// or a `config_option_update`). Keeps `modes` in step with a `mode`
+    /// option. `None` if the agent sent none.
+    pub fn set_config(&mut self, options: &Value) -> Option<AcpEvent> {
+        let parsed = parse_config_options(options);
+        if parsed.is_empty() {
+            return None;
+        }
+        if let (Some(modes), Some(m)) = (
+            self.modes.as_mut(),
+            parsed.iter().find(|o| o.category.as_deref() == Some("mode")),
+        ) {
+            modes.current = m.current.clone();
+        }
+        self.config = parsed;
+        Some(AcpEvent::Config {
+            options: self.config.clone(),
+        })
+    }
+
+    /// The state events (`Config`, `Commands`, `Usage`) a fresh attach
+    /// needs; they're kept here rather than in the log.
     pub fn state_events(&self) -> Vec<AcpEvent> {
         let mut out = Vec::new();
+        if !self.config.is_empty() {
+            out.push(AcpEvent::Config {
+                options: self.config.clone(),
+            });
+        }
         if !self.commands.is_empty() {
             out.push(AcpEvent::Commands {
                 commands: self.commands.clone(),
@@ -400,6 +491,10 @@ impl AcpView {
                 Some(AcpEvent::Commands {
                     commands: self.commands.clone(),
                 })
+            }
+            SessionUpdate::ConfigOptionUpdate(u) => {
+                let v = serde_json::to_value(&u.config_options).ok()?;
+                self.set_config(&v)
             }
             SessionUpdate::UsageUpdate(u) => {
                 let usage = AcpUsage {
@@ -1000,6 +1095,50 @@ mod tests {
             Some(AcpUsage { used: 50000, size: 200000, cost: Some(0.42), currency: Some("USD".into()) })
         );
         assert_eq!(v.state_events().len(), 2);
+    }
+
+    #[test]
+    fn config_options_parse_and_track_mode() {
+        let mut v = AcpView::new(0);
+        v.set_modes(
+            serde_json::from_value(json!({
+                "currentModeId": "auto",
+                "availableModes": [{ "id": "auto", "name": "Auto" }, { "id": "plan", "name": "Plan" }],
+            }))
+            .unwrap(),
+        );
+        // The real adapter's shape (trimmed), plus a grouped list and a
+        // non-select option.
+        let opts = json!([
+            { "id": "mode", "name": "Mode", "category": "mode", "type": "select", "currentValue": "plan",
+              "options": [{ "value": "auto", "name": "Auto" }, { "value": "plan", "name": "Plan", "description": "Plan first" }] },
+            { "id": "model", "name": "Model", "category": "model", "type": "select", "currentValue": "opus",
+              "options": [{ "group": "anthropic", "name": "Anthropic", "options": [
+                  { "value": "opus", "name": "Opus 5.5", "description": "" },
+                  { "value": "haiku", "name": "Haiku 4.5" } ] }] },
+            { "id": "fast", "name": "Fast", "category": "model_config", "type": "select", "currentValue": "off",
+              "options": [{ "value": "on", "name": "On" }, { "value": "off", "name": "Off" }] },
+            { "id": "budget", "name": "Budget", "type": "number", "currentValue": 3 },
+        ]);
+        let Some(AcpEvent::Config { options }) = v.set_config(&opts) else { panic!() };
+        assert_eq!(options.iter().map(|o| o.id.as_str()).collect::<Vec<_>>(), ["mode", "model", "fast"]);
+        assert_eq!(options[1].options.len(), 2, "grouped options flattened");
+        assert_eq!(options[1].options[0].description, None, "blank description dropped");
+        assert_eq!(options[0].options[1].description.as_deref(), Some("Plan first"));
+        assert_eq!(v.modes.as_ref().unwrap().current, "plan", "modes follow the mode option");
+        assert!(matches!(&v.state_events()[0], AcpEvent::Config { .. }));
+
+        // A config_option_update replaces them.
+        let ev = v.apply_update(
+            update(json!({
+                "sessionUpdate": "config_option_update",
+                "configOptions": [{ "id": "fast", "name": "Fast", "type": "select", "currentValue": "on",
+                    "options": [{ "value": "on", "name": "On" }, { "value": "off", "name": "Off" }] }],
+            })),
+            1,
+        );
+        assert!(matches!(ev, Some(AcpEvent::Config { options }) if options.len() == 1 && options[0].current == "on"));
+        assert!(v.set_config(&json!([])).is_none());
     }
 
     #[test]

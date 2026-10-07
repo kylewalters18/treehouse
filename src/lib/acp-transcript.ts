@@ -1,5 +1,6 @@
 import type {
   AcpCommand,
+  AcpConfigOption,
   AcpEvent,
   AcpModes,
   AcpUsage,
@@ -47,6 +48,8 @@ export type AcpTranscript = {
   /// Slash commands for prompt autocomplete.
   commands: AcpCommand[];
   usage: AcpUsage | null;
+  /// Session settings: model, effort, mode, fast, …
+  config: AcpConfigOption[];
 };
 
 export function emptyTranscript(): AcpTranscript {
@@ -60,6 +63,7 @@ export function emptyTranscript(): AcpTranscript {
     modes: null,
     commands: [],
     usage: null,
+    config: [],
   };
 }
 
@@ -95,6 +99,9 @@ export function applyAcpEvent(t: AcpTranscript, ev: AcpEvent): void {
       break;
     case "usage":
       t.usage = ev.usage;
+      break;
+    case "config":
+      t.config = ev.options;
       break;
     case "agentText":
       if (last?.kind === "agent") {

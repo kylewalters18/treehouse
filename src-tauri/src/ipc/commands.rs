@@ -1143,6 +1143,17 @@ pub async fn acp_set_mode(
     agent::acp::set_mode(&state.agents, agent_id, &mode_id)
 }
 
+/// Change an ACP agent's session setting (model, effort, mode, fast, …).
+#[tauri::command]
+pub async fn acp_set_config(
+    agent_id: AgentSessionId,
+    config_id: String,
+    value: String,
+    state: State<'_, AppState>,
+) -> AppResult<()> {
+    agent::acp::set_config(&state.agents, agent_id, &config_id, &value)
+}
+
 /// Answer an ACP agent's permission request with one of its options.
 #[tauri::command]
 pub async fn acp_respond_permission(

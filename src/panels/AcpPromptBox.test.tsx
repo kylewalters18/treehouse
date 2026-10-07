@@ -5,9 +5,28 @@ import userEvent from "@testing-library/user-event";
 vi.mock("@/ipc/client", () => ({
   listFiles: vi.fn(async () => ["src/lib.rs", "src/main.rs", "README.md"]),
 }));
+vi.mock("@tauri-apps/plugin-dialog", () => ({
+  open: vi.fn(async () => ["/abs/notes.md"]),
+}));
 
 import { AcpPromptBox } from "./AcpPromptBox";
-import type { AcpCommand } from "@/ipc/types";
+import type { AcpCommand, AcpConfigOption } from "@/ipc/types";
+import { composerControls } from "@/lib/acp-composer";
+
+const opt = (id: string, category: string, current: string, values: [string, string][]): AcpConfigOption => ({
+  id,
+  name: id,
+  description: null,
+  category,
+  current,
+  options: values.map(([value, name]) => ({ value, name, description: null })),
+});
+const CONFIG = [
+  opt("mode", "mode", "auto", [["default", "Manual"], ["plan", "Plan"], ["auto", "Auto"]]),
+  opt("model", "model", "opus", [["opus", "Opus 5.5"], ["haiku", "Haiku 4.5"]]),
+  opt("effort", "thought_level", "medium", [["low", "Low"], ["medium", "Medium"]]),
+  opt("fast", "model_config", "off", [["on", "On"], ["off", "Off"]]),
+];
 
 const COMMANDS: AcpCommand[] = [
   { name: "compact", description: "Compact the context", hint: null },
@@ -16,10 +35,14 @@ const COMMANDS: AcpCommand[] = [
 
 function setup() {
   const onSend = vi.fn(async () => true);
+  const onSetting = vi.fn();
   render(
     <AcpPromptBox
       worktreeId="wt-1"
       commands={COMMANDS}
+      controls={composerControls(CONFIG, null)}
+      usage={{ used: 50_000, size: 200_000, cost: null, currency: null }}
+      onSetting={onSetting}
       canSend
       disabled={false}
       running={false}
@@ -30,7 +53,7 @@ function setup() {
     />,
   );
   const input = screen.getByRole("textbox") as HTMLTextAreaElement;
-  return { input, onSend };
+  return { input, onSend, onSetting };
 }
 
 describe("AcpPromptBox", () => {
@@ -65,5 +88,34 @@ describe("AcpPromptBox", () => {
     await userEvent.keyboard("{Escape}");
     expect(screen.queryByRole("listbox")).toBeNull();
     expect(input.value).toBe("/co");
+  });
+});
+
+describe("AcpPromptBox toolbar", () => {
+  it("shows current settings and picks a model", async () => {
+    const { onSetting } = setup();
+    await userEvent.click(screen.getByTitle("Model"));
+    await userEvent.click(screen.getByRole("option", { name: /Haiku 4\.5/ }));
+    expect(onSetting).toHaveBeenCalledWith(expect.objectContaining({ via: "config" }), "haiku");
+    expect(onSetting.mock.calls[0][0].option.id).toBe("model");
+    expect(screen.getByTitle("Reasoning effort").textContent).toContain("Medium");
+    expect(screen.getByLabelText("Context 25% used")).toBeTruthy();
+  });
+
+  it("toggles fast and plan mode", async () => {
+    const { onSetting } = setup();
+    await userEvent.click(screen.getByRole("button", { name: "Fast mode off" }));
+    expect(onSetting).toHaveBeenLastCalledWith(expect.anything(), "on");
+    await userEvent.click(screen.getByRole("button", { name: /^Plan mode:/ }));
+    expect(onSetting.mock.lastCall?.[0].option.id).toBe("mode");
+    expect(onSetting).toHaveBeenLastCalledWith(expect.anything(), "plan");
+  });
+
+  it("attaches files from disk and sends them", async () => {
+    const { onSend } = setup();
+    await userEvent.click(screen.getByRole("button", { name: "Attach files or images" }));
+    expect(await screen.findByText("notes.md")).toBeTruthy();
+    await userEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(onSend).toHaveBeenCalledWith("", [{ kind: "file", path: "/abs/notes.md" }]));
   });
 });

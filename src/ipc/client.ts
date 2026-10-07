@@ -592,6 +592,16 @@ export function acpSetMode(agentId: AgentSessionId, modeId: string): Promise<voi
   return invoke<void>("acp_set_mode", { agentId, modeId });
 }
 
+/// Change an ACP agent's session setting (model, effort, mode, fast, …);
+/// the new settings stream back as a `config` event.
+export function acpSetConfig(
+  agentId: AgentSessionId,
+  configId: string,
+  value: string,
+): Promise<void> {
+  return invoke<void>("acp_set_config", { agentId, configId, value });
+}
+
 /// Answer an ACP permission request with one of its option ids.
 export function acpRespondPermission(
   agentId: AgentSessionId,

@@ -10,6 +10,21 @@ use ts_rs::TS;
 
 use super::view::PromptCaps;
 
+/// Image files attached from disk up to this size go as image blocks.
+const IMAGE_MAX_BYTES: u64 = 5 * 1024 * 1024;
+
+/// Image MIME type for a path, by extension.
+fn image_mime(path: &Path) -> Option<&'static str> {
+    let ext = path.extension()?.to_str()?.to_ascii_lowercase();
+    Some(match ext.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        _ => return None,
+    })
+}
+
 /// Files up to this size are embedded (the agent gets the contents up
 /// front); bigger ones, or binary ones, go as links the agent can read.
 const EMBED_MAX_BYTES: u64 = 256 * 1024;
@@ -19,7 +34,8 @@ const EMBED_MAX_BYTES: u64 = 256 * 1024;
 #[serde(tag = "kind", rename_all = "camelCase")]
 #[ts(export)]
 pub enum AcpAttachment {
-    /// An `@`-mentioned file: worktree-relative, or absolute.
+    /// An `@`-mentioned or attached file: worktree-relative, or absolute.
+    /// Image files go as images when the agent takes them.
     File { path: String },
     /// A pasted image, base64-encoded.
     Image {
@@ -59,6 +75,17 @@ pub fn build_prompt(
                     .strip_prefix(cwd)
                     .map(|p| p.display().to_string())
                     .unwrap_or_else(|_| abs.display().to_string());
+                if let (Some(mime), true) = (image_mime(&abs), caps.image) {
+                    if meta.len() > IMAGE_MAX_BYTES {
+                        return Err(format!("{label} is too large to attach (5 MB max)."));
+                    }
+                    use base64::Engine;
+                    let bytes = std::fs::read(&abs).map_err(|e| format!("Couldn't read {label}: {e}"))?;
+                    let data = base64::engine::general_purpose::STANDARD.encode(bytes);
+                    blocks.push(json!({ "type": "image", "mimeType": mime, "data": data, "uri": file_uri(&abs) }));
+                    labels.push(format!("@{label}"));
+                    continue;
+                }
                 let uri = file_uri(&abs);
                 let contents = (caps.embedded_context && meta.len() <= EMBED_MAX_BYTES)
                     .then(|| std::fs::read_to_string(&abs).ok())
@@ -135,6 +162,22 @@ mod tests {
         let caps = PromptCaps { embedded_context: false, ..ALL };
         let (blocks, _) = build_prompt("x", &atts[..1], dir.path(), caps).unwrap();
         assert_eq!(blocks[1]["type"], "resource_link");
+    }
+
+    #[test]
+    fn image_files_go_as_images_when_supported() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("shot.PNG"), [0x89, b'P', b'N', b'G']).unwrap();
+        let att = [AcpAttachment::File { path: "shot.PNG".into() }];
+        let (blocks, labels) = build_prompt("", &att, dir.path(), ALL).unwrap();
+        assert_eq!(blocks[0]["type"], "image");
+        assert_eq!(blocks[0]["mimeType"], "image/png");
+        assert_eq!(blocks[0]["data"], "iVBORw==");
+        assert_eq!(labels, ["@shot.PNG"]);
+        // An agent without image support gets a link instead.
+        let caps = PromptCaps { image: false, ..ALL };
+        let (blocks, _) = build_prompt("", &att, dir.path(), caps).unwrap();
+        assert_eq!(blocks[0]["type"], "resource_link");
     }
 
     #[test]
