@@ -2,6 +2,7 @@
 import type { AgentBackendKind } from "./AgentBackendKind";
 import type { AgentSessionId } from "./AgentSessionId";
 import type { AgentStatus } from "./AgentStatus";
+import type { AgentTransport } from "./AgentTransport";
 import type { WorktreeId } from "./WorktreeId";
 
 export type AgentSession = { id: AgentSessionId, worktreeId: WorktreeId, backend: AgentBackendKind, argv: Array<string>, 
@@ -12,4 +13,10 @@ startedAt: bigint, cols: number, rows: number, status: AgentStatus,
 /**
  * Launched with `--resume` to continue a saved conversation.
  */
-resumed: boolean, };
+resumed: boolean, 
+/**
+ * PTY sessions stream terminal bytes; ACP sessions stream `AcpEvent`s
+ * and take prompts through `agent_submit_prompt`. For ACP, `argv` is
+ * the adapter command and `cols`/`rows` are 0.
+ */
+transport: AgentTransport, };

@@ -57,6 +57,21 @@
 //! backend = "claudeCode"
 //! command = "claude --agent reviewer"
 //!
+//! # A profile can launch over ACP instead of a PTY; `command` is then
+//! # the adapter command (empty = the backend's default adapter).
+//! [[agent.profile]]
+//! name = "Claude (ACP)"
+//! backend = "claudeCode"
+//! transport = "acp"
+//! command = "/opt/my-claude-acp"
+//!
+//! # ACP adapter command per backend (Agent Client Protocol transport —
+//! # see `agent::acp`). Each key is optional; unset keys use the
+//! # treehouse-managed pinned adapter (Claude, Codex) or the CLI's native
+//! # ACP mode (Kiro) — see `agent::acp::adapter`.
+//! [agent.acp]
+//! claudeCode = "/opt/my-claude-acp"
+//!
 //! # Agent status patterns — substrings scanned on PTY output.
 //! [agent.status]
 //! attention = ["[y/N]", "Press enter", "requires approval"]
@@ -71,7 +86,7 @@ use tauri::{AppHandle, Manager};
 use ts_rs::TS;
 
 use crate::agent::patterns::{AgentPatterns, BackendPatterns};
-use crate::agent::AgentBackendKind;
+use crate::agent::{AgentBackendKind, AgentTransport};
 use crate::lsp::overrides::LspOverride;
 use crate::lsp::LspConfig;
 use crate::util::errors::{AppError, AppResult};
@@ -126,6 +141,10 @@ const SEED_HEADER: &str = "\
 #       name = \"Reviewer\"
 #       backend = \"claudeCode\"            # or \"codex\" / \"kiro\"
 #       command = \"claude --agent reviewer\"
+#       # transport = \"acp\"              # launch over ACP; command = adapter
+#
+#   [agent.acp]                          # override an ACP adapter (optional;
+#       claudeCode = \"/opt/my-claude-acp\" # default: treehouse-managed install)
 #
 #   [agent.status]
 #       attention = [\"[y/N]\", \"Press enter\", \"requires approval\"]
@@ -196,6 +215,41 @@ pub struct AgentSection {
     /// launch menu.
     #[serde(default, rename = "profile", skip_serializing_if = "Vec::is_empty")]
     pub profiles: Vec<AgentProfile>,
+    /// ACP adapter commands (`[agent.acp]`).
+    #[serde(default, skip_serializing_if = "AcpAdapters::is_empty")]
+    pub acp: AcpAdapters,
+}
+
+/// `[agent.acp]`: per-backend overrides of the command that speaks ACP on
+/// stdio. Unset entries use `agent::acp::adapter`'s defaults.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpAdapters {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude_code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codex: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kiro: Option<String>,
+}
+
+impl AcpAdapters {
+    fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// The override for `backend`; blank entries count as unset.
+    pub fn configured(&self, backend: AgentBackendKind) -> Option<String> {
+        let c = match backend {
+            AgentBackendKind::ClaudeCode => &self.claude_code,
+            AgentBackendKind::Codex => &self.codex,
+            AgentBackendKind::Kiro => &self.kiro,
+        };
+        c.as_deref()
+            .map(str::trim)
+            .filter(|c| !c.is_empty())
+            .map(str::to_string)
+    }
 }
 
 /// A named agent launch: backend + the full command line, exactly as the
@@ -212,6 +266,11 @@ pub struct AgentProfile {
     pub name: String,
     pub backend: AgentBackendKind,
     pub command: String,
+    /// `"acp"` launches through the backend's ACP adapter (`command` is the
+    /// adapter command); omitted means a PTY.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub transport: Option<AgentTransport>,
 }
 
 /// Profiles visible from `workspace_root`: that repo's own first, then
@@ -914,6 +973,7 @@ mod tests {
             name: name.into(),
             backend: AgentBackendKind::ClaudeCode,
             command: command.into(),
+            transport: None,
         }
     }
 

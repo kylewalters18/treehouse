@@ -15,10 +15,11 @@ use crate::util::ids::{AgentSessionId, WorktreeId};
 
 use super::history::{self, AgentHistory, AgentHistoryEntry};
 use super::hooks::{self, HookSession, HookSessionMap};
+use super::acp;
 use super::kiro_history;
 use super::{
     AgentActivity, AgentBackendKind, AgentEvent, AgentOverview, AgentSession, AgentStatus,
-    PendingPrompt,
+    AgentTransport, PendingPrompt,
 };
 
 /// Newlines are the universal "real output" signal across TUI agents — all of
@@ -95,6 +96,9 @@ pub struct AgentRegistry {
     /// The same for Kiro sessions, so history can tell which conversation
     /// a running Kiro agent has open (see `history_for`).
     kiro_meta: DashMap<AgentSessionId, KiroMeta>,
+    /// ACP-transport sessions (`agent::acp`). Every query below covers
+    /// both maps, so callers needn't know which transport a session uses.
+    pub(crate) acp: DashMap<AgentSessionId, acp::AcpHandle>,
 }
 
 struct HistoryMeta {
@@ -124,7 +128,31 @@ impl AgentRegistry {
             history_meta: Arc::new(DashMap::new()),
             history: Arc::new(AgentHistory::default()),
             kiro_meta: DashMap::new(),
+            acp: DashMap::new(),
         }
+    }
+
+    pub(crate) fn history_handle(&self) -> Arc<AgentHistory> {
+        self.history.clone()
+    }
+
+    /// The live agent (either transport) that has Claude conversation
+    /// `claude_session_id` open.
+    fn live_claude_agent(&self, claude_session_id: &str) -> Option<AgentSessionId> {
+        self.hook_sessions
+            .iter()
+            .find(|h| h.value().claude_session_id.as_deref() == Some(claude_session_id))
+            .map(|h| *h.key())
+            .filter(|id| is_live(self, *id))
+            .or_else(|| {
+                self.acp
+                    .iter()
+                    .find(|a| {
+                        a.value().is_live()
+                            && a.value().agent_session_id().as_deref() == Some(claude_session_id)
+                    })
+                    .map(|a| *a.key())
+            })
     }
 
     /// Replace the active pattern set (typically with whatever
@@ -181,12 +209,7 @@ impl AgentRegistry {
     pub fn history_for(&self, cwd: &std::path::Path) -> Vec<AgentHistoryEntry> {
         let mut entries = self.history.list_for(cwd);
         for e in &mut entries {
-            e.live_agent_id = self
-                .hook_sessions
-                .iter()
-                .find(|h| h.value().claude_session_id.as_deref() == Some(&e.session_id))
-                .map(|h| *h.key())
-                .filter(|id| is_live(self, *id));
+            e.live_agent_id = self.live_claude_agent(&e.session_id);
         }
         if let Some(dir) = kiro_history::sessions_dir() {
             let kiro: Vec<_> = kiro_history::list_in(&dir, cwd)
@@ -270,13 +293,32 @@ impl AgentRegistry {
             .iter()
             .filter(|e| e.value().session.worktree_id == worktree_id)
             .map(|e| e.value().session.clone())
+            .chain(
+                self.acp
+                    .iter()
+                    .filter(|e| e.value().session.worktree_id == worktree_id)
+                    .map(|e| e.value().snapshot()),
+            )
             .collect();
         sessions.sort_by_key(|s| s.started_at);
         sessions
     }
 
     pub fn status_snapshot(&self, id: AgentSessionId) -> Option<AgentStatus> {
-        self.inner.get(&id).map(|h| h.session.status.clone())
+        self.inner
+            .get(&id)
+            .map(|h| h.session.status.clone())
+            .or_else(|| self.acp.get(&id).map(|h| h.status()))
+    }
+
+    pub fn transport_of(&self, id: AgentSessionId) -> Option<AgentTransport> {
+        if self.inner.contains_key(&id) {
+            Some(AgentTransport::Pty)
+        } else if self.acp.contains_key(&id) {
+            Some(AgentTransport::Acp)
+        } else {
+            None
+        }
     }
 
     pub fn list_for_workspace<F: Fn(WorktreeId) -> bool>(
@@ -287,6 +329,12 @@ impl AgentRegistry {
             .iter()
             .filter(|e| worktree_belongs(e.value().session.worktree_id))
             .map(|e| e.value().session.clone())
+            .chain(
+                self.acp
+                    .iter()
+                    .filter(|e| worktree_belongs(e.value().session.worktree_id))
+                    .map(|e| e.value().snapshot()),
+            )
             .collect()
     }
 
@@ -302,6 +350,11 @@ impl AgentRegistry {
                     )
             })
             .count() as u32
+            + self
+                .acp
+                .iter()
+                .filter(|e| e.value().session.worktree_id == worktree_id && e.value().is_live())
+                .count() as u32
     }
 
     /// Activity classification for a worktree, aggregated across **all** of
@@ -320,6 +373,11 @@ impl AgentRegistry {
             }
             let act = self.session_activity(e.value(), &sh, now).0;
             best = max_severity(best, act);
+        }
+        for e in self.acp.iter() {
+            if e.value().session.worktree_id == worktree_id {
+                best = max_severity(best, e.value().activity());
+            }
         }
         best
     }
@@ -439,6 +497,12 @@ impl AgentRegistry {
             };
             out.push(row);
         }
+        for e in self.acp.iter() {
+            let h = e.value();
+            if include(h.session.worktree_id) {
+                out.push(h.overview(diff_stats(h.session.worktree_id)));
+            }
+        }
         out.sort_by_key(|o| o.session.started_at);
         out
     }
@@ -508,6 +572,12 @@ impl AgentRegistry {
             self.drop_session_state(&id);
             if let Some((_, h)) = self.inner.remove(&id) {
                 let _ = h.child.lock().kill();
+            }
+        }
+        let ids: Vec<_> = self.acp.iter().map(|e| *e.key()).collect();
+        for id in ids {
+            if let Some((_, h)) = self.acp.remove(&id) {
+                h.kill();
             }
         }
     }
@@ -655,6 +725,7 @@ pub fn launch(
         rows,
         status: AgentStatus::Running,
         resumed: resume.is_some(),
+        transport: AgentTransport::Pty,
     };
 
     let shared = Arc::new(Mutex::new(AgentShared {
@@ -801,6 +872,9 @@ pub fn attach(
     id: AgentSessionId,
     channel: Channel<AgentEvent>,
 ) -> AppResult<AgentSession> {
+    if registry.acp.contains_key(&id) {
+        return acp::attach(registry, id, channel);
+    }
     let handle = registry
         .inner
         .get(&id)
@@ -820,6 +894,11 @@ pub fn attach(
 }
 
 pub fn write_stdin(registry: &AgentRegistry, id: AgentSessionId, data: &[u8]) -> AppResult<()> {
+    if registry.acp.contains_key(&id) {
+        return Err(AppError::Unknown(
+            "ACP agents take prompts, not keystrokes.".into(),
+        ));
+    }
     let handle = registry
         .inner
         .get(&id)
@@ -905,6 +984,9 @@ pub fn respond_permission(
     id: AgentSessionId,
     allow: bool,
 ) -> AppResult<()> {
+    if registry.acp.contains_key(&id) {
+        return acp::respond_permission_bool(registry, id, allow);
+    }
     let answerable = registry
         .overview(|_| true, |_| None)
         .into_iter()
@@ -934,7 +1016,31 @@ pub fn respond_permission(
     Ok(())
 }
 
+/// Bracketed-paste markers: the TUI takes the text as one paste, so its
+/// newlines don't each submit.
+const PASTE_START: &[u8] = b"\x1b[200~";
+const PASTE_END: &[u8] = b"\x1b[201~";
+
+/// Submit `text` as the agent's next prompt: a bracketed paste plus Enter
+/// into a PTY agent's TUI, or `session/prompt` for an ACP agent.
+pub fn submit_prompt(registry: &AgentRegistry, id: AgentSessionId, text: &str) -> AppResult<()> {
+    match registry.transport_of(id) {
+        Some(AgentTransport::Acp) => acp::send_prompt(registry, id, text),
+        Some(AgentTransport::Pty) => {
+            let mut bytes = PASTE_START.to_vec();
+            bytes.extend_from_slice(text.as_bytes());
+            bytes.extend_from_slice(PASTE_END);
+            bytes.push(b'\r');
+            write_stdin(registry, id, &bytes)
+        }
+        None => Err(AppError::Unknown(format!("unknown agent: {id}"))),
+    }
+}
+
 pub fn resize(registry: &AgentRegistry, id: AgentSessionId, cols: u16, rows: u16) -> AppResult<()> {
+    if registry.acp.contains_key(&id) {
+        return Ok(());
+    }
     let handle = registry
         .inner
         .get(&id)
@@ -993,7 +1099,7 @@ pub fn is_live(registry: &AgentRegistry, id: AgentSessionId) -> bool {
             h.shared.lock().status,
             AgentStatus::Running | AgentStatus::Starting
         )
-    })
+    }) || registry.acp.get(&id).is_some_and(|h| h.is_live())
 }
 
 pub fn kill(registry: &AgentRegistry, id: AgentSessionId) {
@@ -1001,6 +1107,10 @@ pub fn kill(registry: &AgentRegistry, id: AgentSessionId) {
     if let Some((_, handle)) = registry.inner.remove(&id) {
         let _ = handle.child.lock().kill();
         tracing::info!(%id, "killed agent");
+    }
+    if let Some((_, handle)) = registry.acp.remove(&id) {
+        handle.kill();
+        tracing::info!(%id, "killed acp agent");
     }
 }
 
@@ -1018,9 +1128,21 @@ pub fn kill_for_worktree(registry: &AgentRegistry, worktree_id: WorktreeId) {
             tracing::info!(%id, %worktree_id, "killed agent for removed worktree");
         }
     }
+    let ids: Vec<_> = registry
+        .acp
+        .iter()
+        .filter(|e| e.value().session.worktree_id == worktree_id)
+        .map(|e| *e.key())
+        .collect();
+    for id in ids {
+        if let Some((_, handle)) = registry.acp.remove(&id) {
+            handle.kill();
+            tracing::info!(%id, %worktree_id, "killed acp agent for removed worktree");
+        }
+    }
 }
 
-fn now_millis() -> u64 {
+pub(crate) fn now_millis() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)

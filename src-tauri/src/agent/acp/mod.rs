@@ -1,0 +1,920 @@
+//! Agent Client Protocol transport: an agent spoken to as JSON-RPC over
+//! stdio (<https://agentclientprotocol.com>) instead of driven through a PTY.
+//! Runs alongside `supervisor` — sessions live in `AgentRegistry::acp`, so
+//! the board, sidebar, MCP token checks and shutdown see both transports.
+//!
+//! Lifecycle of one session:
+//! 1. Spawn the backend's adapter (see `adapter`: a `[agent.acp]` override,
+//!    else a treehouse-managed pinned install) in its own process group,
+//!    cwd = the worktree.
+//! 2. `initialize` (we advertise no `fs/*` / `terminal/*` capabilities), then
+//!    `session/new` with the treehouse MCP server when the agent takes HTTP
+//!    MCP servers. Prompts sent before this finishes are queued.
+//! 3. `session/prompt` per prompt; `session/update` notifications fold into
+//!    an [`AcpView`] (overview fields) and a transcript event log.
+//! 4. `session/request_permission` parks as the view's pending prompt until
+//!    a respond command answers it by option id; `session/cancel` cancels.
+//!
+//! The event log is the ACP analogue of the PTY ring buffer: `attach`
+//! replays it into a fresh Channel before live events resume.
+
+pub mod adapter;
+pub mod rpc;
+pub mod view;
+
+use std::collections::VecDeque;
+use std::path::PathBuf;
+use std::process::Stdio;
+use std::sync::Arc;
+
+use agent_client_protocol_schema::v1::{
+    RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
+    SelectedPermissionOutcome, SessionModeState, SessionUpdate,
+};
+use parking_lot::Mutex;
+use serde_json::{json, Value};
+use tauri::ipc::Channel;
+use tauri::AppHandle;
+use tokio::io::{AsyncBufReadExt, BufReader};
+
+use crate::util::errors::{AppError, AppResult};
+use crate::util::ids::{AgentSessionId, WorktreeId};
+
+use super::history::{AgentHistory, LastTurn};
+use super::supervisor::{now_millis, AgentRegistry};
+use super::{
+    AgentActivity, AgentBackendKind, AgentEvent, AgentOverview, AgentSession, AgentStatus,
+    AgentTransport,
+};
+use rpc::{Incoming, RpcConn, AUTH_REQUIRED, METHOD_NOT_FOUND};
+pub use view::{AcpEvent, AcpView};
+
+/// Events kept for replay. Text chunks and tool updates coalesce (see
+/// `push_log`), so this is turns' worth of transcript, not raw messages.
+const LOG_MAX: usize = 20_000;
+/// How far back `push_log` looks for an earlier event of the same tool call
+/// to replace in place.
+const TOOL_REPLACE_WINDOW: usize = 256;
+/// Adapter stderr lines kept for error messages (auth failures, a missing
+/// `npx`, a crash on startup).
+const STDERR_TAIL: usize = 20;
+
+struct AcpShared {
+    view: AcpView,
+    log: Vec<AcpEvent>,
+    channel: Option<Channel<AgentEvent>>,
+    status: AgentStatus,
+    /// Prompts sent before `session/new` returned.
+    queued: Vec<String>,
+    /// Permission requests behind the one in `view.pending` (parallel
+    /// subagents can ask at once); promoted in order.
+    waiting: VecDeque<(Value, RequestPermissionRequest)>,
+    stderr_tail: VecDeque<String>,
+    /// Set by `kill`, so the teardown that follows isn't reported as a crash.
+    killed: bool,
+    exited_at: Option<u64>,
+}
+
+impl AcpShared {
+    fn emit(&mut self, ev: AcpEvent) {
+        if let Some(ch) = &self.channel {
+            if ch.send(AgentEvent::Acp { event: ev.clone() }).is_err() {
+                self.channel = None;
+            }
+        }
+        push_log(&mut self.log, ev);
+    }
+
+    fn set_status(&mut self, status: AgentStatus) {
+        self.status = status.clone();
+        if let Some(ch) = &self.channel {
+            let _ = ch.send(AgentEvent::Status { status });
+        }
+    }
+
+    fn live(&self) -> bool {
+        matches!(self.status, AgentStatus::Running | AgentStatus::Starting)
+    }
+
+    fn stderr_summary(&self) -> Option<String> {
+        if self.stderr_tail.is_empty() {
+            return None;
+        }
+        Some(self.stderr_tail.iter().cloned().collect::<Vec<_>>().join("\n"))
+    }
+
+    /// Surface the next queued permission request, if the slot is free.
+    fn promote_waiting(&mut self) {
+        if self.view.pending.is_some() {
+            return;
+        }
+        if let Some((id, req)) = self.waiting.pop_front() {
+            let ev = self.view.permission_requested(id, req, now_millis());
+            self.emit(ev);
+        }
+    }
+}
+
+/// Append `ev`, merging it into the log's tail where the pane would anyway:
+/// consecutive text chunks become one, and a tool call's newer state
+/// replaces its older one.
+fn push_log(log: &mut Vec<AcpEvent>, ev: AcpEvent) {
+    match (log.last_mut(), &ev) {
+        (Some(AcpEvent::AgentText { text }), AcpEvent::AgentText { text: more })
+        | (Some(AcpEvent::Thought { text }), AcpEvent::Thought { text: more }) => {
+            text.push_str(more);
+            return;
+        }
+        _ => {}
+    }
+    if let AcpEvent::Tool { tool } = &ev {
+        let start = log.len().saturating_sub(TOOL_REPLACE_WINDOW);
+        if let Some(slot) = log[start..]
+            .iter_mut()
+            .rev()
+            .find(|e| matches!(e, AcpEvent::Tool { tool: t } if t.id == tool.id))
+        {
+            *slot = ev;
+            return;
+        }
+    }
+    log.push(ev);
+    if log.len() > LOG_MAX {
+        log.drain(..LOG_MAX / 10);
+    }
+}
+
+/// Registry entry for one ACP session.
+pub struct AcpHandle {
+    pub session: AgentSession,
+    shared: Arc<Mutex<AcpShared>>,
+    conn: Arc<RpcConn>,
+    /// Adapter pid = its process group id (spawned with `process_group(0)`),
+    /// so `kill` reaches the node/CLI children too.
+    pid: Option<u32>,
+    cwd: PathBuf,
+}
+
+impl AcpHandle {
+    pub fn status(&self) -> AgentStatus {
+        self.shared.lock().status.clone()
+    }
+
+    pub fn is_live(&self) -> bool {
+        self.shared.lock().live()
+    }
+
+    pub fn snapshot(&self) -> AgentSession {
+        let mut s = self.session.clone();
+        s.status = self.status();
+        s
+    }
+
+    pub fn activity(&self) -> AgentActivity {
+        let sh = self.shared.lock();
+        if sh.live() {
+            sh.view.activity()
+        } else {
+            AgentActivity::Inactive
+        }
+    }
+
+    /// The agent's own session id — for Claude, the conversation id
+    /// `claude --resume` takes (the adapter persists the same transcript).
+    pub fn agent_session_id(&self) -> Option<String> {
+        self.shared.lock().view.session_id.clone()
+    }
+
+    pub fn overview(&self, diff_stats: Option<crate::diff::DiffStats>) -> AgentOverview {
+        let sh = self.shared.lock();
+        let mut session = self.session.clone();
+        session.status = sh.status.clone();
+        let live = sh.live();
+        let v = &sh.view;
+        let pending = if live { v.pending_prompt() } else { None };
+        AgentOverview {
+            activity: if live {
+                v.activity()
+            } else {
+                AgentActivity::Inactive
+            },
+            changed_at: match sh.exited_at {
+                Some(t) if !live => t,
+                _ => v.changed_at,
+            },
+            title: v.title.clone(),
+            task: v.task.clone(),
+            current_tool: v.current_tool.clone(),
+            last_message: v.last_message.clone(),
+            can_answer_inline: pending.is_some(),
+            pending,
+            diff_stats,
+            session,
+        }
+    }
+
+    pub fn kill(&self) {
+        {
+            let mut sh = self.shared.lock();
+            if sh.killed {
+                return;
+            }
+            sh.killed = true;
+        }
+        if let Some(pid) = self.pid {
+            kill_group(pid);
+        }
+    }
+}
+
+/// TERM the adapter's process group, then KILL whatever ignored it.
+fn kill_group(pid: u32) {
+    let group = format!("-{pid}");
+    let _ = std::process::Command::new("/bin/kill")
+        .args(["-TERM", "--", &group])
+        .stderr(Stdio::null())
+        .status();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+        let _ = std::process::Command::new("/bin/kill")
+            .args(["-KILL", "--", &group])
+            .stderr(Stdio::null())
+            .status();
+    });
+}
+
+/// Context the background tasks need beyond the shared state.
+#[derive(Clone)]
+struct Ctx {
+    id: AgentSessionId,
+    backend: AgentBackendKind,
+    cwd: PathBuf,
+    shared: Arc<Mutex<AcpShared>>,
+    conn: Arc<RpcConn>,
+    history: Arc<AgentHistory>,
+    pid: Option<u32>,
+    /// The CLI path handed to the adapter, if any (see `adapter`).
+    cli: Option<String>,
+}
+
+/// Spawn `argv` as an ACP agent in `cwd` and start the handshake. Returns
+/// as soon as the process is up; the handshake, and any seeded `prompt`,
+/// continue in the background and stream over `channel`.
+#[allow(clippy::too_many_arguments)]
+pub fn launch(
+    app: &AppHandle,
+    registry: &AgentRegistry,
+    worktree_id: WorktreeId,
+    cwd: PathBuf,
+    backend: AgentBackendKind,
+    argv: Vec<String>,
+    env: Vec<(String, String)>,
+    prompt: Option<String>,
+    channel: Option<Channel<AgentEvent>>,
+) -> AppResult<AgentSession> {
+    if argv.is_empty() {
+        return Err(AppError::Unknown("empty ACP adapter command".into()));
+    }
+    let session_id = AgentSessionId::new();
+    // Minted before spawn, like PTY launches; offered in `session/new` only
+    // if the agent says it takes HTTP MCP servers.
+    let mcp = crate::mcp::http_server(app, session_id, worktree_id);
+
+    let mut cmd = tokio::process::Command::new(&argv[0]);
+    cmd.args(&argv[1..])
+        .current_dir(&cwd)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .process_group(0)
+        .kill_on_drop(true)
+        // Treehouse's Claude hooks may be installed in this worktree by a
+        // PTY agent; without the session var they no-op instead of
+        // misfiling this agent's events under another session.
+        .env_remove(super::hooks::SESSION_ENV)
+        .envs(env.iter().map(|(k, v)| (k, v)));
+    let mut child = cmd.spawn().map_err(|e| {
+        AppError::Unknown(format!("spawn ACP adapter `{}`: {e}", argv.join(" ")))
+    })?;
+    let pid = child.id();
+    let (Some(stdin), Some(stdout), Some(stderr)) =
+        (child.stdin.take(), child.stdout.take(), child.stderr.take())
+    else {
+        return Err(AppError::Unknown("ACP adapter stdio unavailable".into()));
+    };
+    let (conn, incoming) = RpcConn::start(stdout, stdin);
+
+    let now = now_millis();
+    let session = AgentSession {
+        id: session_id,
+        worktree_id,
+        backend,
+        argv: argv.clone(),
+        started_at: now,
+        cols: 0,
+        rows: 0,
+        status: AgentStatus::Running,
+        resumed: false,
+        transport: AgentTransport::Acp,
+    };
+    let mut shared = AcpShared {
+        view: AcpView::new(now),
+        log: Vec::new(),
+        channel,
+        status: AgentStatus::Running,
+        queued: Vec::new(),
+        waiting: VecDeque::new(),
+        stderr_tail: VecDeque::new(),
+        killed: false,
+        exited_at: None,
+    };
+    shared.set_status(AgentStatus::Running);
+    if let Some(p) = prompt.map(|p| p.trim().to_string()).filter(|p| !p.is_empty()) {
+        let ev = shared.view.prompt_started(&p, now);
+        shared.emit(ev);
+        shared.queued.push(p);
+    }
+    let shared = Arc::new(Mutex::new(shared));
+    let ctx = Ctx {
+        id: session_id,
+        backend,
+        cwd: cwd.clone(),
+        shared: shared.clone(),
+        conn: conn.clone(),
+        history: registry.history_handle(),
+        pid,
+        cli: env
+            .iter()
+            .find(|(k, _)| k == adapter::CLAUDE_EXECUTABLE_ENV)
+            .map(|(_, v)| v.clone()),
+    };
+
+    registry.acp.insert(
+        session_id,
+        AcpHandle {
+            session: session.clone(),
+            shared,
+            conn,
+            pid,
+            cwd,
+        },
+    );
+
+    tauri::async_runtime::spawn(read_stderr(ctx.clone(), stderr));
+    tauri::async_runtime::spawn(handle_incoming(ctx.clone(), incoming));
+    tauri::async_runtime::spawn(handshake(ctx.clone(), mcp));
+    tauri::async_runtime::spawn(async move {
+        let code = child.wait().await.ok().and_then(|s| s.code());
+        let mut sh = ctx.shared.lock();
+        let never_ready = sh.view.session_id.is_none();
+        if !sh.killed && never_ready && !matches!(sh.status, AgentStatus::Crashed { .. }) {
+            let mut message = format!("ACP adapter exited (code {code:?}) before the session started.");
+            if let Some(tail) = sh.stderr_summary() {
+                message.push_str("\n\n");
+                message.push_str(&tail);
+            }
+            sh.emit(AcpEvent::Error { message });
+        }
+        sh.exited_at = Some(now_millis());
+        if sh.live() {
+            sh.set_status(AgentStatus::Exited { code });
+        }
+        tracing::info!(id = %ctx.id, ?code, "acp agent exited");
+    });
+
+    tracing::info!(%session_id, %worktree_id, ?argv, ?env, "launched acp agent");
+    Ok(session)
+}
+
+async fn read_stderr(ctx: Ctx, stderr: tokio::process::ChildStderr) {
+    let mut lines = BufReader::new(stderr).lines();
+    while let Ok(Some(line)) = lines.next_line().await {
+        tracing::debug!(id = %ctx.id, "acp stderr: {line}");
+        let mut sh = ctx.shared.lock();
+        sh.stderr_tail.push_back(line);
+        if sh.stderr_tail.len() > STDERR_TAIL {
+            sh.stderr_tail.pop_front();
+        }
+    }
+}
+
+async fn handshake(ctx: Ctx, mcp: Option<(String, String)>) {
+    if let Err(message) = try_handshake(&ctx, mcp).await {
+        tracing::warn!(id = %ctx.id, %message, "acp handshake failed");
+        let mut sh = ctx.shared.lock();
+        if sh.killed {
+            return;
+        }
+        let mut full = message.clone();
+        if let Some(tail) = sh.stderr_summary() {
+            full.push_str("\n\n");
+            full.push_str(&tail);
+        }
+        sh.emit(AcpEvent::Error { message: full });
+        sh.set_status(AgentStatus::Crashed { message });
+        drop(sh);
+        if let Some(pid) = ctx.pid {
+            kill_group(pid);
+        }
+    }
+}
+
+async fn try_handshake(ctx: &Ctx, mcp: Option<(String, String)>) -> Result<(), String> {
+    let init = ctx
+        .conn
+        .request(
+            "initialize",
+            json!({
+                "protocolVersion": 1,
+                // No fs/* or terminal/*: the agent uses its own tools on disk.
+                "clientCapabilities": {
+                    "fs": { "readTextFile": false, "writeTextFile": false },
+                    "terminal": false,
+                },
+                "clientInfo": {
+                    "name": "treehouse",
+                    "title": "treehouse",
+                    "version": env!("CARGO_PKG_VERSION"),
+                },
+            }),
+        )
+        .await
+        .map_err(|e| format!("ACP initialize failed: {e}"))?;
+    let agent_name = init
+        .pointer("/agentInfo/title")
+        .or_else(|| init.pointer("/agentInfo/name"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let takes_http = init
+        .pointer("/agentCapabilities/mcpCapabilities/http")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let mcp_servers = match (&mcp, takes_http) {
+        (Some((url, token)), true) => json!([{
+            "type": "http",
+            "name": crate::mcp::SERVER_NAME,
+            "url": url,
+            "headers": [{ "name": "Authorization", "value": format!("Bearer {token}") }],
+        }]),
+        _ => json!([]),
+    };
+    let new = ctx
+        .conn
+        .request(
+            "session/new",
+            json!({ "cwd": ctx.cwd, "mcpServers": mcp_servers }),
+        )
+        .await
+        .map_err(|e| {
+            if e.code == AUTH_REQUIRED {
+                auth_hint(&e)
+            } else {
+                format!("ACP session/new failed: {e}")
+            }
+        })?;
+    let sid = new
+        .get("sessionId")
+        .and_then(Value::as_str)
+        .ok_or("ACP session/new returned no sessionId")?
+        .to_string();
+
+    let modes = new
+        .get("modes")
+        .cloned()
+        .and_then(|m| serde_json::from_value::<SessionModeState>(m).ok());
+    let queued = {
+        let mut sh = ctx.shared.lock();
+        sh.view.session_id = Some(sid.clone());
+        if let Some(ev) = modes.and_then(|m| sh.view.set_modes(m)) {
+            sh.emit(ev);
+        }
+        sh.emit(AcpEvent::Ready {
+            session_id: sid.clone(),
+            agent_name,
+            mcp_attached: takes_http && mcp.is_some(),
+            cli: ctx.cli.clone(),
+        });
+        std::mem::take(&mut sh.queued)
+    };
+    tracing::info!(id = %ctx.id, acp_session = %sid, "acp session ready");
+    for text in queued {
+        spawn_prompt(ctx.clone(), sid.clone(), text);
+    }
+    Ok(())
+}
+
+/// Claude's adapter accepts `session/new` signed out and fails the first
+/// `session/prompt` instead, so both paths share this.
+fn auth_hint(e: &rpc::RpcError) -> String {
+    format!(
+        "The agent needs you to sign in ({}). Log in once in a terminal \
+         (e.g. run `claude` and use /login), then send again.",
+        e.message
+    )
+}
+
+async fn handle_incoming(ctx: Ctx, mut incoming: tokio::sync::mpsc::UnboundedReceiver<Incoming>) {
+    while let Some(msg) = incoming.recv().await {
+        match msg {
+            Incoming::Notification { method, mut params } if method == "session/update" => {
+                let raw = params.get_mut("update").map(Value::take).unwrap_or(Value::Null);
+                match serde_json::from_value::<SessionUpdate>(raw) {
+                    Ok(update) => {
+                        let mut sh = ctx.shared.lock();
+                        if let Some(ev) = sh.view.apply_update(update, now_millis()) {
+                            sh.emit(ev);
+                        }
+                    }
+                    // Newer agents send update kinds this schema predates.
+                    Err(e) => tracing::trace!(id = %ctx.id, ?e, "acp: skipped session/update"),
+                }
+            }
+            Incoming::Notification { .. } => {}
+            Incoming::Request { id, method, params } if method == "session/request_permission" => {
+                match serde_json::from_value::<RequestPermissionRequest>(params) {
+                    Ok(req) => {
+                        let mut sh = ctx.shared.lock();
+                        sh.waiting.push_back((id, req));
+                        sh.promote_waiting();
+                    }
+                    Err(e) => ctx.conn.respond_error(id, -32602, &format!("invalid params: {e}")),
+                }
+            }
+            Incoming::Request { id, method, .. } => {
+                tracing::debug!(id = %ctx.id, %method, "acp: unsupported client method");
+                ctx.conn
+                    .respond_error(id, METHOD_NOT_FOUND, "not supported by treehouse");
+            }
+        }
+    }
+}
+
+fn spawn_prompt(ctx: Ctx, sid: String, text: String) {
+    tauri::async_runtime::spawn(async move {
+        let res = ctx
+            .conn
+            .request(
+                "session/prompt",
+                json!({ "sessionId": sid, "prompt": [{ "type": "text", "text": text }] }),
+            )
+            .await;
+        let turn = {
+            let mut sh = ctx.shared.lock();
+            let now = now_millis();
+            match res {
+                Ok(v) => {
+                    let stop = v.get("stopReason").and_then(Value::as_str).unwrap_or("end_turn");
+                    let ev = sh.view.turn_ended(stop, now);
+                    sh.emit(ev);
+                }
+                Err(e) => {
+                    if !sh.killed {
+                        let message = if e.code == AUTH_REQUIRED {
+                            auth_hint(&e)
+                        } else {
+                            format!("Prompt failed: {e}")
+                        };
+                        sh.emit(AcpEvent::Error { message });
+                    }
+                    let ev = sh.view.turn_ended("error", now);
+                    sh.emit(ev);
+                }
+            }
+            (
+                sh.view.first_prompt.clone(),
+                LastTurn {
+                    ai_title: sh.view.title.clone(),
+                    prompt: sh.view.task.clone(),
+                    message: sh.view.last_message.clone(),
+                },
+            )
+        };
+        // Claude's adapter persists the conversation under the same id the
+        // CLI uses, so it lands in history and resumes in a PTY tab.
+        if matches!(ctx.backend, AgentBackendKind::ClaudeCode) {
+            ctx.history
+                .observe(&ctx.cwd, None, &sid, turn.0.as_deref(), &turn.1, now_millis());
+        }
+    });
+}
+
+fn handle<'a>(
+    registry: &'a AgentRegistry,
+    id: AgentSessionId,
+) -> AppResult<dashmap::mapref::one::Ref<'a, AgentSessionId, AcpHandle>> {
+    registry
+        .acp
+        .get(&id)
+        .ok_or_else(|| AppError::Unknown(format!("unknown ACP agent: {id}")))
+}
+
+/// Swap in a fresh Channel: replay the event log as one batch, then the
+/// status, then live events.
+pub fn attach(
+    registry: &AgentRegistry,
+    id: AgentSessionId,
+    channel: Channel<AgentEvent>,
+) -> AppResult<AgentSession> {
+    let h = handle(registry, id)?;
+    let mut sh = h.shared.lock();
+    let _ = channel.send(AgentEvent::AcpBatch {
+        events: sh.log.clone(),
+    });
+    let _ = channel.send(AgentEvent::Status {
+        status: sh.status.clone(),
+    });
+    sh.channel = Some(channel);
+    let mut s = h.session.clone();
+    s.status = sh.status.clone();
+    Ok(s)
+}
+
+/// Send a user prompt (`session/prompt`); queued if the handshake is still
+/// running.
+pub fn send_prompt(registry: &AgentRegistry, id: AgentSessionId, text: &str) -> AppResult<()> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Ok(());
+    }
+    let h = handle(registry, id)?;
+    let mut sh = h.shared.lock();
+    if !sh.live() {
+        return Err(AppError::Unknown("This agent has exited.".into()));
+    }
+    let ev = sh.view.prompt_started(text, now_millis());
+    sh.emit(ev);
+    match sh.view.session_id.clone() {
+        Some(sid) => {
+            drop(sh);
+            let ctx = Ctx {
+                id,
+                backend: h.session.backend,
+                cwd: h.cwd.clone(),
+                shared: h.shared.clone(),
+                conn: h.conn.clone(),
+                history: registry.history_handle(),
+                pid: h.pid,
+                cli: None,
+            };
+            spawn_prompt(ctx, sid, text.to_string());
+        }
+        None => sh.queued.push(text.to_string()),
+    }
+    Ok(())
+}
+
+/// `session/cancel` the running turn. Any pending permission is answered
+/// `cancelled`, as the spec requires.
+pub fn cancel(registry: &AgentRegistry, id: AgentSessionId) -> AppResult<()> {
+    let h = handle(registry, id)?;
+    let mut sh = h.shared.lock();
+    let Some(sid) = sh.view.session_id.clone() else {
+        sh.queued.clear();
+        return Ok(());
+    };
+    h.conn.notify("session/cancel", json!({ "sessionId": sid }));
+    let now = now_millis();
+    let cancelled = || RequestPermissionResponse::new(RequestPermissionOutcome::Cancelled);
+    if let Some(p) = sh.view.pending.as_ref().map(|p| p.request.id.clone()) {
+        if let Some((rpc_id, ev)) = sh.view.resolve_permission(&p, None, now) {
+            h.conn.respond(rpc_id, cancelled());
+            sh.emit(ev);
+        }
+    }
+    // Queued requests were never shown; answer them without surfacing.
+    for (rpc_id, _) in std::mem::take(&mut sh.waiting) {
+        h.conn.respond(rpc_id, cancelled());
+    }
+    Ok(())
+}
+
+/// Switch the session's permission mode (`session/set_mode`). The result
+/// streams back as a `Modes` event (or an `Error`).
+pub fn set_mode(registry: &AgentRegistry, id: AgentSessionId, mode_id: &str) -> AppResult<()> {
+    let h = handle(registry, id)?;
+    let (sid, conn, shared) = {
+        let sh = h.shared.lock();
+        let sid = sh
+            .view
+            .session_id
+            .clone()
+            .ok_or_else(|| AppError::Unknown("The agent is still starting.".into()))?;
+        let offered = sh
+            .view
+            .modes
+            .as_ref()
+            .is_some_and(|m| m.available.iter().any(|x| x.id == mode_id));
+        if !offered {
+            return Err(AppError::Unknown(format!("This agent has no mode `{mode_id}`.")));
+        }
+        (sid, h.conn.clone(), h.shared.clone())
+    };
+    let mode_id = mode_id.to_string();
+    tauri::async_runtime::spawn(async move {
+        let res = conn
+            .request("session/set_mode", json!({ "sessionId": sid, "modeId": mode_id }))
+            .await;
+        let mut sh = shared.lock();
+        match res {
+            Ok(_) => {
+                if let Some(ev) = sh.view.mode_changed(&mode_id) {
+                    sh.emit(ev);
+                }
+            }
+            Err(e) => sh.emit(AcpEvent::Error {
+                message: format!("Couldn't switch mode: {e}"),
+            }),
+        }
+    });
+    Ok(())
+}
+
+/// Answer the pending permission request `request_id` with `option_id`.
+pub fn respond_permission(
+    registry: &AgentRegistry,
+    id: AgentSessionId,
+    request_id: &str,
+    option_id: &str,
+) -> AppResult<()> {
+    let h = handle(registry, id)?;
+    let mut sh = h.shared.lock();
+    let Some((rpc_id, ev)) = sh
+        .view
+        .resolve_permission(request_id, Some(option_id), now_millis())
+    else {
+        return Err(AppError::Unknown(
+            "This agent is no longer waiting on that permission request.".into(),
+        ));
+    };
+    h.conn.respond(
+        rpc_id,
+        RequestPermissionResponse::new(RequestPermissionOutcome::Selected(
+            SelectedPermissionOutcome::new(option_id.to_string()),
+        )),
+    );
+    sh.emit(ev);
+    sh.promote_waiting();
+    Ok(())
+}
+
+/// The board's allow/deny: picks the matching once-option.
+pub fn respond_permission_bool(
+    registry: &AgentRegistry,
+    id: AgentSessionId,
+    allow: bool,
+) -> AppResult<()> {
+    let (request_id, option_id) = {
+        let h = handle(registry, id)?;
+        let sh = h.shared.lock();
+        let p = sh.view.pending.as_ref().ok_or_else(|| {
+            AppError::Unknown("This agent is no longer waiting on a permission request.".into())
+        })?;
+        let opt = sh.view.option_for(allow).ok_or_else(|| {
+            AppError::Unknown("That permission request has no matching option.".into())
+        })?;
+        (p.request.id.clone(), opt)
+    };
+    respond_permission(registry, id, &request_id, &option_id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::view::AcpToolCall;
+    use super::*;
+
+    fn tool(id: &str, status: &str) -> AcpEvent {
+        AcpEvent::Tool {
+            tool: AcpToolCall {
+                id: id.into(),
+                title: "t".into(),
+                kind: "execute".into(),
+                status: status.into(),
+                name: None,
+                locations: vec![],
+                content: vec![],
+                raw_input: None,
+            },
+        }
+    }
+
+    #[test]
+    fn log_coalesces_chunks_and_tool_updates() {
+        let mut log = Vec::new();
+        push_log(&mut log, AcpEvent::UserMessage { text: "hi".into() });
+        push_log(&mut log, AcpEvent::AgentText { text: "a".into() });
+        push_log(&mut log, AcpEvent::AgentText { text: "b".into() });
+        push_log(&mut log, tool("t1", "pending"));
+        push_log(&mut log, AcpEvent::AgentText { text: "c".into() });
+        push_log(&mut log, tool("t1", "completed"));
+        push_log(&mut log, AcpEvent::Thought { text: "x".into() });
+        push_log(&mut log, AcpEvent::Thought { text: "y".into() });
+        assert_eq!(
+            log,
+            vec![
+                AcpEvent::UserMessage { text: "hi".into() },
+                AcpEvent::AgentText { text: "ab".into() },
+                // Replaced in place: replay shows the final state where the
+                // call first appeared.
+                tool("t1", "completed"),
+                AcpEvent::AgentText { text: "c".into() },
+                AcpEvent::Thought { text: "xy".into() },
+            ]
+        );
+    }
+
+    /// Talks to a real adapter: `ACP_SMOKE_CMD="npx -y
+    /// @agentclientprotocol/claude-agent-acp" cargo test acp_smoke --
+    /// --ignored --nocapture`. Checks framing and the handshake; the prompt
+    /// needs the agent to be signed in, and prints whatever comes back.
+    #[tokio::test]
+    #[ignore]
+    async fn acp_smoke() {
+        let cmd = std::env::var("ACP_SMOKE_CMD").expect("set ACP_SMOKE_CMD");
+        let argv = crate::mcp::split_command(&cmd);
+        let cwd = std::env::temp_dir();
+        let mut child = tokio::process::Command::new(&argv[0])
+            .args(&argv[1..])
+            .current_dir(&cwd)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let (conn, mut incoming) =
+            RpcConn::start(child.stdout.take().unwrap(), child.stdin.take().unwrap());
+        let init = conn
+            .request(
+                "initialize",
+                json!({ "protocolVersion": 1, "clientCapabilities": { "fs": {}, "terminal": false } }),
+            )
+            .await
+            .unwrap();
+        println!("agent: {}", init["agentInfo"]);
+        let new = conn
+            .request("session/new", json!({ "cwd": cwd, "mcpServers": [] }))
+            .await
+            .unwrap();
+        let sid = new["sessionId"].as_str().unwrap().to_string();
+        println!("session: {sid}");
+        let c = conn.clone();
+        let s2 = sid.clone();
+        let prompt = tokio::spawn(async move {
+            c.request(
+                "session/prompt",
+                json!({ "sessionId": s2, "prompt": [{ "type": "text", "text": "Reply with just: ok" }] }),
+            )
+            .await
+        });
+        let mut view = AcpView::new(0);
+        view.prompt_started("Reply with just: ok", 0);
+        let drain = async {
+            while let Some(m) = incoming.recv().await {
+                if let Incoming::Notification { method, mut params } = m {
+                    if method == "session/update" {
+                        let raw = params.get_mut("update").map(Value::take).unwrap();
+                        match serde_json::from_value::<SessionUpdate>(raw.clone()) {
+                            Ok(u) => {
+                                if let Some(ev) = view.apply_update(u, 1) {
+                                    println!("event: {ev:?}");
+                                }
+                            }
+                            Err(_) => println!("unparsed update: {}", raw["sessionUpdate"]),
+                        }
+                    }
+                }
+            }
+        };
+        tokio::select! {
+            r = prompt => println!("prompt result: {r:?}"),
+            _ = drain => {},
+            _ = tokio::time::sleep(std::time::Duration::from_secs(90)) => println!("timed out"),
+        }
+    }
+
+    #[test]
+    fn permission_responses_match_the_wire_format() {
+        let selected = RequestPermissionResponse::new(RequestPermissionOutcome::Selected(
+            SelectedPermissionOutcome::new("allow".to_string()),
+        ));
+        assert_eq!(
+            serde_json::to_value(selected).unwrap(),
+            json!({ "outcome": { "outcome": "selected", "optionId": "allow" } })
+        );
+        let cancelled = RequestPermissionResponse::new(RequestPermissionOutcome::Cancelled);
+        assert_eq!(
+            serde_json::to_value(cancelled).unwrap(),
+            json!({ "outcome": { "outcome": "cancelled" } })
+        );
+    }
+
+    #[test]
+    fn log_is_bounded() {
+        let mut log = Vec::new();
+        for i in 0..LOG_MAX + 5 {
+            push_log(&mut log, AcpEvent::UserMessage { text: i.to_string() });
+        }
+        assert!(log.len() <= LOG_MAX);
+        assert_eq!(log.last(), Some(&AcpEvent::UserMessage { text: (LOG_MAX + 4).to_string() }));
+    }
+}

@@ -5,7 +5,7 @@ use tauri::ipc::Channel;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::agent::{
-    self, AgentActivity, AgentBackendKind, AgentEvent, AgentOverview, AgentSession,
+    self, AgentActivity, AgentBackendKind, AgentEvent, AgentOverview, AgentSession, AgentTransport,
     WorktreeActivity,
 };
 use crate::diff::{self, DiffMode, DiffSet};
@@ -951,7 +951,13 @@ pub async fn forge_job_log(
 /// `prompt` is submitted as the agent's first message (e.g. an issue when
 /// creating a worktree from one) on backends that take a positional prompt;
 /// others start without it.
+///
+/// `transport: "acp"` launches through the backend's ACP adapter instead of
+/// a PTY; `argv` then overrides the adapter command (else `[agent.acp]`, else
+/// the managed install — see `agent::acp::adapter`), and `resume` isn't
+/// supported yet.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn launch_agent(
     app: AppHandle,
     worktree_id: WorktreeId,
@@ -959,6 +965,7 @@ pub async fn launch_agent(
     argv: Option<Vec<String>>,
     prompt: Option<String>,
     resume: Option<String>,
+    transport: Option<AgentTransport>,
     cols: u16,
     rows: u16,
     channel: Channel<AgentEvent>,
@@ -969,6 +976,40 @@ pub async fn launch_agent(
         .get(&worktree_id)
         .ok_or_else(|| AppError::Unknown(format!("unknown worktree: {worktree_id}")))?
         .clone();
+    if transport == Some(AgentTransport::Acp) {
+        if resume.is_some() {
+            return Err(AppError::Unknown(
+                "Resuming a conversation over ACP isn't supported yet — resume it in a terminal tab."
+                    .into(),
+            ));
+        }
+        // May `npm install` the pinned adapter first (once per version).
+        let argv = match argv.filter(|v| !v.is_empty()) {
+            Some(v) => v,
+            None => agent::acp::adapter::resolve(&app, backend).await?,
+        };
+        // Drive the user's own `claude` rather than the SDK's bundled copy.
+        let mut env = Vec::new();
+        if backend == AgentBackendKind::ClaudeCode {
+            if let Some(exe) = agent::acp::adapter::claude_executable(&app).await {
+                env.push((
+                    agent::acp::adapter::CLAUDE_EXECUTABLE_ENV.to_string(),
+                    exe.to_string_lossy().into_owned(),
+                ));
+            }
+        }
+        return agent::acp::launch(
+            &app,
+            &state.agents,
+            worktree_id,
+            wt.path,
+            backend,
+            argv,
+            env,
+            prompt,
+            Some(channel),
+        );
+    }
     agent::supervisor::launch(
         &app,
         &state.agents,
@@ -1062,6 +1103,51 @@ pub async fn list_agent_overview(
         },
         |wt| diffs.get(&wt).map(|d| d.stats),
     ))
+}
+
+/// Submit `text` as the agent's next prompt, whatever its transport: a
+/// bracketed paste + Enter into a PTY agent, `session/prompt` for ACP.
+#[tauri::command]
+pub async fn agent_submit_prompt(
+    agent_id: AgentSessionId,
+    text: String,
+    state: State<'_, AppState>,
+) -> AppResult<()> {
+    agent::supervisor::submit_prompt(&state.agents, agent_id, &text)
+}
+
+/// Cancel an ACP agent's running turn (`session/cancel`).
+#[tauri::command]
+pub async fn acp_cancel(agent_id: AgentSessionId, state: State<'_, AppState>) -> AppResult<()> {
+    agent::acp::cancel(&state.agents, agent_id)
+}
+
+/// Switch an ACP agent's permission mode (Manual, Accept edits, Plan, …).
+#[tauri::command]
+pub async fn acp_set_mode(
+    agent_id: AgentSessionId,
+    mode_id: String,
+    state: State<'_, AppState>,
+) -> AppResult<()> {
+    agent::acp::set_mode(&state.agents, agent_id, &mode_id)
+}
+
+/// Answer an ACP agent's permission request with one of its options.
+#[tauri::command]
+pub async fn acp_respond_permission(
+    agent_id: AgentSessionId,
+    request_id: String,
+    option_id: String,
+    state: State<'_, AppState>,
+) -> AppResult<()> {
+    agent::acp::respond_permission(&state.agents, agent_id, &request_id, &option_id)
+}
+
+/// What an ACP launch runs per backend (override, managed install, or
+/// native), for the launch menu.
+#[tauri::command]
+pub async fn acp_adapters_get(app: AppHandle) -> AppResult<Vec<agent::acp::adapter::AcpAdapterInfo>> {
+    agent::acp::adapter::info(&app).await
 }
 
 /// Allow or deny the permission dialog a Claude agent is blocked on.
@@ -1742,6 +1828,7 @@ pub async fn agent_profile_save(
     let profile = crate::user_config::AgentProfile {
         name: profile.name.trim().to_string(),
         command: profile.command.trim().to_string(),
+        transport: profile.transport.filter(|t| !t.is_pty()),
         ..profile
     };
     if profile.name.is_empty() || profile.command.is_empty() {

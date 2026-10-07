@@ -116,6 +116,39 @@ pub fn inject(
     if matches!(backend, AgentBackendKind::Codex) {
         return None;
     }
+    let (url, token) = http_server(app, agent_id, worktree_id)?;
+    let server = json!({
+        "type": "http",
+        "url": url,
+        "headers": { "Authorization": format!("Bearer {token}") },
+    });
+    match backend {
+        AgentBackendKind::ClaudeCode => Some(Injection::ClaudeConfig(
+            json!({ "mcpServers": { SERVER_NAME: server } }).to_string(),
+        )),
+        AgentBackendKind::Kiro => match kiro::install(app, agent_id, server) {
+            Ok(dir) => Some(Injection::KiroHome(dir)),
+            Err(e) => {
+                tracing::warn!(?e, %worktree_id, "kiro mcp: failed to build shadow home");
+                if let Some(state) = app.try_state::<AppState>() {
+                    state.mcp.revoke(&token);
+                }
+                None
+            }
+        },
+        AgentBackendKind::Codex => None,
+    }
+}
+
+/// Mint a token for `agent_id` and return the server's `(url, token)` —
+/// the transport-neutral part of `inject`, also used by ACP launches, which
+/// pass the server in `session/new` (see `agent::acp`). `None` if the server
+/// never came up.
+pub fn http_server(
+    app: &AppHandle,
+    agent_id: AgentSessionId,
+    worktree_id: WorktreeId,
+) -> Option<(String, String)> {
     let state = app.try_state::<AppState>()?;
     let mcp = &state.mcp;
     let port = mcp.port()?;
@@ -127,25 +160,7 @@ pub fn inject(
         CallerScope::Worktree(worktree_id)
     };
     let token = mcp.mint(McpCaller { agent_id, scope });
-    let server = json!({
-        "type": "http",
-        "url": format!("http://127.0.0.1:{port}/mcp"),
-        "headers": { "Authorization": format!("Bearer {token}") },
-    });
-    match backend {
-        AgentBackendKind::ClaudeCode => Some(Injection::ClaudeConfig(
-            json!({ "mcpServers": { SERVER_NAME: server } }).to_string(),
-        )),
-        AgentBackendKind::Kiro => match kiro::install(app, agent_id, server) {
-            Ok(dir) => Some(Injection::KiroHome(dir)),
-            Err(e) => {
-                tracing::warn!(?e, %worktree_id, "kiro mcp: failed to build shadow home");
-                mcp.revoke(&token);
-                None
-            }
-        },
-        AgentBackendKind::Codex => None,
-    }
+    Some((format!("http://127.0.0.1:{port}/mcp"), token))
 }
 
 fn random_token() -> String {

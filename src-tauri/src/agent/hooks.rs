@@ -57,9 +57,9 @@ const HOOKED_EVENTS: &[(&str, bool)] = &[
 
 /// Caps on strings copied out of payloads. The board clamps visually;
 /// these just stop a pasted log or a huge heredoc from riding every poll.
-const TASK_MAX: usize = 200;
-const TOOL_MAX: usize = 300;
-const MESSAGE_MAX: usize = 2000;
+pub(crate) const TASK_MAX: usize = 200;
+pub(crate) const TOOL_MAX: usize = 300;
+pub(crate) const MESSAGE_MAX: usize = 2000;
 
 /// Hook-derived state for one agent session.
 #[derive(Debug, Clone)]
@@ -308,14 +308,14 @@ fn relative_to(path: &str, cwd: &str) -> String {
         .unwrap_or_else(|_| path.to_string())
 }
 
-fn first_line(s: &str, max: usize) -> Option<String> {
+pub(crate) fn first_line(s: &str, max: usize) -> Option<String> {
     s.lines()
         .map(str::trim)
         .find(|l| !l.is_empty())
         .map(|l| truncate(l, max))
 }
 
-fn truncate(s: &str, max: usize) -> String {
+pub(crate) fn truncate(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         return s.to_string();
     }

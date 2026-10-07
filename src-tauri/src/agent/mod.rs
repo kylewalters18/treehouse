@@ -1,3 +1,4 @@
+pub mod acp;
 pub mod history;
 pub mod hooks;
 pub mod kiro_history;
@@ -28,6 +29,23 @@ impl AgentBackendKind {
     }
 }
 
+/// How treehouse talks to an agent: a TUI in a PTY (the default), or
+/// structured JSON-RPC over stdio via the Agent Client Protocol (`agent::acp`).
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, TS, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub enum AgentTransport {
+    #[default]
+    Pty,
+    Acp,
+}
+
+impl AgentTransport {
+    pub fn is_pty(&self) -> bool {
+        matches!(self, AgentTransport::Pty)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 #[ts(export)]
@@ -54,6 +72,11 @@ pub struct AgentSession {
     /// Launched with `--resume` to continue a saved conversation.
     #[serde(default)]
     pub resumed: bool,
+    /// PTY sessions stream terminal bytes; ACP sessions stream `AcpEvent`s
+    /// and take prompts through `agent_submit_prompt`. For ACP, `argv` is
+    /// the adapter command and `cols`/`rows` are 0.
+    #[serde(default)]
+    pub transport: AgentTransport,
 }
 
 /// One named agent (sub-agent profile / context) the user can pre-select
@@ -71,8 +94,13 @@ pub struct BackendAgent {
 #[serde(tag = "kind", rename_all = "camelCase")]
 #[ts(export)]
 pub enum AgentEvent {
+    /// PTY output.
     Data { bytes: Vec<u8> },
     Status { status: AgentStatus },
+    /// One live ACP transcript event.
+    Acp { event: acp::AcpEvent },
+    /// The ACP event log, replayed in one message on attach.
+    AcpBatch { events: Vec<acp::AcpEvent> },
 }
 
 /// Coarse activity classification: Claude Code hook events when present,
