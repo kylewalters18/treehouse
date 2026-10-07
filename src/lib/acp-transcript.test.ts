@@ -31,8 +31,8 @@ function fold(events: AcpEvent[]) {
 describe("applyAcpEvent", () => {
   it("merges text chunks and upserts tool calls in place", () => {
     const t = fold([
-      { kind: "ready", sessionId: "s1", agentName: "Claude Agent", mcpAttached: true, cli: "/u/bin/claude" },
-      { kind: "userMessage", text: "run tests" },
+      { kind: "ready", sessionId: "s1", agentName: "Claude Agent", mcpAttached: true, cli: "/u/bin/claude", acceptsImages: true },
+      { kind: "userMessage", text: "run tests", attachments: ["@src/lib.rs"] },
       { kind: "agentText", text: "On " },
       { kind: "agentText", text: "it." },
       { kind: "tool", tool: tool("pending") },
@@ -43,6 +43,7 @@ describe("applyAcpEvent", () => {
     expect(t.ready?.sessionId).toBe("s1");
     expect(t.ready?.cli).toBe("/u/bin/claude");
     expect(t.items.map((i) => i.kind)).toEqual(["user", "agent", "tool", "agent", "turnEnd"]);
+    expect(t.items[0]).toEqual({ kind: "user", text: "run tests", attachments: ["@src/lib.rs"] });
     expect(t.items[1]).toEqual({ kind: "agent", text: "On it." });
     expect(t.items[2]).toEqual({ kind: "tool", tool: tool("completed") });
     expect(t.turns).toBe(0);
@@ -60,7 +61,7 @@ describe("applyAcpEvent", () => {
       ],
     };
     const t = fold([
-      { kind: "userMessage", text: "clean" },
+      { kind: "userMessage", text: "clean", attachments: [] },
       { kind: "permission", request },
     ]);
     expect(t.pendingPermission).toBe("7");
@@ -99,10 +100,35 @@ describe("applyAcpEvent", () => {
     expect(t.modes?.current).toBe("plan");
   });
 
+  it("replays loaded history without starting turns", () => {
+    const t = fold([
+      { kind: "userText", text: "What does " },
+      { kind: "userText", text: "lib.rs do?" },
+      { kind: "agentText", text: "It wires the builder." },
+      { kind: "userText", text: "Thanks" },
+    ]);
+    expect(t.items).toEqual([
+      { kind: "user", text: "What does lib.rs do?", attachments: [] },
+      { kind: "agent", text: "It wires the builder." },
+      { kind: "user", text: "Thanks", attachments: [] },
+    ]);
+    expect(t.turns).toBe(0);
+  });
+
+  it("keeps the latest commands and usage", () => {
+    const t = fold([
+      { kind: "commands", commands: [{ name: "compact", description: "Compact", hint: null }] },
+      { kind: "usage", usage: { used: 1, size: 10, cost: null, currency: null } },
+      { kind: "usage", usage: { used: 5, size: 10, cost: 0.1, currency: "USD" } },
+    ]);
+    expect(t.commands.map((c) => c.name)).toEqual(["compact"]);
+    expect(t.usage?.used).toBe(5);
+  });
+
   it("counts queued turns", () => {
     const t = fold([
-      { kind: "userMessage", text: "one" },
-      { kind: "userMessage", text: "two" },
+      { kind: "userMessage", text: "one", attachments: [] },
+      { kind: "userMessage", text: "two", attachments: [] },
       { kind: "turnEnded", stopReason: "end_turn" },
     ]);
     expect(t.turns).toBe(1);

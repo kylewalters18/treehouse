@@ -498,7 +498,7 @@ function AgentTabs({
 
   /// Reopen a saved conversation in a new tab, or switch to the tab that
   /// already has it.
-  function resumeSession(entry: AgentHistoryEntry) {
+  function resumeSession(entry: AgentHistoryEntry, transport: AgentTransport = "pty") {
     setHistoryOpen(false);
     if (entry.liveAgentId) {
       const open = tabsRef.current.find(
@@ -510,7 +510,9 @@ function AgentTabs({
       }
     }
     const { backend } = entry;
-    const argv = commandArgv(agentCommands[backend]);
+    // ACP resumes through the backend's adapter (argv undefined → Rust
+    // resolves it); a terminal resume runs the configured CLI.
+    const argv = transport === "acp" ? undefined : commandArgv(agentCommands[backend]);
     const next: Tab = {
       localId: crypto.randomUUID(),
       mode: {
@@ -520,10 +522,10 @@ function AgentTabs({
         resume: entry.sessionId,
       },
       backend,
-      // History resumes in a terminal: an ACP Claude session persists the
-      // same transcript, so `claude --resume` picks it up there.
-      transport: "pty",
-      label: nextLabel(tabLabelBase(backend, argv, profilesRef.current)),
+      // Either transport can reopen either's conversations: the ACP
+      // adapter and the CLI share Claude's transcript files.
+      transport,
+      label: nextLabel(tabLabelBase(backend, argv, profilesRef.current, transport)),
       resumed: true,
     };
     setTabs((prev) => [...prev, next]);
@@ -602,7 +604,7 @@ function AgentTabs({
             label: "Undo",
             run: () => {
               if (mounted.current)
-                resumeRef.current({ ...saved, liveAgentId: null });
+                resumeRef.current({ ...saved, liveAgentId: null }, closing?.transport);
             },
           },
         });
@@ -780,6 +782,7 @@ function AgentTabs({
           worktreeName={worktreeName}
           entries={history}
           onResume={resumeSession}
+          onResumeAcp={(e) => resumeSession(e, "acp")}
           onForget={forgetSession}
           onClose={() => setHistoryOpen(false)}
         />
@@ -817,6 +820,7 @@ function AgentTabs({
                 <AgentHistoryList
                   entries={history.slice(0, 3)}
                   onResume={resumeSession}
+                  onResumeAcp={(e) => resumeSession(e, "acp")}
                 />
               </div>
             )}

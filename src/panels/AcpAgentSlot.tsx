@@ -1,11 +1,13 @@
 import { memo, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
-import { ChevronRight, Square } from "lucide-react";
+import { ChevronRight } from "lucide-react";
 
-import { acpCancel, acpRespondPermission, acpSetMode, agentSubmitPrompt } from "@/ipc/client";
+import { acpCancel, acpRespondPermission, acpSendPrompt, acpSetMode } from "@/ipc/client";
 import type {
+  AcpAttachment,
   AcpPermissionRequest,
   AcpPlanEntry,
   AcpToolCall,
+  AcpUsage,
   AgentSessionId,
   WorktreeId,
 } from "@/ipc/types";
@@ -16,6 +18,8 @@ import { asMessage } from "@/lib/errors";
 import { commandOf, diffText, stopReasonLabel, type AcpItem } from "@/lib/acp-transcript";
 import { useToastsStore } from "@/stores/toasts";
 import { createAcpLeafState, type AcpLeafState } from "./acp-leaf-state";
+import { AcpPromptBox } from "./AcpPromptBox";
+import { formatTokens } from "@/lib/acp-prompt";
 import type { AgentLeafMode } from "./agent-leaf-state";
 
 /// Slot view for one ACP agent tab: the structured counterpart of
@@ -63,26 +67,24 @@ export function AcpAgentSlot({
     if (el && stickToBottom.current) el.scrollTop = el.scrollHeight;
   });
 
-  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const [focusNonce, setFocusNonce] = useState(0);
   useEffect(() => {
-    if (visible) inputRef.current?.focus();
+    if (visible) setFocusNonce((n) => n + 1);
   }, [visible]);
-  const [draft, setDraft] = useState("");
 
   function reportError(title: string, e: unknown) {
     useToastsStore.getState().push({ kind: "error", title, body: asMessage(e) });
   }
 
-  async function send() {
-    const text = draft.trim();
-    if (!text || !state.sessionId || state.exited) return;
-    setDraft("");
+  async function send(text: string, attachments: AcpAttachment[]): Promise<boolean> {
+    if (!state.sessionId || state.exited) return false;
     stickToBottom.current = true;
     try {
-      await agentSubmitPrompt(state.sessionId, text);
+      await acpSendPrompt(state.sessionId, text, attachments);
+      return true;
     } catch (e) {
-      setDraft(text);
       reportError("Couldn't send prompt", e);
+      return false;
     }
   }
 
@@ -125,6 +127,7 @@ export function AcpAgentSlot({
         <span className={cn("ml-auto shrink-0", t.pendingPermission && "text-amber-400")}>
           {status}
         </span>
+        {t.usage && <UsageMeter usage={t.usage} />}
         {t.modes && (
           <select
             value={t.modes.current}
@@ -190,49 +193,17 @@ export function AcpAgentSlot({
 
       {t.plan.length > 0 && <PlanList entries={t.plan} />}
 
-      <div className="shrink-0 border-t border-neutral-800 p-2">
-        <div className="flex items-end gap-1.5 rounded-md border border-neutral-800 bg-neutral-900 p-1.5 focus-within:border-blue-500">
-          <textarea
-            ref={inputRef}
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-                e.preventDefault();
-                void send();
-              } else if (e.key === "Escape" && running) {
-                e.preventDefault();
-                void cancel();
-              }
-            }}
-            rows={Math.min(8, Math.max(1, draft.split("\n").length))}
-            disabled={state.exited || !!state.error}
-            placeholder={
-              state.exited ? "Agent exited" : running ? "Queue a follow-up…" : "Message the agent…"
-            }
-            spellCheck={false}
-            className="min-w-0 flex-1 resize-none bg-transparent px-1 py-0.5 text-[12.5px] text-neutral-200 placeholder:text-neutral-600 focus:outline-none disabled:opacity-50"
-          />
-          {running && (
-            <button
-              onClick={() => void cancel()}
-              title="Cancel the running turn (Esc)"
-              className="flex h-6 shrink-0 items-center gap-1 rounded border border-neutral-700 px-2 text-[11px] text-neutral-300 hover:bg-neutral-800"
-            >
-              <Square size={9} fill="currentColor" />
-              Cancel
-            </button>
-          )}
-          <button
-            onClick={() => void send()}
-            disabled={!draft.trim() || !state.sessionId || state.exited}
-            className="h-6 shrink-0 rounded bg-blue-600 px-2 text-[11px] font-medium text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            Send
-          </button>
-        </div>
-        <div className="px-1 pt-1 text-[10px] text-neutral-600">⏎ send · ⇧⏎ newline · Esc cancel</div>
-      </div>
+      <AcpPromptBox
+        worktreeId={worktreeId}
+        commands={t.commands}
+        canSend={!!state.sessionId}
+        disabled={state.exited || !!state.error}
+        running={running}
+        imagesAllowed={t.ready?.acceptsImages ?? true}
+        onSend={send}
+        onCancel={() => void cancel()}
+        focusNonce={focusNonce}
+      />
     </div>
   );
 }
@@ -249,8 +220,24 @@ const Row = memo(function Row({
   switch (item.kind) {
     case "user":
       return (
-        <div className="self-end whitespace-pre-wrap rounded-md bg-neutral-800 px-2.5 py-1.5 text-neutral-100 max-w-[90%]">
-          {item.text}
+        <div className="flex max-w-[90%] flex-col items-end gap-1 self-end">
+          {item.text && (
+            <div className="whitespace-pre-wrap rounded-md bg-neutral-800 px-2.5 py-1.5 text-neutral-100">
+              {item.text}
+            </div>
+          )}
+          {item.attachments.length > 0 && (
+            <div className="flex flex-wrap justify-end gap-1">
+              {item.attachments.map((a, i) => (
+                <span
+                  key={i}
+                  className="rounded border border-neutral-700 px-1 font-mono text-[10.5px] text-neutral-400"
+                >
+                  {a}
+                </span>
+              ))}
+            </div>
+          )}
         </div>
       );
     case "agent":
@@ -269,6 +256,32 @@ const Row = memo(function Row({
       return <ErrorRow message={item.message} />;
   }
 });
+
+/// Context-window fill, with tokens (and cost, when known) on hover.
+function UsageMeter({ usage }: { usage: AcpUsage }) {
+  const pct = usage.size > 0 ? Math.min(100, Math.round((usage.used / usage.size) * 100)) : 0;
+  const cost =
+    usage.cost != null
+      ? ` · ${usage.currency === "USD" || !usage.currency ? "$" : `${usage.currency} `}${usage.cost.toFixed(2)}`
+      : "";
+  return (
+    <span
+      className="flex shrink-0 items-center gap-1 tabular-nums"
+      title={`Context: ${formatTokens(usage.used)} / ${formatTokens(usage.size)} tokens${cost}`}
+    >
+      <span className="h-1.5 w-10 overflow-hidden rounded-full bg-neutral-800">
+        <span
+          className={cn(
+            "block h-full rounded-full",
+            pct >= 90 ? "bg-red-500" : pct >= 70 ? "bg-amber-500" : "bg-neutral-400",
+          )}
+          style={{ width: `${pct}%` }}
+        />
+      </span>
+      {pct}%
+    </span>
+  );
+}
 
 function ErrorRow({ message }: { message: string }) {
   return (

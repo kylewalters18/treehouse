@@ -111,7 +111,7 @@ export function createAcpLeafState(
           0,
           onEvent,
           mode.argv,
-          undefined,
+          mode.resume,
           mode.prompt,
           "acp",
         );

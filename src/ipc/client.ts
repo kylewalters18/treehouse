@@ -9,6 +9,7 @@ import type {
   AgentSession,
   AgentTransport,
   AcpAdapterInfo,
+  AcpAttachment,
   AgentHistoryEntry,
   AgentSessionId,
   AppFileContent,
@@ -569,6 +570,15 @@ export function agentRespondPermission(
 /// PTY agent, `session/prompt` for an ACP agent.
 export function agentSubmitPrompt(agentId: AgentSessionId, text: string): Promise<void> {
   return invoke<void>("agent_submit_prompt", { agentId, text });
+}
+
+/// Send an ACP agent a prompt with `@file` mentions / pasted images.
+export function acpSendPrompt(
+  agentId: AgentSessionId,
+  text: string,
+  attachments: AcpAttachment[],
+): Promise<void> {
+  return invoke<void>("acp_send_prompt", { agentId, text, attachments });
 }
 
 /// Cancel an ACP agent's running turn.

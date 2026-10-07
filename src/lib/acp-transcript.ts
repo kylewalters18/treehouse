@@ -1,6 +1,8 @@
 import type {
+  AcpCommand,
   AcpEvent,
   AcpModes,
+  AcpUsage,
   AcpPermissionRequest,
   AcpPlanEntry,
   AcpToolCall,
@@ -8,7 +10,9 @@ import type {
 
 /// One row of an ACP agent's transcript, as the pane renders it.
 export type AcpItem =
-  | { kind: "user"; text: string }
+  /// `attachments` labels files/images sent with it; empty for replayed
+  /// history.
+  | { kind: "user"; text: string; attachments: string[] }
   | { kind: "agent"; text: string }
   | { kind: "thought"; text: string }
   | { kind: "tool"; tool: AcpToolCall }
@@ -32,6 +36,7 @@ export type AcpTranscript = {
     mcpAttached: boolean;
     /// Claude CLI the adapter drives; null = its bundled copy.
     cli: string | null;
+    acceptsImages: boolean;
   } | null;
   /// Prompts sent whose turn hasn't ended (the adapter may queue several).
   turns: number;
@@ -39,6 +44,9 @@ export type AcpTranscript = {
   pendingPermission: string | null;
   /// Permission modes the agent offers, and the current one.
   modes: AcpModes | null;
+  /// Slash commands for prompt autocomplete.
+  commands: AcpCommand[];
+  usage: AcpUsage | null;
 };
 
 export function emptyTranscript(): AcpTranscript {
@@ -50,6 +58,8 @@ export function emptyTranscript(): AcpTranscript {
     turns: 0,
     pendingPermission: null,
     modes: null,
+    commands: [],
+    usage: null,
   };
 }
 
@@ -65,11 +75,26 @@ export function applyAcpEvent(t: AcpTranscript, ev: AcpEvent): void {
         agentName: ev.agentName,
         mcpAttached: ev.mcpAttached,
         cli: ev.cli,
+        acceptsImages: ev.acceptsImages,
       };
       break;
     case "userMessage":
       t.turns += 1;
-      t.items.push({ kind: "user", text: ev.text });
+      t.items.push({ kind: "user", text: ev.text, attachments: ev.attachments });
+      break;
+    case "userText":
+      // Replayed history (`session/load`): no turn of its own.
+      if (last?.kind === "user") {
+        t.items[t.items.length - 1] = { ...last, text: last.text + ev.text };
+      } else {
+        t.items.push({ kind: "user", text: ev.text, attachments: [] });
+      }
+      break;
+    case "commands":
+      t.commands = ev.commands;
+      break;
+    case "usage":
+      t.usage = ev.usage;
       break;
     case "agentText":
       if (last?.kind === "agent") {

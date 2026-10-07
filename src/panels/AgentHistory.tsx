@@ -9,10 +9,13 @@ import { formatWhen } from "@/lib/time";
 export function AgentHistoryList({
   entries,
   onResume,
+  onResumeAcp,
   onForget,
 }: {
   entries: AgentHistoryEntry[];
   onResume: (entry: AgentHistoryEntry) => void;
+  /// Reopen a Claude conversation in an ACP tab instead of a terminal.
+  onResumeAcp?: (entry: AgentHistoryEntry) => void;
   /// Omitted in the empty-state card, which only resumes.
   onForget?: (entry: AgentHistoryEntry) => void;
 }) {
@@ -46,6 +49,18 @@ export function AgentHistoryList({
                   open
                 </span>
               )}
+              {onResumeAcp && !open && e.backend === "claudeCode" && (
+                <button
+                  onClick={(ev) => {
+                    ev.stopPropagation();
+                    onResumeAcp(e);
+                  }}
+                  title="Resume in an ACP tab (structured transcript) instead of a terminal"
+                  className="rounded border border-neutral-700 px-1 text-[10px] text-neutral-400 opacity-0 transition hover:border-blue-500 hover:text-blue-300 group-hover:opacity-100"
+                >
+                  ACP
+                </button>
+              )}
               <span>{formatWhen(e.lastActiveAt)}</span>
               {onForget && (
                 <button
@@ -74,12 +89,14 @@ export function AgentHistoryMenu({
   worktreeName,
   entries,
   onResume,
+  onResumeAcp,
   onForget,
   onClose,
 }: {
   worktreeName: string;
   entries: AgentHistoryEntry[];
   onResume: (entry: AgentHistoryEntry) => void;
+  onResumeAcp?: (entry: AgentHistoryEntry) => void;
   onForget: (entry: AgentHistoryEntry) => void;
   onClose: () => void;
 }) {
@@ -114,7 +131,12 @@ export function AgentHistoryMenu({
       </div>
       {entries.length > 0 ? (
         <div className="max-h-80 overflow-y-auto">
-          <AgentHistoryList entries={entries} onResume={onResume} onForget={onForget} />
+          <AgentHistoryList
+            entries={entries}
+            onResume={onResume}
+            onResumeAcp={onResumeAcp}
+            onForget={onForget}
+          />
         </div>
       ) : (
         <div className="border-t border-neutral-800/60 px-2.5 py-2 text-[11px] text-neutral-500">
