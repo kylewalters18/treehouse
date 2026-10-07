@@ -8,12 +8,12 @@ use serde_json::{json, Value};
 use tauri::{AppHandle, Manager};
 
 use crate::agent::supervisor;
-use crate::forge::{workflow, IssueStart};
+use crate::forge::{workflow, Forge, ForgeThread, IssueStart};
 use crate::ipc::commands::{finish_create, resolve_forge};
 use crate::state::AppState;
 use crate::storage;
 use crate::util::ids::WorkspaceId;
-use crate::worktree::{self, CreateOptions};
+use crate::worktree::{self, git_ops, CreateOptions, Worktree};
 
 use super::{split_command, CallerScope, McpCaller};
 
@@ -28,6 +28,10 @@ pub fn list(scope: CallerScope) -> Value {
             create_issue_schema(scope),
             create_worktree_schema(scope),
             create_pr_schema(),
+            get_linked_issue_schema(),
+            get_pr_threads_schema(),
+            get_ci_status_schema(),
+            get_ci_log_schema(),
         ]),
         // A planner has a repo but no worktree, so nothing to open a PR from.
         CallerScope::Planner(_) => {
@@ -103,6 +107,59 @@ fn create_pr_schema() -> Value {
     })
 }
 
+fn get_linked_issue_schema() -> Value {
+    json!({
+        "name": "get_linked_issue",
+        "description": "Read the issue THIS worktree is linked to (title, state, description, labels, \
+            URL) — e.g. to recover the task after a resume. Errors when no issue is linked.",
+        "inputSchema": { "type": "object", "properties": {} }
+    })
+}
+
+fn get_pr_threads_schema() -> Value {
+    json!({
+        "name": "get_pr_threads",
+        "description": "Read the review threads and comments on THIS worktree's open pull/merge \
+            request: who said what, and the file/line for inline comments. Resolved threads are \
+            left out unless include_resolved is true. Read-only — make the changes, commit, and \
+            push; you can't reply to or resolve threads.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "include_resolved": {
+                    "type": "boolean",
+                    "description": "Also return resolved threads. Default false."
+                }
+            }
+        }
+    })
+}
+
+fn get_ci_status_schema() -> Value {
+    json!({
+        "name": "get_ci_status",
+        "description": "The latest CI pipeline for THIS worktree's branch: its status, the commit it \
+            ran on (and whether that is your local HEAD), and each job's id, name, stage, and \
+            status. Pass a failed job's id to get_ci_log to see why. CI only runs on pushed commits.",
+        "inputSchema": { "type": "object", "properties": {} }
+    })
+}
+
+fn get_ci_log_schema() -> Value {
+    json!({
+        "name": "get_ci_log",
+        "description": "The log of one CI job (an id from get_ci_status), as plain text. Long logs are \
+            cut to their last ~16KB, where failures usually are.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "job_id": { "type": "integer", "description": "Job id from get_ci_status." }
+            },
+            "required": ["job_id"]
+        }
+    })
+}
+
 fn create_worktree_schema(scope: CallerScope) -> Value {
     let scratch = scope == CallerScope::Scratch;
     let (what, base_hint) = match scope {
@@ -173,6 +230,10 @@ pub async fn call(app: &AppHandle, caller: McpCaller, params: &Value) -> Value {
         "create_worktree" => create_worktree(app, caller, &args).await,
         "create_issue" => create_issue(app, caller, &args).await,
         "create_pr" => create_pr(app, caller, &args).await,
+        "get_linked_issue" => get_linked_issue(app, caller).await,
+        "get_pr_threads" => get_pr_threads(app, caller, &args).await,
+        "get_ci_status" => get_ci_status(app, caller).await,
+        "get_ci_log" => get_ci_log(app, caller, &args).await,
         "list_repos" if caller.scope == CallerScope::Scratch => Ok(list_repos(app)),
         other => Err(format!("unknown tool: {other}")),
     };
@@ -411,6 +472,224 @@ async fn create_pr(app: &AppHandle, caller: McpCaller, args: &Value) -> Result<V
     Ok(json!({ "number": mr.number, "url": mr.url, "draft": mr.draft }))
 }
 
+/// The calling agent's own worktree, for tools that act on "this worktree".
+fn own_worktree(app: &AppHandle, caller: McpCaller, tool: &str) -> Result<Worktree, String> {
+    let CallerScope::Worktree(id) = caller.scope else {
+        return Err(format!(
+            "{tool} reads the calling worktree's state; this agent has none"
+        ));
+    };
+    app.state::<AppState>()
+        .worktrees
+        .get(&id)
+        .map(|e| e.value().clone())
+        .ok_or_else(|| "the calling worktree no longer exists".into())
+}
+
+async fn own_forge(app: &AppHandle, wt: &Worktree) -> Result<Forge, String> {
+    let state = app.state::<AppState>();
+    resolve_forge(wt.workspace_id, &state)
+        .await
+        .map(|(forge, _)| forge)
+        .map_err(|e| e.to_string())
+}
+
+async fn get_linked_issue(app: &AppHandle, caller: McpCaller) -> Result<Value, String> {
+    let wt = own_worktree(app, caller, "get_linked_issue")?;
+    let n = workflow::linked_issue(app, &wt.path)
+        .await
+        .ok_or_else(|| format!("{} isn't linked to an issue", wt.branch))?;
+    let issue = own_forge(app, &wt)
+        .await?
+        .get_issue(n)
+        .await
+        .map_err(|e| format!("couldn't read #{n}: {e}"))?;
+    Ok(json!({
+        "number": issue.number,
+        "title": issue.title,
+        "state": issue.state,
+        "body": issue.body,
+        "labels": issue.labels,
+        "assignees": issue.assignees,
+        "url": issue.url,
+    }))
+}
+
+async fn get_pr_threads(app: &AppHandle, caller: McpCaller, args: &Value) -> Result<Value, String> {
+    let include_resolved = args
+        .get("include_resolved")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let wt = own_worktree(app, caller, "get_pr_threads")?;
+    let forge = own_forge(app, &wt).await?;
+    let mr = forge
+        .find_mr_for_branch(&wt.branch)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("{} has no open pull/merge request", wt.branch))?;
+    let threads = forge
+        .list_threads(mr.number)
+        .await
+        .map_err(|e| e.to_string())?;
+    let total = threads.len();
+    let threads: Vec<Value> = threads
+        .into_iter()
+        .filter(|t| include_resolved || !t.resolved)
+        .map(thread_json)
+        .collect();
+    Ok(json!({
+        "pr": { "number": mr.number, "title": mr.title, "url": mr.url, "mergeStatus": mr.merge_status },
+        "threads": threads,
+        "hiddenResolved": total - threads.len(),
+    }))
+}
+
+/// A thread for an agent: where it's anchored (from its first note) and the
+/// conversation, without the forge's ids for individual notes.
+fn thread_json(t: ForgeThread) -> Value {
+    let anchor = t.notes.first().and_then(|n| n.position.as_ref()).map(|p| {
+        match (&p.new_path, p.new_line) {
+            (Some(path), Some(line)) => json!({ "file": path, "line": line }),
+            _ => json!({
+                "file": p.old_path.as_ref().or(p.new_path.as_ref()),
+                "line": p.old_line,
+                "side": "old",
+            }),
+        }
+    });
+    let notes: Vec<Value> = t
+        .notes
+        .iter()
+        .map(|n| json!({ "author": n.author, "body": n.body, "createdAt": n.created_at }))
+        .collect();
+    json!({
+        "id": t.id,
+        "resolved": t.resolved,
+        "inline": anchor,
+        "notes": notes,
+    })
+}
+
+async fn get_ci_status(app: &AppHandle, caller: McpCaller) -> Result<Value, String> {
+    let wt = own_worktree(app, caller, "get_ci_status")?;
+    let forge = own_forge(app, &wt).await?;
+    let pipelines = forge
+        .list_pipelines(&wt.branch)
+        .await
+        .map_err(|e| e.to_string())?;
+    let Some(p) = pipelines.into_iter().next() else {
+        return Ok(json!({
+            "branch": wt.branch,
+            "pipeline": null,
+            "note": "no CI runs for this branch — it may not be pushed yet, or CI isn't set up",
+        }));
+    };
+    let jobs: Vec<Value> = forge
+        .pipeline_jobs(p.id)
+        .await
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .filter(|j| !j.retried)
+        .map(|j| json!({ "id": j.id, "name": j.name, "stage": j.stage, "status": j.status }))
+        .collect();
+    let head = git_ops::rev_parse(&wt.path, "HEAD").await.ok();
+    let is_head = head.as_deref() == Some(p.sha.as_str());
+    Ok(json!({
+        "branch": wt.branch,
+        "pipeline": {
+            "status": p.status,
+            "sha": p.sha,
+            "isLocalHead": is_head,
+            "url": p.web_url,
+            "createdAt": p.created_at,
+        },
+        "jobs": jobs,
+        "note": (!is_head).then_some(
+            "this pipeline ran on an older commit than your HEAD — push, or wait for the new run"
+        ),
+    }))
+}
+
+async fn get_ci_log(app: &AppHandle, caller: McpCaller, args: &Value) -> Result<Value, String> {
+    let job_id = args
+        .get("job_id")
+        .and_then(Value::as_u64)
+        .ok_or("`job_id` is required — take it from get_ci_status")?;
+    let wt = own_worktree(app, caller, "get_ci_log")?;
+    let log = own_forge(app, &wt)
+        .await?
+        .job_log(job_id)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(json!({ "jobId": job_id, "log": plain_log(&log) }))
+}
+
+/// Drop terminal noise from a CI trace: ANSI escapes, GitLab's
+/// `section_start:…`/`section_end:…` markers, and carriage returns. Mirrors
+/// the renderer's `stripAnsi` (src/lib/ansi.ts).
+fn plain_log(raw: &str) -> String {
+    // Sections first: the `\r` after a marker is what ends its name.
+    let raw = raw
+        .lines()
+        .map(strip_sections)
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut out = String::with_capacity(raw.len());
+    let mut chars = raw.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\x1b' => {
+                if chars.peek() == Some(&'[') {
+                    chars.next();
+                    // CSI: parameters up to and including the final letter.
+                    for c in chars.by_ref() {
+                        if c.is_ascii_alphabetic() {
+                            break;
+                        }
+                    }
+                }
+            }
+            '\r' => {}
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// Remove every `section_(start|end):<ts>:<name>` marker from a line.
+fn strip_sections(line: &str) -> String {
+    let mut rest = line;
+    let mut out = String::new();
+    while let Some(i) = rest.find("section_") {
+        out.push_str(&rest[..i]);
+        let tail = &rest[i..];
+        let marker = ["section_start:", "section_end:"]
+            .iter()
+            .find(|m| tail.starts_with(**m));
+        let Some(m) = marker else {
+            out.push_str("section_");
+            rest = &tail["section_".len()..];
+            continue;
+        };
+        let after = &tail[m.len()..];
+        let ts_end = after
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(after.len());
+        if ts_end == 0 || !after[ts_end..].starts_with(':') {
+            out.push_str(m);
+            rest = after;
+            continue;
+        }
+        let name = &after[ts_end + 1..];
+        let name_end = name
+            .find(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-')))
+            .unwrap_or(name.len());
+        rest = &name[name_end..];
+    }
+    out.push_str(rest);
+    out
+}
+
 /// An open workspace as the scratch agent sees it.
 struct Repo {
     id: WorkspaceId,
@@ -554,7 +833,15 @@ mod tests {
         let tools = list(CallerScope::Worktree(crate::util::ids::WorktreeId::new()));
         assert_eq!(
             names(&tools),
-            ["create_issue", "create_worktree", "create_pr"]
+            [
+                "create_issue",
+                "create_worktree",
+                "create_pr",
+                "get_linked_issue",
+                "get_pr_threads",
+                "get_ci_status",
+                "get_ci_log",
+            ]
         );
         for t in tools.as_array().unwrap() {
             assert!(
@@ -564,5 +851,51 @@ mod tests {
             );
         }
         assert!(tools[1]["inputSchema"]["properties"].get("issue").is_some());
+    }
+
+    #[test]
+    fn plain_log_strips_ansi_sections_and_cr() {
+        let raw =
+            "section_start:1700000000:build_script\r\x1b[0K\x1b[32;1m$ cargo test\x1b[0;m\r\n\
+                   progress 50%\rprogress 100%\n\
+                   section_end:1700000001:build_script\r\x1b[0Kdone section_x\n";
+        assert_eq!(
+            plain_log(raw),
+            "$ cargo test\nprogress 50%progress 100%\ndone section_x"
+        );
+    }
+
+    #[test]
+    fn thread_json_anchors_on_first_note() {
+        use crate::forge::{ForgeNote, ForgePosition};
+        let note = |pos: Option<ForgePosition>| ForgeNote {
+            id: 1,
+            author: "rev".into(),
+            body: "nit".into(),
+            position: pos,
+            created_at: "t".into(),
+        };
+        let t = ForgeThread {
+            id: "d1".into(),
+            notes: vec![note(Some(ForgePosition {
+                new_path: None,
+                new_line: None,
+                old_path: Some("a.rs".into()),
+                old_line: Some(4),
+            }))],
+            resolvable: true,
+            resolved: false,
+        };
+        assert_eq!(
+            thread_json(t)["inline"],
+            json!({ "file": "a.rs", "line": 4, "side": "old" })
+        );
+        let general = ForgeThread {
+            id: "c1".into(),
+            notes: vec![note(None)],
+            resolvable: false,
+            resolved: false,
+        };
+        assert_eq!(thread_json(general)["inline"], Value::Null);
     }
 }

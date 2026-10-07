@@ -27,6 +27,8 @@ For issue work: create_issue files an issue on the repo's GitLab/GitHub project;
 create_worktree with `issue` starts a worktree + agent on an existing one; create_pr opens a \
 pull/merge request for your own worktree once your work is committed. To get PRs for \
 worktrees you start, tell their agents in `prompt` to commit and call create_pr when done.
+Once your PR is open, get_pr_threads reads reviewer feedback and get_ci_status / get_ci_log \
+show why CI failed; get_linked_issue re-reads the issue you're working on.
 
 Whenever you need a new git worktree, ALWAYS use create_worktree. NEVER run \
 `git worktree add` (in any form) and never use Claude Code's built-in worktree features \
