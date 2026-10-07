@@ -28,6 +28,7 @@ use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
+use std::time::Duration;
 
 use agent_client_protocol_schema::v1::{
     RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
@@ -69,6 +70,11 @@ struct AcpShared {
     status: AgentStatus,
     /// Prompts (content blocks) sent before the session was up.
     queued: Vec<Vec<Value>>,
+    /// `session/prompt` requests awaiting their response.
+    in_flight: u32,
+    /// Prompts that interrupt the running turn: held until the cancelled
+    /// turn settles (see `send_prompt`), so the cancel can't swallow them.
+    redirects: Vec<Vec<Value>>,
     /// Permission requests behind the one in `view.pending` (parallel
     /// subagents can ask at once); promoted in order.
     waiting: VecDeque<(Value, RequestPermissionRequest)>,
@@ -350,6 +356,8 @@ pub fn launch(
         channel,
         status: AgentStatus::Running,
         queued: Vec::new(),
+        in_flight: 0,
+        redirects: Vec::new(),
         waiting: VecDeque::new(),
         stderr_tail: VecDeque::new(),
         killed: false,
@@ -636,14 +644,16 @@ async fn handle_incoming(ctx: Ctx, mut incoming: tokio::sync::mpsc::UnboundedRec
 }
 
 fn spawn_prompt(ctx: Ctx, sid: String, blocks: Vec<Value>) {
+    ctx.shared.lock().in_flight += 1;
     tauri::async_runtime::spawn(async move {
         let res = ctx
             .conn
             .request("session/prompt", json!({ "sessionId": sid, "prompt": blocks }))
             .await;
-        let turn = {
+        let (turn, redirects) = {
             let mut sh = ctx.shared.lock();
             let now = now_millis();
+            sh.in_flight = sh.in_flight.saturating_sub(1);
             match res {
                 Ok(v) => {
                     let stop = v.get("stopReason").and_then(Value::as_str).unwrap_or("end_turn");
@@ -663,15 +673,26 @@ fn spawn_prompt(ctx: Ctx, sid: String, blocks: Vec<Value>) {
                     sh.emit(ev);
                 }
             }
+            let redirects = if sh.in_flight == 0 {
+                std::mem::take(&mut sh.redirects)
+            } else {
+                Vec::new()
+            };
             (
-                sh.view.first_prompt.clone(),
-                LastTurn {
-                    ai_title: sh.view.title.clone(),
-                    prompt: sh.view.task.clone(),
-                    message: sh.view.last_message.clone(),
-                },
+                (
+                    sh.view.first_prompt.clone(),
+                    LastTurn {
+                        ai_title: sh.view.title.clone(),
+                        prompt: sh.view.task.clone(),
+                        message: sh.view.last_message.clone(),
+                    },
+                ),
+                redirects,
             )
         };
+        for blocks in redirects {
+            spawn_prompt(ctx.clone(), sid.clone(), blocks);
+        }
         // Claude's adapter persists the conversation under the same id the
         // CLI uses, so it lands in history and resumes in a PTY tab.
         if matches!(ctx.backend, AgentBackendKind::ClaudeCode) {
@@ -718,13 +739,20 @@ pub fn attach(
     Ok(s)
 }
 
+/// How long an interrupting prompt waits for the cancelled turn to settle
+/// before it's sent anyway.
+const REDIRECT_TIMEOUT: Duration = Duration::from_secs(8);
+
 /// Send a user prompt (`session/prompt`) with any attachments; queued if
-/// the handshake is still running.
+/// the handshake is still running. Sent mid-turn it queues behind the
+/// running turn in the agent — unless `interrupt`, which cancels the turn
+/// and sends this once it has stopped.
 pub fn send_prompt(
     registry: &AgentRegistry,
     id: AgentSessionId,
     text: &str,
     attachments: &[AcpAttachment],
+    interrupt: bool,
 ) -> AppResult<()> {
     if text.trim().is_empty() && attachments.is_empty() {
         return Ok(());
@@ -739,34 +767,62 @@ pub fn send_prompt(
     let ev = sh.view.prompt_started(text.trim(), labels, now_millis());
     sh.emit(ev);
     match sh.view.session_id.clone() {
+        Some(_) if interrupt && sh.in_flight > 0 => {
+            sh.redirects.push(blocks);
+            drop(sh);
+            cancel_turn(&h);
+            // An agent that never answers the cancelled prompt mustn't
+            // strand this one.
+            let ctx = prompt_ctx(registry, &h, id);
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(REDIRECT_TIMEOUT).await;
+                let (late, sid) = {
+                    let mut sh = ctx.shared.lock();
+                    (std::mem::take(&mut sh.redirects), sh.view.session_id.clone())
+                };
+                if let Some(sid) = sid {
+                    for blocks in late {
+                        spawn_prompt(ctx.clone(), sid.clone(), blocks);
+                    }
+                }
+            });
+        }
         Some(sid) => {
             drop(sh);
-            let ctx = Ctx {
-                id,
-                backend: h.session.backend,
-                cwd: h.cwd.clone(),
-                shared: h.shared.clone(),
-                conn: h.conn.clone(),
-                history: registry.history_handle(),
-                pid: h.pid,
-                cli: None,
-                resumed_from: if h.session.resumed { Some(sid.clone()) } else { None },
-            };
-            spawn_prompt(ctx, sid, blocks);
+            spawn_prompt(prompt_ctx(registry, &h, id), sid, blocks);
         }
         None => sh.queued.push(blocks),
     }
     Ok(())
 }
 
+fn prompt_ctx(registry: &AgentRegistry, h: &AcpHandle, id: AgentSessionId) -> Ctx {
+    let sid = h.shared.lock().view.session_id.clone();
+    Ctx {
+        id,
+        backend: h.session.backend,
+        cwd: h.cwd.clone(),
+        shared: h.shared.clone(),
+        conn: h.conn.clone(),
+        history: registry.history_handle(),
+        pid: h.pid,
+        cli: None,
+        resumed_from: if h.session.resumed { sid } else { None },
+    }
+}
+
 /// `session/cancel` the running turn. Any pending permission is answered
 /// `cancelled`, as the spec requires.
 pub fn cancel(registry: &AgentRegistry, id: AgentSessionId) -> AppResult<()> {
-    let h = handle(registry, id)?;
+    cancel_turn(handle(registry, id)?.value());
+    Ok(())
+}
+
+fn cancel_turn(h: &AcpHandle) {
     let mut sh = h.shared.lock();
     let Some(sid) = sh.view.session_id.clone() else {
         sh.queued.clear();
-        return Ok(());
+        return;
     };
     h.conn.notify("session/cancel", json!({ "sessionId": sid }));
     let now = now_millis();
@@ -787,7 +843,6 @@ pub fn cancel(registry: &AgentRegistry, id: AgentSessionId) -> AppResult<()> {
     for (rpc_id, _) in std::mem::take(&mut sh.waiting) {
         h.conn.respond(rpc_id, cancelled());
     }
-    Ok(())
 }
 
 /// Switch the session's permission mode (`session/set_mode`). The result
@@ -1154,6 +1209,78 @@ mod tests {
         );
         assert_eq!(answer_summary(&json!({ "ok": true, "n": 3 })), Some("Yes, 3".into()));
         assert_eq!(answer_summary(&json!({})), None);
+    }
+
+    /// An interrupting prompt cancels the running turn and goes out only
+    /// after that turn has answered, so the cancel can't swallow it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn interrupt_waits_for_the_cancelled_turn() {
+        use tokio::io::{duplex, AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+        let (client_out, agent_in) = duplex(1 << 16);
+        let (mut agent_out, client_in) = duplex(1 << 16);
+        let (conn, _incoming) = rpc::RpcConn::start(client_in, client_out);
+        let mut lines = BufReader::new(agent_in).lines();
+        async fn read(lines: &mut tokio::io::Lines<BufReader<tokio::io::DuplexStream>>) -> Value {
+            serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap()
+        }
+
+        let registry = AgentRegistry::new();
+        let id = AgentSessionId::new();
+        let mut view = AcpView::new(0);
+        view.session_id = Some("s".into());
+        let shared = AcpShared {
+            view,
+            log: Vec::new(),
+            channel: None,
+            status: AgentStatus::Running,
+            queued: Vec::new(),
+            in_flight: 0,
+            redirects: Vec::new(),
+            waiting: VecDeque::new(),
+            stderr_tail: VecDeque::new(),
+            killed: false,
+            exited_at: None,
+        };
+        registry.acp.insert(
+            id,
+            AcpHandle {
+                session: AgentSession {
+                    id,
+                    worktree_id: WorktreeId::new(),
+                    backend: AgentBackendKind::Codex,
+                    argv: vec![],
+                    started_at: 0,
+                    cols: 0,
+                    rows: 0,
+                    status: AgentStatus::Running,
+                    resumed: false,
+                    transport: AgentTransport::Acp,
+                },
+                shared: Arc::new(Mutex::new(shared)),
+                conn,
+                pid: None,
+                cwd: std::env::temp_dir(),
+            },
+        );
+
+        send_prompt(&registry, id, "first", &[], false).unwrap();
+        let first = read(&mut lines).await;
+        assert_eq!(first["method"], "session/prompt");
+
+        send_prompt(&registry, id, "second", &[], true).unwrap();
+        let cancel = read(&mut lines).await;
+        assert_eq!(cancel["method"], "session/cancel");
+
+        // Nothing more until the first turn answers.
+        let early = tokio::time::timeout(Duration::from_millis(150), read(&mut lines)).await;
+        assert!(early.is_err(), "interrupting prompt sent before the turn settled");
+
+        let reply = json!({ "jsonrpc": "2.0", "id": first["id"], "result": { "stopReason": "cancelled" } });
+        agent_out.write_all(format!("{reply}\n").as_bytes()).await.unwrap();
+        let second = read(&mut lines).await;
+        assert_eq!(second["method"], "session/prompt");
+        assert_eq!(second["params"]["prompt"][0]["text"], "second");
     }
 
     #[test]

@@ -7,6 +7,7 @@ import {
   ChevronDown,
   FileText,
   ListChecks,
+  Pencil,
   Plus,
   Shield,
   ShieldOff,
@@ -20,7 +21,14 @@ import {
 
 import { listFiles } from "@/ipc/client";
 import type { AcpAttachment, AcpCommand, AcpUsage, WorktreeId } from "@/ipc/types";
-import { activeToken, applyCompletion, formatTokens, mentionedFiles } from "@/lib/acp-prompt";
+import {
+  activeToken,
+  applyCompletion,
+  caretOnEdgeLine,
+  formatTokens,
+  historyStep,
+  mentionedFiles,
+} from "@/lib/acp-prompt";
 import {
   currentLabel,
   planToggleTarget,
@@ -46,8 +54,10 @@ type Suggestion =
 ///
 /// In the field, `@` completes worktree files (sent as attachments), a
 /// leading `/` completes the agent's commands, and pasted images become
-/// attachments. ⏎ sends, ⇧⏎ is a newline, Esc stops a running turn (or
-/// closes the suggestion list).
+/// attachments. ⏎ sends (mid-turn: queues behind the turn), ⌘⏎ interrupts
+/// the running turn and sends, ⇧⏎ is a newline, ↑/↓ on the first/last line
+/// walk sent prompts, Esc stops a running turn (or closes the suggestion
+/// list, or leaves editing).
 export function AcpPromptBox({
   worktreeId,
   commands,
@@ -61,6 +71,8 @@ export function AcpPromptBox({
   onCancel,
   onSetting,
   focusNonce,
+  history,
+  editRequest,
 }: {
   worktreeId: WorktreeId;
   commands: AcpCommand[];
@@ -72,13 +84,18 @@ export function AcpPromptBox({
   /// The agent accepts image prompts. Unknown until the session is up;
   /// Rust refuses images if it turns out it doesn't.
   imagesAllowed: boolean;
-  /// Resolves false when sending failed (the draft is kept).
-  onSend: (text: string, attachments: AcpAttachment[]) => Promise<boolean>;
+  /// Resolves false when sending failed (the draft is kept). `interrupt`
+  /// cancels the running turn first.
+  onSend: (text: string, attachments: AcpAttachment[], interrupt: boolean) => Promise<boolean>;
   onCancel: () => void;
   /// Change a session setting through the picker's channel.
   onSetting: (picker: ComposerPicker, value: string) => void;
   /// Bumped to request focus (tab became visible).
   focusNonce: number;
+  /// Prompts sent so far, oldest first (see `promptHistory`).
+  history: string[];
+  /// Load a sent prompt to edit and resend; a new nonce loads again.
+  editRequest: { text: string; nonce: number } | null;
 }) {
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const [draft, setDraft] = useState("");
@@ -92,6 +109,12 @@ export function AcpPromptBox({
   /// Start offset of a token the user dismissed with Esc.
   const [dismissedAt, setDismissedAt] = useState<number | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  /// Position while walking `history` with ↑/↓; null = the live draft,
+  /// which `savedDraft` holds meanwhile.
+  const [historyIndex, setHistoryIndex] = useState<number | null>(null);
+  const savedDraft = useRef("");
+  /// Editing a sent prompt: sending it interrupts a running turn.
+  const [editing, setEditing] = useState(false);
   /// The mode before plan mode was toggled on, to toggle back to.
   const lastNonPlan = useRef<string | null>(null);
   const modeNow = controls.mode?.option.current;
@@ -102,6 +125,15 @@ export function AcpPromptBox({
   useEffect(() => {
     inputRef.current?.focus();
   }, [focusNonce]);
+
+  useEffect(() => {
+    if (!editRequest) return;
+    if (!editing) savedDraft.current = draft;
+    setEditing(true);
+    setHistoryIndex(null);
+    replaceDraft(editRequest.text);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editRequest?.nonce]);
 
   // A completion rewrites the draft; put the caret after the inserted text
   // in the same commit, before any further keystroke lands.
@@ -154,6 +186,26 @@ export function AcpPromptBox({
     if (el) setCaret(el.selectionStart ?? 0);
   }
 
+  /// Swap the whole draft, caret at the end.
+  function replaceDraft(text: string) {
+    pendingCaret.current = text.length;
+    setDraft(text);
+    setCaret(text.length);
+  }
+
+  function walkHistory(dir: -1 | 1) {
+    const next = historyStep(history.length, historyIndex, dir);
+    if (next === historyIndex) return;
+    if (historyIndex === null) savedDraft.current = draft;
+    setHistoryIndex(next);
+    replaceDraft(next === null ? savedDraft.current : history[next]);
+  }
+
+  function stopEditing() {
+    setEditing(false);
+    replaceDraft(savedDraft.current);
+  }
+
   function complete(s: Suggestion) {
     if (!token) return;
     const next = applyCompletion(draft, token, s.value);
@@ -175,8 +227,9 @@ export function AcpPromptBox({
 
   const empty = !draft.trim() && images.length === 0 && attached.length === 0;
 
-  async function send() {
+  async function send(interrupt = false) {
     if (!canSend || disabled || empty) return;
+    const cut = running && (interrupt || editing);
     const text = draft.trim();
     const known = draft.includes("@") ? new Set(await loadFiles()) : new Set<string>();
     const paths = [...mentionedFiles(draft, known), ...attached];
@@ -191,7 +244,9 @@ export function AcpPromptBox({
     setImages([]);
     setAttached([]);
     setNotice(null);
-    if (!(await onSend(text, attachments))) {
+    setHistoryIndex(null);
+    setEditing(false);
+    if (!(await onSend(text, attachments, cut))) {
       setDraft(sent.draft);
       setImages(sent.images);
       setAttached(sent.attached);
@@ -282,6 +337,23 @@ export function AcpPromptBox({
           disabled ? "border-neutral-800 opacity-60" : "border-neutral-800 focus-within:border-neutral-700",
         )}
       >
+        {editing && (
+          <div className="flex items-center gap-1.5 border-b border-neutral-800 px-3 py-1.5 text-[11px] text-neutral-400">
+            <Pencil size={11} className="shrink-0 text-blue-400" />
+            <span className="min-w-0 truncate">
+              Editing a sent message — sends as a new message
+              {running ? ", interrupting the current turn" : ""}
+            </span>
+            <button
+              onClick={stopEditing}
+              title="Stop editing (Esc)"
+              aria-label="Stop editing"
+              className="ml-auto flex h-4 w-4 shrink-0 items-center justify-center rounded text-neutral-500 hover:bg-neutral-800 hover:text-neutral-100"
+            >
+              <X size={10} />
+            </button>
+          </div>
+        )}
         {(images.length > 0 || attached.length > 0) && (
           <div className="flex flex-wrap gap-1.5 px-3 pt-2.5">
             {images.map((img, i) => (
@@ -315,6 +387,7 @@ export function AcpPromptBox({
           ref={inputRef}
           value={draft}
           onChange={(e) => {
+            setHistoryIndex(null);
             setDraft(e.target.value);
             setCaret(e.target.selectionStart ?? 0);
             setDismissedAt(null);
@@ -342,9 +415,31 @@ export function AcpPromptBox({
                 return;
               }
             }
+            const el = e.currentTarget;
+            const at = el.selectionStart ?? 0;
+            const collapsed = at === el.selectionEnd;
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
-              void send();
+              void send(e.metaKey || e.ctrlKey);
+            } else if (
+              e.key === "ArrowUp" &&
+              collapsed &&
+              (draft === "" || historyIndex !== null) &&
+              caretOnEdgeLine(draft, at, "first")
+            ) {
+              e.preventDefault();
+              walkHistory(-1);
+            } else if (
+              e.key === "ArrowDown" &&
+              collapsed &&
+              historyIndex !== null &&
+              caretOnEdgeLine(draft, at, "last")
+            ) {
+              e.preventDefault();
+              walkHistory(1);
+            } else if (e.key === "Escape" && editing) {
+              e.preventDefault();
+              stopEditing();
             } else if (e.key === "Escape" && running) {
               e.preventDefault();
               onCancel();
@@ -356,7 +451,7 @@ export function AcpPromptBox({
             disabled
               ? "Agent exited"
               : running
-                ? "Queue a follow-up…"
+                ? "Queue a follow-up, or ⌘⏎ to interrupt and send"
                 : "Message the agent, tag @files, or use /commands"
           }
           spellCheck={false}
@@ -411,6 +506,17 @@ export function AcpPromptBox({
           <div className="ml-auto flex items-center gap-1.5 pl-1">
             {notice && <span className="truncate text-[11px] text-amber-400">{notice}</span>}
             {usage && <ContextRing usage={usage} />}
+            {running && !empty && !editing && (
+              <button
+                onClick={() => void send(true)}
+                disabled={!canSend || disabled}
+                title="Stop the running turn and send this now (⌘⏎)"
+                className="flex h-6 shrink-0 items-center gap-1 rounded-md px-1.5 text-[11px] text-neutral-400 transition-colors hover:bg-neutral-800 hover:text-neutral-100 disabled:opacity-40"
+              >
+                Interrupt
+                <kbd className="font-mono text-[10px] text-neutral-600">⌘⏎</kbd>
+              </button>
+            )}
             {running && empty ? (
               <button
                 onClick={onCancel}
@@ -424,7 +530,13 @@ export function AcpPromptBox({
               <button
                 onClick={() => void send()}
                 disabled={empty || !canSend || disabled}
-                title={running ? "Queue this follow-up (⏎)" : "Send (⏎)"}
+                title={
+                  running && editing
+                    ? "Interrupt the turn and send (⏎)"
+                    : running
+                      ? "Queue this follow-up (⏎)"
+                      : "Send (⏎)"
+                }
                 aria-label="Send"
                 className="flex h-6 w-6 items-center justify-center rounded-full bg-blue-600 text-white transition-colors hover:bg-blue-500 disabled:cursor-not-allowed disabled:bg-neutral-800 disabled:text-neutral-600"
               >

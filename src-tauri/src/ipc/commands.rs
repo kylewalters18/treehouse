@@ -1122,9 +1122,10 @@ pub async fn acp_send_prompt(
     agent_id: AgentSessionId,
     text: String,
     attachments: Vec<agent::acp::AcpAttachment>,
+    interrupt: Option<bool>,
     state: State<'_, AppState>,
 ) -> AppResult<()> {
-    agent::acp::send_prompt(&state.agents, agent_id, &text, &attachments)
+    agent::acp::send_prompt(&state.agents, agent_id, &text, &attachments, interrupt.unwrap_or(false))
 }
 
 /// Cancel an ACP agent's running turn (`session/cancel`).

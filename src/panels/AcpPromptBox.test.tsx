@@ -33,10 +33,15 @@ const COMMANDS: AcpCommand[] = [
   { name: "review", description: "Review a PR", hint: "PR number" },
 ];
 
-function setup() {
+const HISTORY = ["first prompt", "second prompt"];
+
+function setup(
+  overrides: Partial<{ running: boolean; editRequest: { text: string; nonce: number } | null }> = {},
+) {
   const onSend = vi.fn(async () => true);
   const onSetting = vi.fn();
-  render(
+  const onCancel = vi.fn();
+  const box = (o: typeof overrides) => (
     <AcpPromptBox
       worktreeId="wt-1"
       commands={COMMANDS}
@@ -45,15 +50,18 @@ function setup() {
       onSetting={onSetting}
       canSend
       disabled={false}
-      running={false}
+      running={o.running ?? false}
       imagesAllowed
       onSend={onSend}
-      onCancel={() => {}}
+      onCancel={onCancel}
       focusNonce={0}
-    />,
+      history={HISTORY}
+      editRequest={o.editRequest ?? null}
+    />
   );
+  const { rerender } = render(box(overrides));
   const input = screen.getByRole("textbox") as HTMLTextAreaElement;
-  return { input, onSend, onSetting };
+  return { input, onSend, onSetting, onCancel, rerender: (o: typeof overrides) => rerender(box(o)) };
 }
 
 describe("AcpPromptBox", () => {
@@ -77,7 +85,7 @@ describe("AcpPromptBox", () => {
     await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
     expect(onSend).toHaveBeenCalledWith("explain @src/lib.rs and @nope", [
       { kind: "file", path: "src/lib.rs" },
-    ]);
+    ], false);
     expect(input.value).toBe("");
   });
 
@@ -116,6 +124,53 @@ describe("AcpPromptBox toolbar", () => {
     await userEvent.click(screen.getByRole("button", { name: "Attach files or images" }));
     expect(await screen.findByText("notes.md")).toBeTruthy();
     await userEvent.click(screen.getByRole("button", { name: "Send" }));
-    await waitFor(() => expect(onSend).toHaveBeenCalledWith("", [{ kind: "file", path: "/abs/notes.md" }]));
+    await waitFor(() => expect(onSend).toHaveBeenCalledWith("", [{ kind: "file", path: "/abs/notes.md" }], false));
+  });
+});
+
+describe("AcpPromptBox history, interrupt, and editing", () => {
+  it("walks sent prompts with ↑/↓ and restores the draft", async () => {
+    const { input } = setup();
+    await userEvent.click(input);
+    await userEvent.keyboard("{ArrowUp}");
+    expect(input.value).toBe("second prompt");
+    await userEvent.keyboard("{ArrowUp}");
+    expect(input.value).toBe("first prompt");
+    await userEvent.keyboard("{ArrowUp}");
+    expect(input.value).toBe("first prompt");
+    await userEvent.keyboard("{ArrowDown}{ArrowDown}");
+    expect(input.value).toBe("");
+  });
+
+  it("leaves ↑ alone when there's a draft", async () => {
+    const { input } = setup();
+    await userEvent.type(input, "draft{ArrowUp}");
+    expect(input.value).toBe("draft");
+  });
+
+  it("⏎ queues mid-turn; ⌘⏎ and the Interrupt button interrupt", async () => {
+    const { input, onSend } = setup({ running: true });
+    await userEvent.type(input, "later{Enter}");
+    await waitFor(() => expect(onSend).toHaveBeenLastCalledWith("later", [], false));
+    await userEvent.type(input, "now{Meta>}{Enter}{/Meta}");
+    await waitFor(() => expect(onSend).toHaveBeenLastCalledWith("now", [], true));
+    await userEvent.type(input, "redirect");
+    await userEvent.click(screen.getByRole("button", { name: /Interrupt/ }));
+    await waitFor(() => expect(onSend).toHaveBeenLastCalledWith("redirect", [], true));
+  });
+
+  it("edits a sent prompt: resend interrupts, Esc puts the draft back", async () => {
+    const { input, onSend, rerender } = setup({ running: true });
+    await userEvent.type(input, "half-typed");
+    rerender({ running: true, editRequest: { text: "fix the bug", nonce: 1 } });
+    expect(input.value).toBe("fix the bug");
+    expect(screen.getByText(/Editing a sent message/)).toBeTruthy();
+    await userEvent.keyboard("{Escape}");
+    expect(input.value).toBe("half-typed");
+    expect(screen.queryByText(/Editing a sent message/)).toBeNull();
+
+    rerender({ running: true, editRequest: { text: "fix the bug", nonce: 2 } });
+    await userEvent.type(input, " properly{Enter}");
+    await waitFor(() => expect(onSend).toHaveBeenLastCalledWith("fix the bug properly", [], true));
   });
 });

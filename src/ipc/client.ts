@@ -577,8 +577,11 @@ export function acpSendPrompt(
   agentId: AgentSessionId,
   text: string,
   attachments: AcpAttachment[],
+  /// Cancel the running turn and send this once it stops, rather than
+  /// queueing it behind the turn.
+  interrupt = false,
 ): Promise<void> {
-  return invoke<void>("acp_send_prompt", { agentId, text, attachments });
+  return invoke<void>("acp_send_prompt", { agentId, text, attachments, interrupt });
 }
 
 /// Cancel an ACP agent's running turn.

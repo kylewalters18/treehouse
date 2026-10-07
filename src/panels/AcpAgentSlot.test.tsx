@@ -165,3 +165,19 @@ describe("opening files from tool calls", () => {
     expect(screen.getByTitle("/elsewhere/x.rs (outside this worktree)")).toBeTruthy();
   });
 });
+
+describe("editing the last prompt", () => {
+  it("offers Edit only on the last prompt and loads it into the composer", async () => {
+    renderSlot([
+      { kind: "ready", sessionId: "s", agentName: "Claude", mcpAttached: true, cli: null, acceptsImages: true },
+      { kind: "userMessage", text: "first", attachments: [] },
+      { kind: "turnEnded", stopReason: "end_turn" } as AcpEvent,
+      { kind: "userMessage", text: "second", attachments: [] },
+    ]);
+    const edits = screen.getAllByRole("button", { name: "Edit and resend" });
+    expect(edits).toHaveLength(1);
+    await userEvent.click(edits[0]);
+    expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("second");
+    expect(screen.getByText(/Editing a sent message/)).toBeTruthy();
+  });
+});

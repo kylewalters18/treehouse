@@ -61,3 +61,31 @@ export function formatTokens(n: number): string {
   if (n >= 1_000) return `${Math.round(n / 1_000)}k`;
   return String(n);
 }
+
+/// Prompts the user has sent, oldest first, for ↑/↓ recall: non-empty,
+/// with immediate repeats collapsed.
+export function promptHistory(texts: readonly string[]): string[] {
+  const out: string[] = [];
+  for (const raw of texts) {
+    const t = raw.trim();
+    if (t && out[out.length - 1] !== t) out.push(t);
+  }
+  return out;
+}
+
+/// One step through history from `index` (null = the live draft): `-1`
+/// goes older, `1` newer. Returns the new index, null for back at the
+/// draft, or `index` unchanged at the oldest end.
+export function historyStep(length: number, index: number | null, dir: -1 | 1): number | null {
+  if (length === 0) return null;
+  if (index === null) return dir === -1 ? length - 1 : null;
+  const next = index + dir;
+  if (next < 0) return index;
+  return next >= length ? null : next;
+}
+
+/// Whether the caret is on the text's first / last line — where ↑ / ↓
+/// leave the textarea's own line movement and walk history instead.
+export function caretOnEdgeLine(text: string, caret: number, edge: "first" | "last"): boolean {
+  return edge === "first" ? !text.slice(0, caret).includes("\n") : !text.slice(caret).includes("\n");
+}

@@ -75,6 +75,7 @@ import { useToastsStore } from "@/stores/toasts";
 import { createAcpLeafState, type AcpLeafState } from "./acp-leaf-state";
 import { AcpPromptBox } from "./AcpPromptBox";
 import { composerControls, type ComposerPicker } from "@/lib/acp-composer";
+import { promptHistory } from "@/lib/acp-prompt";
 import type { AgentLeafMode } from "./agent-leaf-state";
 
 /// The worktree a transcript belongs to, for opening files it mentions.
@@ -119,6 +120,12 @@ export function AcpAgentSlot({
   const worktreeCtx = useMemo(() => ({ worktreeId, root }), [worktreeId, root]);
   const t = state.transcript;
   const running = t.turns > 0 && !state.exited;
+  const userTexts = t.items.flatMap((it) => (it.kind === "user" ? [it.text] : []));
+  const history = useMemo(() => promptHistory(userTexts), [userTexts.join("\u0000")]);
+  let lastUser = -1;
+  t.items.forEach((it, i) => {
+    if (it.kind === "user" && it.text.trim()) lastUser = i;
+  });
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
@@ -128,6 +135,11 @@ export function AcpAgentSlot({
   });
 
   const [focusNonce, setFocusNonce] = useState(0);
+  const [editRequest, setEditRequest] = useState<{ text: string; nonce: number } | null>(null);
+  const editLast = useMemo(
+    () => (text: string) => setEditRequest((prev) => ({ text, nonce: (prev?.nonce ?? 0) + 1 })),
+    [],
+  );
   useEffect(() => {
     if (visible) setFocusNonce((n) => n + 1);
   }, [visible]);
@@ -136,11 +148,11 @@ export function AcpAgentSlot({
     useToastsStore.getState().push({ kind: "error", title, body: asMessage(e) });
   }
 
-  async function send(text: string, attachments: AcpAttachment[]): Promise<boolean> {
+  async function send(text: string, attachments: AcpAttachment[], interrupt: boolean): Promise<boolean> {
     if (!state.sessionId || state.exited) return false;
     stickToBottom.current = true;
     try {
-      await acpSendPrompt(state.sessionId, text, attachments);
+      await acpSendPrompt(state.sessionId, text, attachments, interrupt);
       return true;
     } catch (e) {
       reportError("Couldn't send prompt", e);
@@ -193,6 +205,7 @@ export function AcpAgentSlot({
             : running
               ? { label: "Working", tone: "busy" }
               : { label: "Ready", tone: "ready" };
+  const canEdit = !!state.sessionId && !state.exited && !state.error;
 
   return (
     <WorktreeContext.Provider value={worktreeCtx}>
@@ -259,6 +272,7 @@ export function AcpAgentSlot({
                 pending={isPending(group.items[0], t.pendingPermission, t.pendingQuestion)}
                 onAnswer={answer}
                 onAnswerQuestion={answerQuestion}
+                onEdit={group.start === lastUser && canEdit ? editLast : undefined}
               />
             ),
           )}
@@ -280,6 +294,8 @@ export function AcpAgentSlot({
         onSend={send}
         onCancel={() => void cancel()}
         focusNonce={focusNonce}
+        history={history}
+        editRequest={editRequest}
       />
     </div>
     </WorktreeContext.Provider>
@@ -322,9 +338,12 @@ const Row = memo(function Row({
   pending,
   onAnswer,
   onAnswerQuestion,
+  onEdit,
 }: {
   item: AcpItem;
   pending: boolean;
+  /// Offered on the last sent prompt: load it into the composer to edit.
+  onEdit?: (text: string) => void;
   onAnswer: (req: AcpPermissionRequest, optionId: string) => void;
   onAnswerQuestion: (
     q: AcpQuestion,
@@ -335,10 +354,22 @@ const Row = memo(function Row({
   switch (item.kind) {
     case "user":
       return (
-        <div className="flex max-w-[85%] flex-col items-end gap-1 self-end">
+        <div className="group/user flex max-w-[85%] flex-col items-end gap-1 self-end">
           {item.text && (
-            <div className="whitespace-pre-wrap rounded-lg border border-neutral-800 bg-neutral-900 px-3 py-2 text-[13px] leading-relaxed text-neutral-100">
-              {item.text}
+            <div className="flex items-start gap-1">
+              {onEdit && (
+                <button
+                  onClick={() => onEdit(item.text)}
+                  title="Edit and resend"
+                  aria-label="Edit and resend"
+                  className="mt-1.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-neutral-500 opacity-0 transition hover:bg-neutral-800 hover:text-neutral-100 focus:opacity-100 group-hover/user:opacity-100"
+                >
+                  <Pencil size={12} />
+                </button>
+              )}
+              <div className="min-w-0 whitespace-pre-wrap rounded-lg border border-neutral-800 bg-neutral-900 px-3 py-2 text-[13px] leading-relaxed text-neutral-100">
+                {item.text}
+              </div>
             </div>
           )}
           {item.attachments.length > 0 && (
