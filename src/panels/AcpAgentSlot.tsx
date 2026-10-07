@@ -9,7 +9,32 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
-import { ArrowUpRight, ChevronRight } from "lucide-react";
+import {
+  ArrowUpRight,
+  Brain,
+  Check,
+  ChevronDown,
+  ChevronRight,
+  Circle,
+  CircleCheck,
+  CircleDot,
+  FileText,
+  Globe,
+  ListChecks,
+  Loader2,
+  MessageCircleQuestion,
+  MoveRight,
+  Paperclip,
+  Pencil,
+  Search,
+  ShieldAlert,
+  ShieldCheck,
+  ShieldX,
+  SquareTerminal,
+  Trash2,
+  Wrench,
+  type LucideIcon,
+} from "lucide-react";
 
 import {
   acpAnswerQuestion,
@@ -155,41 +180,43 @@ export function AcpAgentSlot({
     );
   }
 
-  const status = state.error
-    ? "Failed to start"
+  const status: { label: string; tone: StatusTone } = state.error
+    ? { label: "Failed to start", tone: "error" }
     : state.exited
-      ? "Exited"
+      ? { label: "Exited", tone: "idle" }
       : !t.ready
-        ? "Starting adapter…"
+        ? { label: "Starting…", tone: "busy" }
         : t.pendingPermission
-          ? "Waiting for permission"
-          : running
-            ? "Working…"
-            : "Ready";
+          ? { label: "Needs permission", tone: "attention" }
+          : t.pendingQuestion
+            ? { label: "Has a question", tone: "attention" }
+            : running
+              ? { label: "Working", tone: "busy" }
+              : { label: "Ready", tone: "ready" };
 
   return (
     <WorktreeContext.Provider value={worktreeCtx}>
-    <div className="flex h-full w-full flex-col text-[12.5px] text-neutral-300">
-      <div className="flex h-7 shrink-0 items-center gap-2 border-b border-neutral-800 px-3 text-[11px] text-neutral-500">
-        <span className="rounded border border-neutral-700 px-1 text-[10px] font-medium uppercase tracking-wide text-neutral-400">
-          ACP
+    <div className="flex h-full w-full flex-col bg-neutral-950 text-[12.5px] text-neutral-300">
+      <div className="flex h-7 shrink-0 items-center gap-2 border-b border-neutral-800 px-3 text-[11px]">
+        <span
+          className="min-w-0 truncate text-neutral-300"
+          title={[
+            "ACP transport",
+            ...(t.ready
+              ? [
+                  `Agent session ${t.ready.sessionId}`,
+                  t.ready.mcpAttached ? "treehouse MCP attached" : "No treehouse MCP",
+                  ...(t.ready.cli ? [`CLI: ${t.ready.cli}`] : []),
+                ]
+              : []),
+          ].join("\n")}
+        >
+          {t.title ?? t.ready?.agentName ?? "Agent"}
         </span>
-        <span className="truncate text-neutral-300">{t.title ?? t.ready?.agentName ?? "Agent"}</span>
-        <span className={cn("ml-auto shrink-0", t.pendingPermission && "text-amber-400")}>
-          {status}
+        <span className="ml-auto flex shrink-0 items-center gap-1.5 text-neutral-500">
+          <span className={cn("h-1.5 w-1.5 rounded-full", STATUS_TONE[status.tone])} />
+          {status.label}
         </span>
-        {t.ready && (
-          <span
-            className="shrink-0 cursor-default font-mono text-neutral-600"
-            title={[
-              `Agent session ${t.ready.sessionId}`,
-              t.ready.mcpAttached ? "treehouse MCP attached" : "no treehouse MCP",
-              ...(t.ready.cli ? [`CLI: ${t.ready.cli}`] : []),
-            ].join("\n")}
-          >
-            {t.ready.sessionId.slice(0, 8)}
-          </span>
-        )}
       </div>
 
       <div
@@ -198,31 +225,43 @@ export function AcpAgentSlot({
           const el = e.currentTarget;
           stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
         }}
-        className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-3 py-2"
+        className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden"
       >
-        {state.error && <ErrorRow message={state.error} />}
-        {t.items.length === 0 && !state.error && (
-          <div className="py-6 text-center text-xs text-neutral-600">
-            {t.ready
-              ? "Send a prompt to start."
-              : state.sessionId
-                ? "Connecting to the agent…"
-                : "Starting the agent… (a backend's first ACP launch installs its adapter, which can take a minute)"}
-          </div>
-        )}
-        <div className="flex min-w-0 flex-col gap-2">
-          {t.items.map((item, i) => (
-            <Row
-              key={i}
-              item={item}
-              pending={
-                (item.kind === "permission" && item.request.id === t.pendingPermission) ||
-                (item.kind === "question" && item.question.id === t.pendingQuestion)
-              }
-              onAnswer={answer}
-              onAnswerQuestion={answerQuestion}
-            />
-          ))}
+        <div className="mx-auto flex w-full min-w-0 max-w-3xl flex-col gap-3 px-4 py-4">
+          {state.error && <ErrorRow message={state.error} />}
+          {t.items.length === 0 && !state.error && (
+            <div className="py-10 text-center text-[11px] text-neutral-600">
+              {t.ready
+                ? "Send a prompt to start."
+                : state.sessionId
+                  ? "Connecting to the agent…"
+                  : "Starting the agent… The first ACP launch of a backend installs its adapter, which can take a minute."}
+            </div>
+          )}
+          {groupItems(t.items).map((group) =>
+            group.tools ? (
+              // Consecutive tool calls read as one list, not a stack of cards.
+              <div key={group.start} className="flex min-w-0 flex-col">
+                {group.items.map((item, j) => (
+                  <Row
+                    key={group.start + j}
+                    item={item}
+                    pending={false}
+                    onAnswer={answer}
+                    onAnswerQuestion={answerQuestion}
+                  />
+                ))}
+              </div>
+            ) : (
+              <Row
+                key={group.start}
+                item={group.items[0]}
+                pending={isPending(group.items[0], t.pendingPermission, t.pendingQuestion)}
+                onAnswer={answer}
+                onAnswerQuestion={answerQuestion}
+              />
+            ),
+          )}
         </div>
       </div>
 
@@ -247,6 +286,37 @@ export function AcpAgentSlot({
   );
 }
 
+type StatusTone = "busy" | "attention" | "ready" | "idle" | "error";
+const STATUS_TONE: Record<StatusTone, string> = {
+  busy: "bg-blue-400 animate-pulse",
+  attention: "bg-amber-400",
+  ready: "bg-emerald-400",
+  idle: "bg-neutral-600",
+  error: "bg-rose-400",
+};
+
+function isPending(item: AcpItem, permission: string | null, question: string | null): boolean {
+  return (
+    (item.kind === "permission" && item.request.id === permission) ||
+    (item.kind === "question" && item.question.id === question)
+  );
+}
+
+type ItemGroup = { start: number; tools: boolean; items: AcpItem[] };
+
+/// Runs of tool calls group together; everything else stands alone.
+/// `start` is the first item's index, a stable key as items append.
+function groupItems(items: AcpItem[]): ItemGroup[] {
+  const groups: ItemGroup[] = [];
+  items.forEach((item, i) => {
+    const last = groups[groups.length - 1];
+    const tool = item.kind === "tool";
+    if (tool && last?.tools) last.items.push(item);
+    else groups.push({ start: i, tools: tool, items: [item] });
+  });
+  return groups;
+}
+
 const Row = memo(function Row({
   item,
   pending,
@@ -265,9 +335,9 @@ const Row = memo(function Row({
   switch (item.kind) {
     case "user":
       return (
-        <div className="flex max-w-[90%] flex-col items-end gap-1 self-end">
+        <div className="flex max-w-[85%] flex-col items-end gap-1 self-end">
           {item.text && (
-            <div className="whitespace-pre-wrap rounded-md bg-neutral-800 px-2.5 py-1.5 text-neutral-100">
+            <div className="whitespace-pre-wrap rounded-lg border border-neutral-800 bg-neutral-900 px-3 py-2 text-[13px] leading-relaxed text-neutral-100">
               {item.text}
             </div>
           )}
@@ -276,9 +346,10 @@ const Row = memo(function Row({
               {item.attachments.map((a, i) => (
                 <span
                   key={i}
-                  className="rounded border border-neutral-700 px-1 font-mono text-[10.5px] text-neutral-400"
+                  className="flex h-5 max-w-[16rem] items-center gap-1 rounded-md bg-neutral-900 px-1.5 text-[10.5px] text-neutral-400"
                 >
-                  {a}
+                  <Paperclip size={10} className="shrink-0 text-neutral-500" />
+                  <span className="truncate font-mono">{a}</span>
                 </span>
               ))}
             </div>
@@ -286,18 +357,18 @@ const Row = memo(function Row({
         </div>
       );
     case "agent":
-      return <ForgeMarkdown source={item.text} className="text-[12.5px]" codeBlocks />;
+      return <ForgeMarkdown source={item.text} className="!text-[13px]" codeBlocks />;
     case "thought":
       return <Thought text={item.text} />;
     case "tool":
-      return <ToolCard tool={item.tool} />;
+      return <ToolRow tool={item.tool} />;
     case "permission":
       return <PermissionCard item={item} pending={pending} onAnswer={onAnswer} />;
     case "question":
       return <QuestionCard item={item} pending={pending} onAnswer={onAnswerQuestion} />;
     case "turnEnd": {
       const label = stopReasonLabel(item.stopReason);
-      return label ? <div className="text-[11px] italic text-neutral-500">{label}</div> : null;
+      return label ? <div className="text-[11px] text-neutral-500">{label}</div> : null;
     }
     case "error":
       return <ErrorRow message={item.message} />;
@@ -306,7 +377,7 @@ const Row = memo(function Row({
 
 function ErrorRow({ message }: { message: string }) {
   return (
-    <div className="whitespace-pre-wrap rounded border border-red-900/60 bg-red-950/40 px-2.5 py-1.5 font-mono text-[11px] text-red-300">
+    <div className="whitespace-pre-wrap rounded-md border border-rose-400/20 bg-rose-400/5 px-3 py-2 font-mono text-[11px] leading-relaxed text-rose-300">
       {message}
     </div>
   );
@@ -315,50 +386,122 @@ function ErrorRow({ message }: { message: string }) {
 function Thought({ text }: { text: string }) {
   const [open, setOpen] = useState(false);
   return (
-    <div className="text-[11.5px] text-neutral-500">
-      <button onClick={() => setOpen((o) => !o)} className="flex items-center gap-1 hover:text-neutral-300">
-        <ChevronRight size={11} className={cn("transition-transform", open && "rotate-90")} />
+    <div className="text-[11px] text-neutral-500">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className="flex items-center gap-1.5 transition-colors hover:text-neutral-300"
+      >
+        <Brain size={12} />
         Thinking
+        <ChevronRight size={11} className={cn("transition-transform", open && "rotate-90")} />
       </button>
-      {open && <div className="mt-1 whitespace-pre-wrap border-l border-neutral-800 pl-2 italic">{text}</div>}
+      {open && (
+        <div className="ml-[5px] mt-1.5 whitespace-pre-wrap border-l border-neutral-800 pl-3.5 text-[12px] leading-relaxed">
+          {text}
+        </div>
+      )}
     </div>
   );
 }
 
-const STATUS_DOT: Record<string, string> = {
-  pending: "bg-neutral-500",
-  in_progress: "bg-blue-400 animate-pulse",
-  completed: "bg-emerald-500",
-  failed: "bg-red-500",
+const KIND_ICON: Record<string, LucideIcon> = {
+  read: FileText,
+  edit: Pencil,
+  delete: Trash2,
+  move: MoveRight,
+  search: Search,
+  execute: SquareTerminal,
+  think: Brain,
+  fetch: Globe,
+  switch_mode: ListChecks,
 };
 
-function ToolCard({ tool }: { tool: AcpToolCall }) {
+/// Added / removed line counts across a tool call's diffs, or null when
+/// it has none. The agent sends whole snippets, so these count snippet
+/// lines on each side, not a minimal diff.
+function diffStats(tool: AcpToolCall): { added: number; removed: number } | null {
+  const lines = (s: string) => (s ? s.replace(/\n$/, "").split("\n").length : 0);
+  let added = 0;
+  let removed = 0;
+  let any = false;
+  for (const c of tool.content) {
+    if (c.kind !== "diff") continue;
+    any = true;
+    added += lines(c.newText);
+    removed += lines(c.oldText ?? "");
+  }
+  return any ? { added, removed } : null;
+}
+
+/// One tool call as a quiet row: kind icon (a spinner while it runs),
+/// title, edit counts. Click to expand what it did.
+function ToolRow({ tool }: { tool: AcpToolCall }) {
   const [open, setOpen] = useState(false);
   const hasBody = toolHasBody(tool);
   const target = primaryTarget(tool);
+  const stats = diffStats(tool);
+  const running = tool.status === "pending" || tool.status === "in_progress";
+  const failed = tool.status === "failed";
+  const Icon = running ? Loader2 : (KIND_ICON[tool.kind] ?? Wrench);
   return (
-    <div className="rounded border border-neutral-800 bg-neutral-900/60">
+    <div className="group/tool min-w-0">
       <button
         onClick={() => hasBody && setOpen((o) => !o)}
-        className={cn("flex w-full items-center gap-2 px-2 py-1 text-left", hasBody && "hover:bg-neutral-800/60")}
-      >
-        <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", STATUS_DOT[tool.status] ?? "bg-neutral-500")} />
-        {tool.name && <span className="shrink-0 text-[11px] text-neutral-500">{tool.name}</span>}
-        <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-neutral-300">
-          {tool.title || tool.kind}
-        </span>
-        {target && <OpenFileButton target={target} />}
-        {hasBody && (
-          <ChevronRight size={11} className={cn("shrink-0 text-neutral-500 transition-transform", open && "rotate-90")} />
+        title={tool.name ?? undefined}
+        className={cn(
+          "-mx-1.5 flex w-[calc(100%+0.75rem)] items-center gap-2 rounded-md px-1.5 py-[3px] text-left",
+          hasBody ? "hover:bg-neutral-900" : "cursor-default",
         )}
+      >
+        <Icon
+          size={12}
+          className={cn(
+            "shrink-0",
+            running ? "animate-spin text-blue-400" : failed ? "text-rose-400" : "text-neutral-500",
+          )}
+        />
+        <span
+          className={cn(
+            "min-w-0 truncate font-mono text-[11.5px]",
+            failed ? "text-neutral-500" : "text-neutral-300",
+          )}
+        >
+          {toolTitle(tool)}
+        </span>
+        {stats && (
+          <span className="shrink-0 font-mono text-[10.5px] tabular-nums">
+            <span className="text-emerald-400/80">+{stats.added}</span>{" "}
+            <span className="text-rose-400/80">−{stats.removed}</span>
+          </span>
+        )}
+        {failed && <span className="shrink-0 text-[10.5px] text-rose-400">failed</span>}
+        <span className="ml-auto flex shrink-0 items-center gap-0.5">
+          {target && <OpenFileButton target={target} />}
+          {hasBody && (
+            <ChevronRight
+              size={11}
+              className={cn(
+                "text-neutral-500 transition",
+                open ? "rotate-90" : "opacity-0 group-hover/tool:opacity-100",
+              )}
+            />
+          )}
+        </span>
       </button>
       {open && (
-        <div className="border-t border-neutral-800 px-2 py-1.5">
+        <div className="mb-2 ml-[5px] mt-1 border-l border-neutral-800 pl-3.5">
           <ToolBody tool={tool} />
         </div>
       )}
     </div>
   );
+}
+
+/// A tool's display title: the agent's (minus wrapping backticks), else
+/// its name or kind.
+function toolTitle(tool: AcpToolCall): string {
+  const t = tool.title.trim().replace(/^`([^`]*)`$/, "$1");
+  return t || tool.name || tool.kind;
 }
 
 /// A file a tool call touches, and how to find the spot in it: a line the
@@ -429,7 +572,7 @@ function OpenFileButton({ target }: { target: FileTarget }) {
           open();
         }
       }}
-      className="flex h-4 w-4 shrink-0 items-center justify-center rounded text-neutral-500 hover:bg-neutral-700 hover:text-neutral-100"
+      className="flex h-4 w-4 items-center justify-center rounded text-neutral-500 opacity-0 transition hover:bg-neutral-800 hover:text-neutral-100 focus:opacity-100 group-hover/tool:opacity-100"
     >
       <ArrowUpRight size={11} />
     </span>
@@ -443,7 +586,10 @@ function FileLink({ target }: { target: FileTarget }) {
   const label = `${rel ?? target.path}${target.line ? `:${target.line}` : ""}`;
   if (rel === null) {
     return (
-      <div className="truncate font-mono text-neutral-500" title={`${target.path} (outside this worktree)`}>
+      <div
+        className="truncate font-mono text-[11px] text-neutral-500"
+        title={`${target.path} (outside this worktree)`}
+      >
         {label}
       </div>
     );
@@ -452,7 +598,7 @@ function FileLink({ target }: { target: FileTarget }) {
     <button
       onClick={open}
       title="Open in the editor"
-      className="block max-w-full truncate text-left font-mono text-neutral-400 underline-offset-2 hover:text-blue-300 hover:underline"
+      className="block max-w-full truncate text-left font-mono text-[11px] text-blue-400 hover:underline"
     >
       {label}
     </button>
@@ -473,22 +619,22 @@ function ToolBody({ tool }: { tool: AcpToolCall }) {
   // Plans (leaving plan mode) and reasoning come as prose, not code.
   const prose = tool.kind === "switch_mode" || tool.kind === "think";
   return (
-    <div className="flex min-w-0 flex-col gap-1.5 text-[11px]">
+    <div className="flex min-w-0 flex-col gap-1.5">
       {tool.locations
         .filter((l) => !tool.content.some((c) => c.kind === "diff" && c.path === l.path))
         .map((l) => (
           <FileLink key={`${l.path}:${l.line}`} target={{ path: l.path, line: l.line }} />
         ))}
-      {command && <CodeBlock code={command} lang="bash" maxLines={BODY_MAX_LINES} />}
+      {command && <CodeBlock code={command} lang="bash" maxLines={BODY_MAX_LINES} compact />}
       {tool.content.map((c, i) =>
         c.kind === "text" ? (
           prose ? (
-            <ForgeMarkdown key={i} source={c.text} className="text-[12px]" codeBlocks />
+            <ForgeMarkdown key={i} source={c.text} codeBlocks />
           ) : (
-            <CodeBlock key={i} code={c.text} maxLines={BODY_MAX_LINES} />
+            <CodeBlock key={i} code={c.text} maxLines={BODY_MAX_LINES} compact />
           )
         ) : c.kind === "diff" ? (
-          <div key={i} className="flex flex-col gap-0.5">
+          <div key={i} className="flex min-w-0 flex-col gap-1">
             <FileLink
               target={{
                 path: c.path,
@@ -498,21 +644,107 @@ function ToolBody({ tool }: { tool: AcpToolCall }) {
               }}
             />
             {c.oldText ? (
-              <CodeBlock code={diffText(c.oldText, c.newText)} lang="diff" maxLines={BODY_MAX_LINES} />
+              <CodeBlock code={diffText(c.oldText, c.newText)} lang="diff" maxLines={BODY_MAX_LINES} compact />
             ) : (
               // A new file: its own language reads better than all-`+`.
-              <CodeBlock code={c.newText} lang={langForPath(c.path)} maxLines={BODY_MAX_LINES} />
+              <CodeBlock code={c.newText} lang={langForPath(c.path)} maxLines={BODY_MAX_LINES} compact />
             )}
           </div>
         ) : (
-          <div key={i} className="text-neutral-500">
-            [agent terminal {c.terminalId}]
+          <div key={i} className="text-[11px] text-neutral-500">
+            Agent terminal {c.terminalId}
           </div>
         ),
       )}
       {tool.content.length === 0 && !command && tool.rawInput && (
-        <CodeBlock code={tool.rawInput} lang="json" maxLines={BODY_MAX_LINES} />
+        <CodeBlock code={tool.rawInput} lang="json" maxLines={BODY_MAX_LINES} compact />
       )}
+    </div>
+  );
+}
+
+/// The card chrome shared by permission requests and questions while they
+/// wait on the user: the app's raised surface with a colored rail.
+function PendingCard({
+  rail,
+  icon: Icon,
+  iconClass,
+  heading,
+  children,
+}: {
+  rail: string;
+  icon: LucideIcon;
+  iconClass: string;
+  heading: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  // No overflow-hidden: it would break the sticky footer inside.
+  return (
+    <div className="relative min-w-0 rounded-md border border-neutral-800 bg-neutral-900 pl-3.5 pr-3 pt-2.5">
+      <span aria-hidden className={cn("absolute inset-y-0 left-0 w-[2px] rounded-l-md", rail)} />
+      <div className="mb-2 flex min-w-0 items-center gap-1.5 text-[12px] font-medium text-neutral-100">
+        <Icon size={13} className={cn("shrink-0", iconClass)} />
+        {heading}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+/// Footer for a pending card. Sticky to the transcript's bottom edge, so a
+/// long card can't push its answer out of view.
+function PendingActions({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="sticky bottom-0 -ml-3.5 -mr-3 mt-2.5 flex flex-wrap items-center gap-1.5 rounded-b-md border-t border-neutral-800 bg-neutral-900 py-2 pl-3.5 pr-3">
+      {children}
+    </div>
+  );
+}
+
+const primaryButton =
+  "flex h-6 items-center rounded-md bg-blue-600 px-2.5 text-[11px] font-medium text-white transition-colors hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-blue-600";
+const secondaryButton =
+  "flex h-6 items-center rounded-md border border-neutral-700 px-2 text-[11px] text-neutral-300 transition-colors hover:bg-neutral-800 hover:text-neutral-100";
+const ghostButton =
+  "flex h-6 items-center rounded-md px-2 text-[11px] text-neutral-400 transition-colors hover:bg-neutral-800 hover:text-neutral-100";
+
+/// An answered permission or question, folded to one quiet line like a
+/// tool row, optionally expandable.
+function ResolvedRow({
+  icon: Icon,
+  label,
+  outcome,
+  children,
+}: {
+  icon: LucideIcon;
+  label: string;
+  outcome: string;
+  children?: React.ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="group/tool min-w-0">
+      <button
+        onClick={() => children && setOpen((o) => !o)}
+        className={cn(
+          "-mx-1.5 flex w-[calc(100%+0.75rem)] items-center gap-2 rounded-md px-1.5 py-[3px] text-left text-[11.5px]",
+          children ? "hover:bg-neutral-900" : "cursor-default",
+        )}
+      >
+        <Icon size={12} className="shrink-0 text-neutral-500" />
+        <span className="min-w-0 truncate text-neutral-400">{label}</span>
+        <span className="shrink-0 text-neutral-500">{outcome}</span>
+        {children && (
+          <ChevronRight
+            size={11}
+            className={cn(
+              "ml-auto shrink-0 text-neutral-500 transition",
+              open ? "rotate-90" : "opacity-0 group-hover/tool:opacity-100",
+            )}
+          />
+        )}
+      </button>
+      {open && <div className="mb-2 ml-[5px] mt-1 border-l border-neutral-800 pl-3.5">{children}</div>}
     </div>
   );
 }
@@ -527,68 +759,51 @@ function PermissionCard({
   onAnswer: (req: AcpPermissionRequest, optionId: string) => void;
 }) {
   const { request, resolved } = item;
-  const chosen = resolved && request.options.find((o) => o.id === resolved.optionId);
-  // Pending: show what's being approved. Answered: collapse to a line.
-  const [open, setOpen] = useState(false);
-  const showBody = (pending || open) && toolHasBody(request.tool);
+  const hasBody = toolHasBody(request.tool);
+  if (!pending) {
+    const chosen = resolved && request.options.find((o) => o.id === resolved.optionId);
+    const allowed = chosen && chosen.kind.startsWith("allow");
+    return (
+      <ResolvedRow
+        icon={allowed ? ShieldCheck : ShieldX}
+        label={request.title}
+        outcome={resolved ? (chosen ? `→ ${chosen.name}` : "Cancelled") : "No longer pending"}
+      >
+        {hasBody ? <ToolBody tool={request.tool} /> : undefined}
+      </ResolvedRow>
+    );
+  }
   return (
-    <div
-      className={cn(
-        "min-w-0 rounded border px-2.5 pt-2",
-        // Opaque while pending: the sticky buttons below share this fill.
-        pending ? "border-amber-600/60 bg-[#1a120b]" : "border-neutral-800 bg-neutral-900/40 pb-2",
-      )}
+    <PendingCard
+      rail="bg-amber-400"
+      icon={ShieldAlert}
+      iconClass="text-amber-400"
+      heading={
+        <span className="min-w-0 truncate">
+          Allow {request.tool.name ? <span className="font-mono">{request.tool.name}</span> : "this action"}?
+        </span>
+      }
     >
-      <div className="mb-1.5 flex items-center gap-1.5 text-[11px] text-neutral-400">
-        Permission requested
-        {request.tool.name && <span className="text-neutral-500">· {request.tool.name}</span>}
-        {!pending && toolHasBody(request.tool) && (
+      <div className="mb-2 break-words font-mono text-[11.5px] text-neutral-300">{request.title}</div>
+      {hasBody && <ToolBody tool={request.tool} />}
+      <PendingActions>
+        {request.options.map((o) => (
           <button
-            onClick={() => setOpen((o) => !o)}
-            className="ml-auto flex items-center gap-0.5 text-neutral-500 hover:text-neutral-300"
+            key={o.id}
+            onClick={() => onAnswer(request, o.id)}
+            className={
+              o.kind === "allow_once"
+                ? primaryButton
+                : o.kind.startsWith("allow")
+                  ? secondaryButton
+                  : ghostButton
+            }
           >
-            <ChevronRight size={11} className={cn("transition-transform", open && "rotate-90")} />
-            Details
+            {o.name}
           </button>
-        )}
-      </div>
-      <div className="mb-2 font-mono text-[11.5px] text-neutral-200">{request.title}</div>
-      {showBody && (
-        <div className="mb-2 min-w-0">
-          <ToolBody tool={request.tool} />
-        </div>
-      )}
-      {pending ? (
-        // Sticky to the transcript's bottom edge, so a long card can't
-        // push the answer out of view while it's pending.
-        <div className="sticky bottom-0 -mx-2.5 flex flex-wrap gap-1.5 rounded-b border-t border-amber-900/40 bg-[#1a120b] px-2.5 pb-2 pt-1.5">
-          {request.options.map((o) => (
-            <button
-              key={o.id}
-              onClick={() => onAnswer(request, o.id)}
-              className={cn(
-                "h-6 rounded px-2 text-[11px] font-medium",
-                o.kind.startsWith("allow")
-                  ? o.kind === "allow_once"
-                    ? "bg-emerald-700 text-white hover:bg-emerald-600"
-                    : "border border-emerald-700 text-emerald-300 hover:bg-emerald-950"
-                  : "border border-neutral-700 text-neutral-300 hover:bg-neutral-800",
-              )}
-            >
-              {o.name}
-            </button>
-          ))}
-        </div>
-      ) : (
-        <div className="text-[11px] text-neutral-500">
-          {resolved
-            ? chosen
-              ? `→ ${chosen.name}`
-              : "Cancelled"
-            : "No longer pending"}
-        </div>
-      )}
-    </div>
+        ))}
+      </PendingActions>
+    </PendingCard>
   );
 }
 
@@ -607,54 +822,58 @@ function QuestionCard({
   const [values, setValues] = useState<Record<string, FormValue>>({});
   const set = (key: string, v: FormValue) => setValues((prev) => ({ ...prev, [key]: v }));
   const ready = canSubmitAnswer(question.fields, values);
-  return (
-    <div
-      className={cn(
-        "min-w-0 rounded border px-2.5 py-2",
-        pending ? "border-blue-600/60 bg-[#0d1420]" : "border-neutral-800 bg-neutral-900/40",
-      )}
-    >
-      <div className="mb-1 text-[11px] text-neutral-400">Question</div>
-      {question.message && (
-        <ForgeMarkdown source={question.message} className="mb-2 text-[12.5px] text-neutral-100" />
-      )}
-      {pending ? (
-        <>
-          <div className="flex flex-col gap-2.5">
-            {question.fields.map((f) => (
-              <FormFieldInput key={f.key} field={f} value={values[f.key]} onChange={(v) => set(f.key, v)} />
-            ))}
-          </div>
-          <div className="mt-2.5 flex gap-1.5">
-            <button
-              onClick={() => onAnswer(question, "accept", questionAnswer(question.fields, values))}
-              disabled={!ready}
-              className="h-6 rounded bg-blue-600 px-2.5 text-[11px] font-medium text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              Submit
-            </button>
-            <button
-              onClick={() => onAnswer(question, "decline")}
-              className="h-6 rounded border border-neutral-700 px-2 text-[11px] text-neutral-300 hover:bg-neutral-800"
-            >
-              Skip
-            </button>
-          </div>
-        </>
-      ) : (
-        <div className="text-[11px] text-neutral-500">
-          {resolved?.action === "accept"
+  if (!pending) {
+    return (
+      <ResolvedRow
+        icon={MessageCircleQuestion}
+        label={questionLabel(question)}
+        outcome={
+          resolved?.action === "accept"
             ? `→ ${resolved.summary ?? "Answered"}`
             : resolved?.action === "decline"
               ? "Skipped"
               : resolved
                 ? "Cancelled"
-                : "No longer pending"}
-        </div>
+                : "No longer pending"
+        }
+      />
+    );
+  }
+  return (
+    <PendingCard rail="bg-blue-400" icon={MessageCircleQuestion} iconClass="text-blue-400" heading="Question">
+      {question.message && (
+        <ForgeMarkdown source={question.message} className="mb-3 !text-[13px] text-neutral-100" />
       )}
-    </div>
+      <div className="flex flex-col gap-3.5">
+        {question.fields.map((f) => (
+          <FormFieldInput key={f.key} field={f} value={values[f.key]} onChange={(v) => set(f.key, v)} />
+        ))}
+      </div>
+      <PendingActions>
+        <button
+          onClick={() => onAnswer(question, "accept", questionAnswer(question.fields, values))}
+          disabled={!ready}
+          className={primaryButton}
+        >
+          Submit
+        </button>
+        <button onClick={() => onAnswer(question, "decline")} className={ghostButton}>
+          Skip
+        </button>
+      </PendingActions>
+    </PendingCard>
   );
 }
+
+/// One line naming an answered question: its first field's prompt (the
+/// adapter's message is often generic), else the message.
+function questionLabel(q: AcpQuestion): string {
+  const f = q.fields[0];
+  return f?.description ?? f?.title ?? (q.message || "Question");
+}
+
+const fieldInput =
+  "w-full rounded-md border border-neutral-800 bg-neutral-950 px-2 py-1.5 text-[12px] text-neutral-100 placeholder:text-neutral-600 transition-colors focus:border-blue-500/60 focus:outline-none focus:ring-1 focus:ring-blue-500/30";
 
 function FormFieldInput({
   field,
@@ -667,14 +886,16 @@ function FormFieldInput({
 }) {
   const { input } = field;
   const label = (field.title || field.description) && (
-    <div className="mb-1">
+    <div className="mb-1.5">
       {field.title && (
-        <span className="text-[10px] font-medium uppercase tracking-[0.08em] text-neutral-500">
+        <div className="text-[10.5px] font-medium uppercase tracking-[0.08em] text-neutral-500">
           {field.title}
-          {field.required && " *"}
-        </span>
+          {field.required && <span className="text-neutral-600"> · required</span>}
+        </div>
       )}
-      {field.description && <div className="text-[12px] text-neutral-300">{field.description}</div>}
+      {field.description && (
+        <div className="mt-0.5 text-[12.5px] leading-snug text-neutral-200">{field.description}</div>
+      )}
     </div>
   );
   if (input.kind === "choice") {
@@ -685,40 +906,50 @@ function FormFieldInput({
       <div>
         {label}
         <div className="flex flex-col gap-1" role={input.multi ? "group" : "radiogroup"}>
-          {input.options.map((o) => (
-            <button
-              key={o.value}
-              role={input.multi ? "checkbox" : "radio"}
-              aria-checked={isOn(o.value)}
-              onClick={() => {
-                if (!input.multi) return onChange(isOn(o.value) ? "" : o.value);
-                const cur = picked as string[];
-                onChange(isOn(o.value) ? cur.filter((x) => x !== o.value) : [...cur, o.value]);
-              }}
-              className={cn(
-                "flex items-start gap-2 rounded border px-2 py-1.5 text-left",
-                isOn(o.value)
-                  ? "border-blue-500/70 bg-blue-950/40"
-                  : "border-neutral-800 hover:border-neutral-600 hover:bg-neutral-800/50",
-              )}
-            >
-              <span
+          {input.options.map((o) => {
+            const on = isOn(o.value);
+            return (
+              <button
+                key={o.value}
+                role={input.multi ? "checkbox" : "radio"}
+                aria-checked={on}
+                onClick={() => {
+                  if (!input.multi) return onChange(on ? "" : o.value);
+                  const cur = picked as string[];
+                  onChange(on ? cur.filter((x) => x !== o.value) : [...cur, o.value]);
+                }}
                 className={cn(
-                  "mt-0.5 flex h-3 w-3 shrink-0 items-center justify-center border",
-                  input.multi ? "rounded-sm" : "rounded-full",
-                  isOn(o.value) ? "border-blue-400 bg-blue-500" : "border-neutral-600",
+                  "flex items-start gap-2.5 rounded-md border px-2.5 py-1.5 text-left transition-colors",
+                  on
+                    ? "border-blue-500/50 bg-blue-500/10"
+                    : "border-neutral-800 bg-neutral-950 hover:border-neutral-700",
                 )}
-              />
-              <span className="min-w-0">
-                <span className="block text-[12px] text-neutral-100">{o.title}</span>
-                {o.description && (
-                  <span className="block text-[11px] leading-snug text-neutral-500">{o.description}</span>
-                )}
-              </span>
-            </button>
-          ))}
+              >
+                <span
+                  className={cn(
+                    "mt-[3px] flex h-3 w-3 shrink-0 items-center justify-center border transition-colors",
+                    input.multi ? "rounded-[3px]" : "rounded-full",
+                    on ? "border-blue-400 bg-blue-500 text-white" : "border-neutral-600",
+                  )}
+                >
+                  {on &&
+                    (input.multi ? (
+                      <Check size={9} strokeWidth={3} />
+                    ) : (
+                      <span className="h-1 w-1 rounded-full bg-white" />
+                    ))}
+                </span>
+                <span className="min-w-0">
+                  <span className="block text-[12px] text-neutral-100">{o.title}</span>
+                  {o.description && (
+                    <span className="block text-[11px] leading-snug text-neutral-500">{o.description}</span>
+                  )}
+                </span>
+              </button>
+            );
+          })}
         </div>
-        {selected?.preview && <CodeBlock code={selected.preview} className="mt-1.5" maxLines={12} />}
+        {selected?.preview && <CodeBlock code={selected.preview} className="mt-1.5" maxLines={12} compact />}
       </div>
     );
   }
@@ -739,16 +970,15 @@ function FormFieldInput({
   const common = {
     value: typeof value === "string" ? value : "",
     onChange: (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => onChange(e.target.value),
-    placeholder: field.title === "Other" ? "Type your own answer (optional)" : (field.title ?? ""),
+    placeholder: field.title === "Other" ? "Or type your own answer" : (field.title ?? ""),
     spellCheck: false,
-    className:
-      "w-full rounded border border-neutral-800 bg-neutral-950 px-2 py-1 text-[12px] text-neutral-200 placeholder:text-neutral-600 focus:border-blue-500 focus:outline-none",
+    className: fieldInput,
   };
   return (
     <div>
       {field.title !== "Other" && label}
       {input.kind === "text" && input.multiline ? (
-        <textarea rows={1} {...common} className={cn(common.className, "resize-y")} />
+        <textarea rows={1} {...common} className={cn(fieldInput, "resize-y")} />
       ) : (
         <input type={input.kind === "number" ? "number" : "text"} {...common} />
       )}
@@ -756,25 +986,62 @@ function FormFieldInput({
   );
 }
 
+const PLAN_ICON: Record<string, { icon: LucideIcon; className: string }> = {
+  completed: { icon: CircleCheck, className: "text-emerald-400/80" },
+  in_progress: { icon: CircleDot, className: "text-blue-400" },
+};
+
+/// The agent's plan, docked above the composer: a one-line summary that
+/// expands to the checklist.
 function PlanList({ entries }: { entries: AcpPlanEntry[] }) {
+  const [open, setOpen] = useState(true);
+  const done = entries.filter((e) => e.status === "completed").length;
+  const current = entries.find((e) => e.status === "in_progress");
   return (
-    <div className="max-h-36 shrink-0 overflow-y-auto border-t border-neutral-800 px-3 py-1.5">
-      <div className="mb-0.5 text-[10px] font-medium uppercase tracking-[0.08em] text-neutral-500">Plan</div>
-      {entries.map((e, i) => (
-        <div key={i} className="flex items-baseline gap-1.5 text-[11.5px]">
-          <span className="shrink-0 font-mono text-neutral-500">
-            {e.status === "completed" ? "✓" : e.status === "in_progress" ? "▸" : "○"}
+    <div className="mx-auto w-full max-w-3xl shrink-0 px-3 pb-1.5">
+      <div className="rounded-md border border-neutral-800 bg-neutral-900/60">
+        <button
+          onClick={() => setOpen((o) => !o)}
+          className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11px]"
+        >
+          <ListChecks size={12} className="shrink-0 text-neutral-500" />
+          <span className="font-medium text-neutral-300">Plan</span>
+          <span className="tabular-nums text-neutral-500">
+            {done}/{entries.length}
           </span>
-          <span
-            className={cn(
-              e.status === "completed" && "text-neutral-500 line-through",
-              e.status === "in_progress" && "text-neutral-100",
-            )}
-          >
-            {e.content}
-          </span>
-        </div>
-      ))}
+          {!open && current && <span className="min-w-0 truncate text-neutral-400">{current.content}</span>}
+          <ChevronDown
+            size={12}
+            className={cn("ml-auto shrink-0 text-neutral-500 transition-transform", !open && "rotate-180")}
+          />
+        </button>
+        {open && (
+          <div className="max-h-36 overflow-y-auto px-3 pb-2">
+            {entries.map((e, i) => {
+              const { icon: Icon, className } = PLAN_ICON[e.status] ?? {
+                icon: Circle,
+                className: "text-neutral-600",
+              };
+              return (
+                <div key={i} className="flex items-start gap-2 py-[2px] text-[11.5px] leading-snug">
+                  <Icon size={12} className={cn("mt-[1px] shrink-0", className)} />
+                  <span
+                    className={cn(
+                      e.status === "completed"
+                        ? "text-neutral-500"
+                        : e.status === "in_progress"
+                          ? "text-neutral-100"
+                          : "text-neutral-400",
+                    )}
+                  >
+                    {e.content}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

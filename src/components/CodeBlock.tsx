@@ -66,25 +66,31 @@ export function langForPath(path: string): string {
 }
 
 /// Rendered height of one line in a `.shiki` block (12.5px × 1.6) and its
-/// vertical padding — for collapsing to a line count.
+/// vertical padding — for collapsing to a line count. `compact` blocks
+/// match `.code-compact` in styles.css.
 const LINE_PX = 20;
 const PAD_PX = 24;
+const COMPACT_LINE_PX = 18;
+const COMPACT_PAD_PX = 14;
 
 /// A highlighted code block with a copy button (on hover). `lang` is a
 /// fence language; unknown languages render plain. Copies `code` as-is.
 /// With `maxLines`, longer code starts collapsed behind a "Show all" toggle
 /// rather than scrolling inside its own box. Long lines scroll sideways
-/// inside the block; it never widens its container.
+/// inside the block; it never widens its container. `compact` is the
+/// denser size for tool output.
 export const CodeBlock = memo(function CodeBlock({
   code,
   lang,
   className,
   maxLines,
+  compact = false,
 }: {
   code: string;
   lang?: string;
   className?: string;
   maxLines?: number;
+  compact?: boolean;
 }) {
   const highlighter = useMarkdownHighlighter();
   const html = useMemo(
@@ -95,12 +101,19 @@ export const CodeBlock = memo(function CodeBlock({
   const collapsible = maxLines !== undefined && lineCount > maxLines + 2;
   const [expanded, setExpanded] = useState(false);
   const collapsed = collapsible && !expanded;
+  const maxHeight = compact
+    ? (maxLines ?? 0) * COMPACT_LINE_PX + COMPACT_PAD_PX
+    : (maxLines ?? 0) * LINE_PX + PAD_PX;
+  const fill = compact ? "#0F1114" : "#16191D";
   return (
-    <div className={cn("shiki-block code-block group relative min-w-0 max-w-full", className)}>
-      <div
-        className={cn(collapsed && "overflow-hidden")}
-        style={collapsed ? { maxHeight: (maxLines ?? 0) * LINE_PX + PAD_PX } : undefined}
-      >
+    <div
+      className={cn(
+        "shiki-block code-block group relative min-w-0 max-w-full",
+        compact && "code-compact",
+        className,
+      )}
+    >
+      <div className={cn(collapsed && "overflow-hidden")} style={collapsed ? { maxHeight } : undefined}>
         {html ? (
           <div dangerouslySetInnerHTML={{ __html: html }} />
         ) : (
@@ -113,9 +126,14 @@ export const CodeBlock = memo(function CodeBlock({
         <button
           onClick={() => setExpanded((e) => !e)}
           className={cn(
-            "flex w-full items-center justify-center border-t border-[#22262B] py-1 text-[11px] text-neutral-400 hover:bg-neutral-800/60 hover:text-neutral-200",
-            collapsed && "relative -mt-6 border-t-0 bg-gradient-to-b from-transparent via-[#16191D]/90 to-[#16191D] pt-5",
+            "flex w-full items-center justify-center border-t border-neutral-800 py-1 text-[11px] text-neutral-500 transition-colors hover:text-neutral-200",
+            collapsed && "relative -mt-6 border-t-0 pt-5",
           )}
+          style={
+            collapsed
+              ? { background: `linear-gradient(to bottom, transparent, ${fill}e6 40%, ${fill})` }
+              : undefined
+          }
         >
           {collapsed ? `Show all ${lineCount} lines` : "Collapse"}
         </button>
@@ -142,7 +160,7 @@ export function CopyButton({ text, className }: { text: string; className?: stri
       title={copied ? "Copied" : "Copy"}
       aria-label="Copy code"
       className={cn(
-        "absolute right-1.5 top-1.5 flex h-6 w-6 items-center justify-center rounded border border-neutral-700 bg-neutral-900/90 text-neutral-400 opacity-0 transition-opacity hover:text-neutral-100 focus:opacity-100 group-hover:opacity-100",
+        "absolute right-1 top-1 flex h-6 w-6 items-center justify-center rounded-md bg-neutral-900/90 text-neutral-500 opacity-0 transition-opacity hover:bg-neutral-800 hover:text-neutral-100 focus:opacity-100 group-hover:opacity-100",
         copied && "text-emerald-400 opacity-100",
         className,
       )}

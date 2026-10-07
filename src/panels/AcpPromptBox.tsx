@@ -230,11 +230,11 @@ export function AcpPromptBox({
   const bypass = mode?.option.current === "bypassPermissions";
 
   return (
-    <div className="relative shrink-0 px-2.5 pb-2.5 pt-1.5">
+    <div className="relative mx-auto w-full max-w-3xl shrink-0 px-3 pb-3 pt-1">
       {open && suggestions.length > 0 && (
         <div
           role="listbox"
-          className="absolute bottom-full left-2.5 right-2.5 z-20 mb-1 max-h-64 overflow-y-auto rounded-lg border border-neutral-700 bg-neutral-900 py-1 text-[11.5px] shadow-2xl"
+          className="absolute bottom-full left-3 right-3 z-20 mb-1 max-h-64 overflow-y-auto rounded-md border border-neutral-800 bg-neutral-900 py-1 text-[11.5px] shadow-xl shadow-black/40"
         >
           {suggestions.map((s, i) => (
             <div
@@ -247,8 +247,8 @@ export function AcpPromptBox({
                 complete(s);
               }}
               className={cn(
-                "mx-1 flex cursor-pointer items-baseline gap-2 rounded px-1.5 py-1",
-                i === highlight ? "bg-neutral-800 text-neutral-100" : "text-neutral-300",
+                "mx-1 flex cursor-pointer items-baseline gap-2 rounded px-2 py-1",
+                i === highlight ? "bg-neutral-800 text-neutral-100" : "text-neutral-400",
               )}
             >
               {s.kind === "file" ? (
@@ -271,15 +271,15 @@ export function AcpPromptBox({
         </div>
       )}
       {open && token?.kind === "file" && files === null && (
-        <div className="absolute bottom-full left-2.5 mb-1 rounded border border-neutral-800 bg-neutral-900 px-2 py-1 text-[11px] text-neutral-500">
+        <div className="absolute bottom-full left-3 mb-1 rounded-md border border-neutral-800 bg-neutral-900 px-2 py-1 text-[11px] text-neutral-500">
           Loading files…
         </div>
       )}
 
       <div
         className={cn(
-          "rounded-xl border bg-[#1b1c1e] transition-colors focus-within:border-neutral-500",
-          disabled ? "border-neutral-800 opacity-60" : "border-neutral-700/80",
+          "rounded-lg border bg-neutral-900 transition-colors",
+          disabled ? "border-neutral-800 opacity-60" : "border-neutral-800 focus-within:border-neutral-700",
         )}
       >
         {(images.length > 0 || attached.length > 0) && (
@@ -289,7 +289,7 @@ export function AcpPromptBox({
                 <img
                   src={img.url}
                   alt="Pasted"
-                  className="h-11 w-11 rounded-md border border-neutral-700 object-cover"
+                  className="h-11 w-11 rounded-md border border-neutral-800 object-cover"
                 />
                 <RemoveChip
                   onClick={() => setImages((prev) => prev.filter((_, j) => j !== i))}
@@ -301,7 +301,7 @@ export function AcpPromptBox({
               <span
                 key={p}
                 title={p}
-                className="group flex h-7 max-w-[14rem] items-center gap-1.5 rounded-md border border-neutral-700 bg-neutral-900 pl-2 pr-1 text-[11px] text-neutral-300"
+                className="group flex h-6 max-w-[14rem] items-center gap-1.5 rounded-md bg-neutral-800 pl-2 pr-1 text-[11px] text-neutral-300"
               >
                 <FileText size={11} className="shrink-0 text-neutral-500" />
                 <span className="truncate font-mono">{p.split("/").pop()}</span>
@@ -360,7 +360,7 @@ export function AcpPromptBox({
                 : "Message the agent, tag @files, or use /commands"
           }
           spellCheck={false}
-          className="block w-full resize-none bg-transparent px-3.5 pb-1 pt-3 text-[13px] leading-relaxed text-neutral-100 placeholder:text-neutral-500 focus:outline-none"
+          className="block w-full resize-none bg-transparent px-3 pb-1 pt-2.5 text-[13px] leading-relaxed text-neutral-100 placeholder:text-neutral-600 focus:outline-none"
         />
 
         <div className="flex items-center gap-0.5 px-1.5 pb-1.5">
@@ -409,16 +409,16 @@ export function AcpPromptBox({
           )}
 
           <div className="ml-auto flex items-center gap-1.5 pl-1">
-            {notice && <span className="truncate text-[11px] text-amber-500">{notice}</span>}
+            {notice && <span className="truncate text-[11px] text-amber-400">{notice}</span>}
             {usage && <ContextRing usage={usage} />}
             {running && empty ? (
               <button
                 onClick={onCancel}
                 title="Stop the running turn (Esc)"
                 aria-label="Stop"
-                className="flex h-7 w-7 items-center justify-center rounded-full bg-neutral-200 text-neutral-900 hover:bg-white"
+                className="flex h-6 w-6 items-center justify-center rounded-full bg-neutral-200 text-neutral-950 transition-colors hover:bg-white"
               >
-                <Square size={10} fill="currentColor" />
+                <Square size={9} fill="currentColor" />
               </button>
             ) : (
               <button
@@ -426,9 +426,9 @@ export function AcpPromptBox({
                 disabled={empty || !canSend || disabled}
                 title={running ? "Queue this follow-up (⏎)" : "Send (⏎)"}
                 aria-label="Send"
-                className="flex h-7 w-7 items-center justify-center rounded-full bg-neutral-200 text-neutral-900 hover:bg-white disabled:cursor-not-allowed disabled:bg-neutral-700 disabled:text-neutral-500"
+                className="flex h-6 w-6 items-center justify-center rounded-full bg-blue-600 text-white transition-colors hover:bg-blue-500 disabled:cursor-not-allowed disabled:bg-neutral-800 disabled:text-neutral-600"
               >
-                <ArrowUp size={14} strokeWidth={2.5} />
+                <ArrowUp size={13} strokeWidth={2.5} />
               </button>
             )}
           </div>
@@ -444,7 +444,7 @@ function RemoveChip({ onClick, className }: { onClick: () => void; className?: s
       onClick={onClick}
       title="Remove"
       className={cn(
-        "flex h-4 w-4 shrink-0 items-center justify-center rounded-full border border-neutral-700 bg-neutral-900 text-neutral-400 opacity-0 hover:text-neutral-100 group-hover:opacity-100",
+        "flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-neutral-700 text-neutral-300 opacity-0 transition-opacity hover:text-neutral-100 group-hover:opacity-100",
         className,
       )}
     >
@@ -474,13 +474,13 @@ function ToolbarButton({
       aria-pressed={active}
       disabled={disabled}
       className={cn(
-        "flex h-7 w-7 shrink-0 items-center justify-center rounded-md disabled:cursor-not-allowed disabled:opacity-40",
+        "flex h-6 w-6 shrink-0 items-center justify-center rounded-md transition-colors disabled:cursor-not-allowed disabled:opacity-40",
         active
-          ? "bg-neutral-700/70 text-amber-300"
-          : "text-neutral-400 hover:bg-neutral-800 hover:text-neutral-100",
+          ? "bg-blue-400/15 text-blue-400"
+          : "text-neutral-500 hover:bg-neutral-800 hover:text-neutral-200",
       )}
     >
-      <Icon size={15} />
+      <Icon size={13} />
     </button>
   );
 }
@@ -529,22 +529,22 @@ function Picker({
         aria-haspopup="listbox"
         aria-expanded={open}
         className={cn(
-          "flex h-7 min-w-0 items-center gap-1.5 rounded-md px-2 text-[12px] disabled:cursor-not-allowed disabled:opacity-40",
-          open ? "bg-neutral-800 text-neutral-100" : "text-neutral-300 hover:bg-neutral-800 hover:text-neutral-100",
-          tone === "warn" && "text-amber-300",
+          "flex h-6 min-w-0 items-center gap-1.5 rounded-md px-1.5 text-[11.5px] transition-colors disabled:cursor-not-allowed disabled:opacity-40",
+          open ? "bg-neutral-800 text-neutral-100" : "text-neutral-400 hover:bg-neutral-800 hover:text-neutral-100",
+          tone === "warn" && "text-amber-400",
         )}
       >
-        {Icon && <Icon size={14} className="shrink-0" />}
+        {Icon && <Icon size={13} className="shrink-0" />}
         <span className="max-w-[9rem] truncate">{currentLabel(option)}</span>
-        <ChevronDown size={12} className="shrink-0 text-neutral-500" />
+        <ChevronDown size={11} className="shrink-0 opacity-60" />
       </button>
       {open && (
         <div
           role="listbox"
           aria-label={title}
-          className="absolute bottom-full left-0 z-30 mb-1.5 w-64 overflow-hidden rounded-lg border border-neutral-700 bg-neutral-900 py-1 shadow-2xl"
+          className="absolute bottom-full left-0 z-30 mb-1.5 w-64 overflow-hidden rounded-md border border-neutral-800 bg-neutral-900 py-1 shadow-xl shadow-black/40"
         >
-          <div className="px-2.5 pb-1 pt-0.5 text-[10px] font-medium uppercase tracking-[0.08em] text-neutral-500">
+          <div className="px-3 pb-1 pt-1 text-[10.5px] font-medium uppercase tracking-[0.08em] text-neutral-500">
             {title}
           </div>
           {option.options.map((o) => (
@@ -556,11 +556,11 @@ function Picker({
                 setOpen(false);
                 if (o.value !== option.current) onPick(picker, o.value);
               }}
-              className="mx-1 flex w-[calc(100%-0.5rem)] items-start gap-2 rounded px-1.5 py-1 text-left hover:bg-neutral-800"
+              className="mx-1 flex w-[calc(100%-0.5rem)] items-start gap-2 rounded px-2 py-1 text-left hover:bg-neutral-800"
             >
               <Check
                 size={12}
-                className={cn("mt-0.5 shrink-0", o.value === option.current ? "text-neutral-200" : "invisible")}
+                className={cn("mt-0.5 shrink-0", o.value === option.current ? "text-blue-400" : "invisible")}
               />
               <span className="min-w-0">
                 <span className="block truncate text-[12px] text-neutral-100">{o.name}</span>
@@ -586,15 +586,16 @@ function ContextRing({ usage }: { usage: AcpUsage }) {
     usage.cost != null
       ? ` · ${usage.currency === "USD" || !usage.currency ? "$" : `${usage.currency} `}${usage.cost.toFixed(2)}`
       : "";
-  const color = pct >= 90 ? "#ef4444" : pct >= 70 ? "#f59e0b" : "#d4a373";
+  // neutral-400 → amber-400 → rose-400 as the window fills.
+  const color = pct >= 90 ? "#fb7185" : pct >= 70 ? "#fbbf24" : "#9AA1AA";
   return (
     <span
-      className="flex h-7 w-7 items-center justify-center"
+      className="flex h-6 w-6 items-center justify-center"
       title={`Context ${pct}% · ${formatTokens(usage.used)} / ${formatTokens(usage.size)} tokens${cost}`}
       aria-label={`Context ${pct}% used`}
     >
-      <svg width="18" height="18" viewBox="0 0 18 18" className="-rotate-90">
-        <circle cx="9" cy="9" r={r} fill="none" stroke="#3f3f46" strokeWidth="2" />
+      <svg width="16" height="16" viewBox="0 0 18 18" className="-rotate-90">
+        <circle cx="9" cy="9" r={r} fill="none" stroke="#2C3137" strokeWidth="2" />
         <circle
           cx="9"
           cy="9"
