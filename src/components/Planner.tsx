@@ -2,13 +2,18 @@
 /// brainstorming and turning decisions into issues and worktrees, running in
 /// a read-only copy of `origin/<default>` rather than the user's checkout
 /// (see `src-tauri/src/planner.rs`) — and "Global" is the repo-less scratch
-/// agent (`scratch.rs`). ⌘J opens the current repo's planner; picking
-/// another in the header sticks until you move to a different repo.
+/// agent (`scratch.rs`). Planners are tabs, each with its activity dot. ⌘J
+/// opens the current repo's planner; picking another tab sticks until you
+/// move to a different repo.
+///
+/// With no session yet the popup shows a landing view (prompt box, starters,
+/// recent conversations); a repo planner can also show its issue drawer, and
+/// flags when origin has moved past what it's reading.
 ///
 /// Hiding only detaches the xterm — every planner keeps running and its
 /// conversation is there next time. Past conversations are listed under
-/// History and resume in place (each planner's directory is stable). Esc is deliberately NOT a close key:
-/// Claude uses it.
+/// History and resume in place (each planner's directory is stable). Esc is
+/// deliberately NOT a close key: Claude uses it.
 
 import { useEffect, useReducer, useRef, useState } from "react";
 
@@ -17,13 +22,16 @@ import {
   killAgent,
   listPlannerHistory,
   plannerActivities,
+  plannerCommitsBehind,
 } from "@/ipc/client";
 import type {
   AgentActivity,
   AgentHistoryEntry,
+  ForgeIssue,
   PlannerCheckout,
   WorkspaceId,
 } from "@/ipc/types";
+import { pasteText } from "@/lib/agent";
 import { cn } from "@/lib/cn";
 import { resolvePlannerScope } from "@/lib/planner-scope";
 import {
@@ -33,16 +41,22 @@ import {
 } from "@/panels/agent-leaf-state";
 import { fitAndPin } from "@/panels/xterm-fit";
 import { AgentHistoryMenu, HistoryIcon } from "@/panels/AgentHistory";
+import { useForgeStore } from "@/stores/forge";
 import { useUiStore } from "@/stores/ui";
 import { useWorkspaceStore } from "@/stores/workspace";
 import { useWorktreesStore } from "@/stores/worktrees";
+import { PlannerIssues } from "./PlannerIssues";
+import { PlannerLanding } from "./PlannerLanding";
 
 const POLL_MS = 1500;
+/// How often an open repo planner re-checks origin for new commits.
+const BEHIND_POLL_MS = 3 * 60_000;
 const GLOBAL = "global";
 
 /// Module-level so each planner's xterm (scrollback, selection) survives the
 /// popup unmounting between opens and switching between planners — same idea
-/// as the AgentPane leaf pool. Keyed by workspace id, or `GLOBAL`.
+/// as the AgentPane leaf pool. Keyed by workspace id, or `GLOBAL`. No leaf =
+/// no session yet: the popup shows the landing view.
 const leaves = new Map<string, AgentLeafState>();
 /// What each repo planner is reading, once its session is up.
 const checkouts = new Map<string, PlannerCheckout | null>();
@@ -55,32 +69,31 @@ function keyOf(scope: WorkspaceId | null): string {
   return scope ?? GLOBAL;
 }
 
-/// The planner's leaf, created on first use. `resume` replaces it with a
-/// past conversation (Rust swaps the running session for it).
-function ensureLeaf(scope: WorkspaceId | null, resume?: string): AgentLeafState {
+/// Drop a planner's leaf (its session, if any, is the caller's business).
+function dropLeaf(key: string) {
+  const leaf = leaves.get(key);
+  leaves.delete(key);
+  checkouts.delete(key);
+  if (leaf) detachAgentLeafState(leaf);
+}
+
+/// Start (or, with `resume`, replace) the planner's session. `prompt` is a
+/// new session's first message.
+function startLeaf(
+  scope: WorkspaceId | null,
+  opts: { resume?: string; prompt?: string } = {},
+): AgentLeafState {
   const key = keyOf(scope);
+  if (opts.resume || leaves.get(key)?.exited) dropLeaf(key);
   let leaf = leaves.get(key);
-  if (leaf && resume) {
-    detachAgentLeafState(leaf);
-    leaves.delete(key);
-    checkouts.delete(key);
-    leaf = undefined;
-  }
-  if (leaf && leaf.exited) {
-    // `/exit`, a crash, or its repo was closed: start over rather than
-    // showing a tombstone.
-    detachAgentLeafState(leaf);
-    leaves.delete(key);
-    checkouts.delete(key);
-    leaf = undefined;
-  }
   if (!leaf) {
     leaf = createAgentLeafState(
       null,
       {
         kind: "planner",
         workspaceId: scope,
-        resume,
+        resume: opts.resume,
+        prompt: opts.prompt,
         onCheckout: (c) => {
           checkouts.set(key, c);
           notify();
@@ -91,6 +104,41 @@ function ensureLeaf(scope: WorkspaceId | null, resume?: string): AgentLeafState 
     leaves.set(key, leaf);
   }
   return leaf;
+}
+
+/// Every planner's activity, polled while `enabled` (global key = `GLOBAL`).
+function usePlannerActivities(enabled: boolean): Map<string, AgentActivity> {
+  const [activities, setActivities] = useState<Map<string, AgentActivity>>(new Map());
+  useEffect(() => {
+    if (!enabled) return;
+    let cancelled = false;
+    const tick = () =>
+      plannerActivities()
+        .then(
+          (list) =>
+            !cancelled &&
+            setActivities(new Map(list.map((a) => [keyOf(a.workspaceId), a.activity]))),
+        )
+        .catch(() => {});
+    tick();
+    const t = window.setInterval(tick, POLL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(t);
+    };
+  }, [enabled]);
+  return activities;
+}
+
+/// The status dot's color for a planner (`undefined` = no session).
+function dotClass(activity: AgentActivity | undefined): string {
+  return activity === "needsAttention"
+    ? "bg-amber-400"
+    : activity === "working"
+      ? "bg-blue-400"
+      : activity === undefined || activity === "inactive"
+        ? "bg-neutral-600"
+        : "bg-emerald-400";
 }
 
 /// The repo ⌘J is "in": the selected worktree's, else the only/first open
@@ -119,16 +167,23 @@ export function PlannerPopup() {
   const open = useUiStore((s) => s.plannerOpen);
   const setOpen = useUiStore((s) => s.setPlannerOpen);
   const setPick = useUiStore((s) => s.setPlannerPick);
+  const issuesOpen = useUiStore((s) => s.plannerIssuesOpen);
+  const setIssuesOpen = useUiStore((s) => s.setPlannerIssuesOpen);
   const workspaces = useWorkspaceStore((s) => s.workspaces);
   const currentRepo = useCurrentRepo();
   const scope = usePlannerScope();
+  const key = keyOf(scope);
+  const forgeStatus = useForgeStore((s) => (scope ? s.status[scope] : undefined));
+  const loadForgeStatus = useForgeStore((s) => s.loadStatus);
+  const activities = usePlannerActivities(open);
   const slotRef = useRef<HTMLDivElement>(null);
   const [generation, setGeneration] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [history, setHistory] = useState<AgentHistoryEntry[]>([]);
-  /// A conversation to resume on the next mount of the slot.
-  const resumeRef = useRef<string | undefined>(undefined);
+  /// Landing-view prompt drafts, per planner.
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [behind, setBehind] = useState<number | null>(null);
   const [, rerender] = useReducer((n: number) => n + 1, 0);
 
   useEffect(() => {
@@ -138,12 +193,20 @@ export function PlannerPopup() {
     };
   }, []);
 
+  // A session that ended (`/exit`, a crash, its repo closed) goes back to
+  // the landing view on the next open rather than showing a tombstone.
+  useEffect(() => {
+    if (open && leaves.get(key)?.exited) {
+      dropLeaf(key);
+      rerender();
+    }
+  }, [open, key]);
+
   useEffect(() => {
     if (!open) return;
     const slot = slotRef.current;
-    if (!slot) return;
-    const state = ensureLeaf(scope, resumeRef.current);
-    resumeRef.current = undefined;
+    const state = leaves.get(key);
+    if (!slot || !state) return;
     slot.appendChild(state.host);
     setError(state.error);
     state.errorListeners.add(setError);
@@ -155,18 +218,63 @@ export function PlannerPopup() {
       state.errorListeners.delete(setError);
       if (state.host.parentNode === slot) slot.removeChild(state.host);
     };
-  }, [open, scope, generation]);
+  }, [open, key, generation]);
 
   // Switching planners closes the history list (it's per planner).
   useEffect(() => setHistoryOpen(false), [scope, open]);
 
-  if (!open) return null;
-
-  const key = keyOf(scope);
   const leaf = leaves.get(key);
+  const landing = !leaf;
   const ready = leaf?.sessionId != null;
   const checkout = checkouts.get(key) ?? null;
   const repo = scope ? workspaces.find((w) => w.id === scope) : undefined;
+  const forgeReady = !!repo && !!forgeStatus?.authenticated;
+
+  useEffect(() => {
+    if (open && scope) void loadForgeStatus(scope);
+  }, [open, scope, loadForgeStatus]);
+
+  // The landing view lists recent conversations.
+  useEffect(() => {
+    if (!open || !landing) return;
+    let live = true;
+    listPlannerHistory(scope)
+      .then((h) => live && setHistory(h))
+      .catch(() => live && setHistory([]));
+    return () => {
+      live = false;
+    };
+  }, [open, landing, scope]);
+
+  // New commits on origin since this planner's checkout.
+  const sha = checkout?.sha;
+  useEffect(() => {
+    setBehind(null);
+    if (!open || !scope || !sha) return;
+    let live = true;
+    const check = () =>
+      plannerCommitsBehind(scope)
+        .then((n) => live && setBehind(n))
+        .catch(() => {});
+    check();
+    const t = window.setInterval(check, BEHIND_POLL_MS);
+    return () => {
+      live = false;
+      window.clearInterval(t);
+    };
+  }, [open, scope, sha]);
+
+  if (!open) return null;
+
+  function pickScope(next: WorkspaceId | null) {
+    setPick({ scope: next, forRepo: currentRepo });
+  }
+
+  function start(prompt?: string) {
+    startLeaf(scope, { prompt });
+    setDrafts((d) => ({ ...d, [key]: "" }));
+    setGeneration((g) => g + 1);
+  }
 
   async function toggleHistory() {
     if (historyOpen) return setHistoryOpen(false);
@@ -178,7 +286,7 @@ export function PlannerPopup() {
     setHistoryOpen(false);
     // Already the conversation on screen → nothing to do.
     if (entry.liveAgentId && entry.liveAgentId === leaf?.sessionId) return;
-    resumeRef.current = entry.sessionId;
+    startLeaf(scope, { resume: entry.sessionId });
     setGeneration((g) => g + 1);
   }
 
@@ -187,18 +295,52 @@ export function PlannerPopup() {
     setHistory(await listPlannerHistory(scope).catch(() => []));
   }
 
+  /// Kill this planner's session and go back to the landing view.
   async function newSession() {
     const old = leaves.get(key);
-    leaves.delete(key);
-    checkouts.delete(key);
-    if (old) {
-      detachAgentLeafState(old);
-      // Wait for the kill so the relaunch can't race it and re-attach to
-      // the dying session. The relaunch refreshes the checkout.
-      if (old.sessionId) await killAgent(old.sessionId).catch(() => {});
-    }
+    // Wait for the kill before showing the landing view, so a quick restart
+    // can't race it and re-attach to the dying session. The next start
+    // refreshes the checkout.
+    if (old?.sessionId) await killAgent(old.sessionId).catch(() => {});
+    dropLeaf(key);
     setGeneration((g) => g + 1);
   }
+
+  /// Bring the checkout up to date without losing the conversation: resume
+  /// the running conversation, which refreshes the checkout on relaunch.
+  async function refreshCheckout() {
+    const sessionId = leaf?.sessionId;
+    const entries = await listPlannerHistory(scope).catch(() => []);
+    const current = entries.find((e) => e.liveAgentId && e.liveAgentId === sessionId);
+    if (!current) return void newSession();
+    startLeaf(scope, { resume: current.sessionId });
+    setGeneration((g) => g + 1);
+  }
+
+  function insertIssue(issue: ForgeIssue) {
+    const ref = `#${issue.number} ${issue.title}`;
+    if (!leaf) {
+      setDrafts((d) => {
+        const cur = d[key] ?? "";
+        return { ...d, [key]: cur ? `${cur.trimEnd()} ${ref} ` : `${ref} ` };
+      });
+      return;
+    }
+    if (!leaf.sessionId) return;
+    void pasteText(leaf.sessionId, `${ref} `);
+    leaf.term.focus();
+  }
+
+  function startWorktree(issue: ForgeIssue) {
+    if (!scope) return;
+    setOpen(false);
+    useUiStore.getState().openNewWorktreeDialog(scope, issue);
+  }
+
+  const tabs: { key: string; scope: WorkspaceId | null; label: string }[] = [
+    ...workspaces.map((w) => ({ key: w.id, scope: w.id, label: repoName(w.root) })),
+    { key: GLOBAL, scope: null, label: "Global" },
+  ];
 
   return (
     <div
@@ -210,78 +352,68 @@ export function PlannerPopup() {
       <div
         role="dialog"
         aria-label="Planner"
-        className="flex h-[78vh] w-full max-w-[1100px] flex-col overflow-hidden rounded-lg border border-neutral-700 bg-neutral-900 shadow-2xl"
+        className={cn(
+          "flex h-[78vh] w-full flex-col overflow-hidden rounded-lg border border-neutral-700 bg-neutral-900 shadow-2xl",
+          issuesOpen && forgeReady ? "max-w-[1300px]" : "max-w-[1100px]",
+        )}
       >
-        <div className="relative flex items-center gap-3 border-b border-neutral-800 px-4 py-2 text-xs">
-          <span className="text-sm font-semibold text-neutral-100">
-            {repo ? "Planner" : "Global"}
-          </span>
-          <select
-            value={scope ?? GLOBAL}
-            onChange={(e) =>
-              setPick({
-                scope: e.target.value === GLOBAL ? null : e.target.value,
-                forRepo: currentRepo,
-              })
-            }
-            aria-label="Which planner"
-            className="rounded border border-neutral-700 bg-neutral-950 px-1.5 py-0.5 text-neutral-200"
-          >
-            {workspaces.map((w) => (
-              <option key={w.id} value={w.id}>
-                {repoName(w.root)}
-              </option>
-            ))}
-            <option value={GLOBAL}>Global (any repo)</option>
-          </select>
-          <span className="min-w-0 truncate text-neutral-500">
-            {!repo ? (
-              "Not tied to a repo · names one per call"
-            ) : !ready ? (
-              `Refreshing a read-only copy of origin/${repo.defaultBranch}…`
-            ) : checkout ? (
-              <>
-                reads <span className="font-mono text-neutral-400">{checkout.baseRef}</span> @{" "}
-                <span className="font-mono text-neutral-400">{checkout.sha}</span> · can't edit
-                code
-              </>
-            ) : (
-              "read-only copy of the default branch"
-            )}
-          </span>
-          {checkout?.warning && (
-            <span className="shrink-0 rounded bg-amber-950/50 px-1.5 text-amber-300" title={checkout.warning}>
-              {checkout.warning}
-            </span>
-          )}
+        <div className="relative flex items-end gap-0.5 border-b border-neutral-800 bg-neutral-950/50 px-3 pt-2 text-xs">
+          <div role="tablist" aria-label="Planners" className="flex min-w-0 items-end gap-0.5 overflow-x-auto">
+            {tabs.map((t) => {
+              const activity = activities.get(t.key);
+              const active = t.key === key;
+              const waiting = activity === "needsAttention";
+              return (
+                <button
+                  key={t.key}
+                  role="tab"
+                  aria-selected={active}
+                  onClick={() => pickScope(t.scope)}
+                  title={t.scope ? `${t.label} planner` : "Global planner — not tied to a repo"}
+                  className={cn(
+                    "flex h-[30px] shrink-0 items-center gap-1.5 rounded-t-md px-3",
+                    active
+                      ? "bg-neutral-900 text-neutral-100 shadow-[inset_0_2px_0_#60a5fa]"
+                      : "text-neutral-400 hover:bg-neutral-900/60 hover:text-neutral-200",
+                  )}
+                >
+                  <span className={cn("h-1.5 w-1.5 rounded-full", dotClass(activity))} />
+                  {t.label}
+                  {waiting && !active && (
+                    <span className="text-[10px] text-amber-400">needs you</span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
           <div className="flex-1" />
-          <button
-            data-agent-history-toggle
-            onClick={() => void toggleHistory()}
-            title="Past planning sessions — click one to resume"
-            className={cn(
-              "flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 hover:bg-neutral-800 hover:text-neutral-200",
-              historyOpen ? "bg-neutral-800 text-neutral-200" : "text-neutral-500",
-            )}
-          >
-            <HistoryIcon />
-            History
-          </button>
-          <button
-            onClick={() => void newSession()}
-            title={
-              repo
-                ? "Kill this session and start fresh on the latest origin"
-                : "Kill this session and start a fresh one"
-            }
-            className="shrink-0 rounded px-1.5 py-0.5 text-neutral-500 hover:bg-neutral-800 hover:text-neutral-200"
-          >
-            New session
-          </button>
+          {!landing && (
+            <>
+              <button
+                data-agent-history-toggle
+                onClick={() => void toggleHistory()}
+                title="Past planning sessions — click one to resume"
+                className={cn(
+                  "mb-1 flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 hover:bg-neutral-800 hover:text-neutral-200",
+                  historyOpen ? "bg-neutral-800 text-neutral-200" : "text-neutral-500",
+                )}
+              >
+                <HistoryIcon />
+                History
+              </button>
+              <button
+                onClick={() => void newSession()}
+                title="End this session (it stays in History) and start over"
+                className="mb-1 shrink-0 rounded px-1.5 py-0.5 text-neutral-500 hover:bg-neutral-800 hover:text-neutral-200"
+              >
+                New session
+              </button>
+            </>
+          )}
           <button
             onClick={() => setOpen(false)}
             title="Hide (the session keeps running)"
-            className="shrink-0 rounded px-1.5 py-0.5 text-neutral-500 hover:bg-neutral-800 hover:text-neutral-200"
+            className="mb-1 shrink-0 rounded px-1.5 py-0.5 text-neutral-500 hover:bg-neutral-800 hover:text-neutral-200"
           >
             ⌘J hide
           </button>
@@ -295,13 +427,93 @@ export function PlannerPopup() {
             />
           )}
         </div>
+        <div className="flex items-center gap-2.5 border-b border-neutral-800 px-3 py-1.5 text-xs text-neutral-500">
+          {forgeReady && (
+            <button
+              onClick={() => setIssuesOpen(!issuesOpen)}
+              aria-pressed={issuesOpen}
+              title="Show the repo's issues beside the planner"
+              className={cn(
+                "flex shrink-0 items-center gap-1.5 rounded px-1.5 py-0.5",
+                issuesOpen
+                  ? "bg-neutral-800 text-neutral-100"
+                  : "text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200",
+              )}
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
+                <rect x="3" y="4" width="18" height="16" rx="2" />
+                <path d="M9 4v16" />
+              </svg>
+              Issues
+            </button>
+          )}
+          <span className="min-w-0 truncate">
+            {!repo ? (
+              "Not tied to a repo · names one per call"
+            ) : landing ? (
+              <>
+                starts on the latest <span className="font-mono text-neutral-400">origin/{repo.defaultBranch}</span> ·
+                can't edit code
+              </>
+            ) : !ready ? (
+              `Refreshing a read-only copy of origin/${repo.defaultBranch}…`
+            ) : checkout ? (
+              <>
+                reads <span className="font-mono text-neutral-400">{checkout.baseRef}</span> @{" "}
+                <span className="font-mono text-neutral-400">{checkout.sha}</span> · can't edit
+                code
+              </>
+            ) : (
+              "read-only copy of the default branch"
+            )}
+          </span>
+          {!landing && ready && behind != null && behind > 0 && (
+            <button
+              onClick={() => void refreshCheckout()}
+              title="Restart this conversation on the latest commits (it picks up where it left off)"
+              className="flex shrink-0 items-center gap-1 rounded-full border border-amber-500/40 bg-amber-950/30 px-2 py-px text-[11px] text-amber-300 hover:bg-amber-950/60"
+            >
+              ↑ {behind} new commit{behind === 1 ? "" : "s"} on {checkout?.baseRef ?? "origin"} · Refresh
+            </button>
+          )}
+          {checkout?.warning && (
+            <span className="shrink-0 rounded bg-amber-950/50 px-1.5 text-amber-300" title={checkout.warning}>
+              {checkout.warning}
+            </span>
+          )}
+        </div>
         {error && (
           <div className="m-3 shrink-0 rounded border border-red-900/60 bg-red-950/40 px-3 py-2 text-xs text-red-300">
             {error}
           </div>
         )}
-        <div className="relative flex-1 bg-[#0F1114]">
-          <div ref={slotRef} className="absolute inset-0 overflow-hidden" />
+        <div className="flex min-h-0 flex-1">
+          {issuesOpen && forgeReady && scope && (
+            <PlannerIssues
+              key={scope}
+              workspaceId={scope}
+              onInsert={insertIssue}
+              onStart={startWorktree}
+              onOpenWorktree={(wt) => {
+                useUiStore.getState().selectWorktree(wt.id);
+                setOpen(false);
+              }}
+            />
+          )}
+          <div className="relative min-w-0 flex-1 bg-[#0F1114]">
+            {landing ? (
+              <PlannerLanding
+                repoName={repo ? repoName(repo.root) : null}
+                draft={drafts[key] ?? ""}
+                setDraft={(v) => setDrafts((d) => ({ ...d, [key]: v }))}
+                history={history}
+                onStart={start}
+                onResume={resume}
+              />
+            ) : (
+              <div ref={slotRef} className="absolute inset-0 overflow-hidden" />
+            )}
+          </div>
         </div>
       </div>
     </div>
@@ -317,7 +529,6 @@ export function PlannerPill() {
   const setPick = useUiStore((s) => s.setPlannerPick);
   const currentRepo = useCurrentRepo();
   const scope = usePlannerScope();
-  const [activities, setActivities] = useState<{ key: string; activity: AgentActivity }[]>([]);
   const [hasSession, setHasSession] = useState(() =>
     [...leaves.values()].some((l) => l.sessionId != null),
   );
@@ -330,27 +541,13 @@ export function PlannerPill() {
     };
   }, []);
 
-  useEffect(() => {
-    if (!hasSession) return;
-    let cancelled = false;
-    const tick = () =>
-      plannerActivities()
-        .then(
-          (list) =>
-            !cancelled &&
-            setActivities(list.map((a) => ({ key: keyOf(a.workspaceId), activity: a.activity }))),
-        )
-        .catch(() => {});
-    tick();
-    const t = window.setInterval(tick, POLL_MS);
-    return () => {
-      cancelled = true;
-      window.clearInterval(t);
-    };
-  }, [hasSession]);
+  const activities = usePlannerActivities(hasSession);
 
-  const waiting = open ? undefined : activities.find((a) => a.activity === "needsAttention");
-  const mine = activities.find((a) => a.key === keyOf(scope))?.activity ?? "inactive";
+  const waitingKey = open
+    ? undefined
+    : [...activities].find(([, a]) => a === "needsAttention")?.[0];
+  const waiting = waitingKey === undefined ? undefined : { key: waitingKey };
+  const mine = activities.get(keyOf(scope)) ?? "inactive";
   return (
     <button
       onClick={() => {

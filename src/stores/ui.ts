@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import * as ipc from "@/ipc/client";
 import type { AppFileKind } from "@/ipc/client";
-import type { AgentSessionId, WorkspaceId, WorktreeId } from "@/ipc/types";
+import type { AgentSessionId, ForgeIssue, WorkspaceId, WorktreeId } from "@/ipc/types";
 import type { ChangeGroup } from "./diffs";
 
 /// Devices the Browser tab can emulate: viewport size in CSS px.
@@ -84,6 +84,8 @@ type UiState = {
   /// out of WorktreeSidebar-local state so the Cmd+Shift+N global
   /// shortcut can open it for the active workspace.
   newWorktreeWorkspace: WorkspaceId | null;
+  /// An issue to preselect when the dialog opens (the planner's issue drawer).
+  newWorktreeIssue: ForgeIssue | null;
   /// Agent board overlay (⌘K).
   agentBoardOpen: boolean;
   agentBoardLayout: "board" | "list";
@@ -93,6 +95,8 @@ type UiState = {
   /// in `forRepo` (the repo they were in when picking); `scope` null =
   /// global. Cleared implicitly once they move to another repo.
   plannerPick: { scope: WorkspaceId | null; forRepo: WorkspaceId | null } | null;
+  /// The planner popup's issue drawer.
+  plannerIssuesOpen: boolean;
   /// Epoch ms each agent session was last on screen — its tab active in
   /// the selected worktree. Maintained by the subscription below; the
   /// board uses it to tell finished-and-unseen turns from seen ones.
@@ -144,13 +148,14 @@ type UiState = {
   requestAgentLaunchFor: (worktreeId: WorktreeId, prompt?: string) => void;
   /// Clears the pending request and returns it, or null if none was set.
   consumePendingAgentLaunch: (worktreeId: WorktreeId) => PendingAgentLaunch | null;
-  openNewWorktreeDialog: (workspaceId: WorkspaceId) => void;
+  openNewWorktreeDialog: (workspaceId: WorkspaceId, issue?: ForgeIssue) => void;
   closeNewWorktreeDialog: () => void;
   setAgentBoardOpen: (open: boolean) => void;
   toggleAgentBoard: () => void;
   setPlannerOpen: (open: boolean) => void;
   togglePlanner: () => void;
   setPlannerPick: (pick: { scope: WorkspaceId | null; forRepo: WorkspaceId | null }) => void;
+  setPlannerIssuesOpen: (open: boolean) => void;
   setAgentBoardLayout: (layout: "board" | "list") => void;
   markAgentSeen: (agentId: AgentSessionId) => void;
   /// Select `worktreeId` and make `agentId` its active agent tab.
@@ -179,10 +184,12 @@ export const useUiStore = create<UiState>((set, get) => ({
   agentLaunchNonce: 0,
   pendingAgentLaunch: {},
   newWorktreeWorkspace: null,
+  newWorktreeIssue: null,
   agentBoardOpen: false,
   agentBoardLayout: "board",
   plannerOpen: false,
   plannerPick: null,
+  plannerIssuesOpen: false,
   agentSeenAt: {},
   agentFocusRequest: null,
   showResolvedComments: false,
@@ -318,11 +325,11 @@ export const useUiStore = create<UiState>((set, get) => ({
     });
     return req;
   },
-  openNewWorktreeDialog(workspaceId) {
-    set({ newWorktreeWorkspace: workspaceId });
+  openNewWorktreeDialog(workspaceId, issue) {
+    set({ newWorktreeWorkspace: workspaceId, newWorktreeIssue: issue ?? null });
   },
   closeNewWorktreeDialog() {
-    set({ newWorktreeWorkspace: null });
+    set({ newWorktreeWorkspace: null, newWorktreeIssue: null });
   },
   setAgentBoardOpen(open) {
     if (open) {
@@ -344,6 +351,9 @@ export const useUiStore = create<UiState>((set, get) => ({
   },
   setPlannerPick(pick) {
     set({ plannerPick: pick });
+  },
+  setPlannerIssuesOpen(open) {
+    set({ plannerIssuesOpen: open });
   },
   togglePlanner() {
     get().setPlannerOpen(!get().plannerOpen);
@@ -401,6 +411,7 @@ export const useUiStore = create<UiState>((set, get) => ({
       agentLaunchNonce: 0,
       pendingAgentLaunch: {},
       newWorktreeWorkspace: null,
+      newWorktreeIssue: null,
       agentBoardOpen: false,
       agentBoardLayout: "board",
       agentSeenAt: {},

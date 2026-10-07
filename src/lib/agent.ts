@@ -16,6 +16,11 @@ export async function pasteAndSubmit(
   await agentWrite(agentId, enc.encode(PASTE_START + text + PASTE_END + "\r"));
 }
 
+/// Paste `text` into an agent's prompt without submitting it.
+export async function pasteText(agentId: AgentSessionId, text: string): Promise<void> {
+  await agentWrite(agentId, new TextEncoder().encode(PASTE_START + text + PASTE_END));
+}
+
 /// Pick a sendable agent for a worktree: prefer `preferredId` (typically the
 /// active tab) when it's still running, else the first running/starting agent.
 /// Returns null when the worktree has no live agent to send to. Used by

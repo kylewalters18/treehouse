@@ -63,6 +63,18 @@ pub enum AssigneeFilter {
     User(String),
 }
 
+impl AssigneeFilter {
+    /// A username, `@me`, or `none`; blank = any.
+    pub fn parse(s: &str) -> Self {
+        match s.trim() {
+            "" => Self::Any,
+            a if a.eq_ignore_ascii_case("none") => Self::Unassigned,
+            "@me" => Self::Me,
+            u => Self::User(u.trim_start_matches('@').to_string()),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export)]

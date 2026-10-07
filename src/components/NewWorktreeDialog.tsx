@@ -83,6 +83,9 @@ export function NewWorktreeDialog({
     workspaceId ? s.workspaces.find((w) => w.id === workspaceId)?.defaultBranch : undefined,
   );
 
+  /// Preselected issue (from the planner's issue drawer): listed first and
+  /// selected while nothing is typed.
+  const pinned = useUiStore((s) => s.newWorktreeIssue);
   const [query, setQuery] = useState("");
   const [stateFilter, setStateFilter] = useState<ForgeIssueState>("open");
   /// Index into the rows; -1 = nothing selected (empty query).
@@ -114,7 +117,7 @@ export function NewWorktreeDialog({
     if (!open) return;
     setQuery("");
     setStateFilter("open");
-    setSel(-1);
+    setSel(useUiStore.getState().newWorktreeIssue ? 0 : -1);
     setBranchEdit(null);
     setBase(null);
     setInitSubmodules(defaultInitSubmodules);
@@ -165,7 +168,12 @@ export function NewWorktreeDialog({
 
   const trimmed = query.trim();
   const plainSlug = trimmed ? branchNameFor(trimmed) : "";
-  const shownIssues = forgeReady ? issues.map((i) => fresh[i.number] ?? i) : [];
+  const shownIssues = forgeReady
+    ? [
+        ...(pinned && !trimmed ? [pinned] : []),
+        ...issues.filter((i) => !(pinned && !trimmed && i.number === pinned.number)),
+      ].map((i) => fresh[i.number] ?? i)
+    : [];
   const worktrees = useWorktreesStore((s) => s.worktrees);
   const branchRows = useMemo(() => {
     const q = trimmed.toLowerCase();

@@ -39,6 +39,8 @@ export type AgentLeafMode =
       workspaceId: WorkspaceId | null;
       /// Resume this past conversation instead of attaching/starting fresh.
       resume?: string;
+      /// A new session's first message.
+      prompt?: string;
       onCheckout?: (c: PlannerCheckout | null) => void;
     };
 
@@ -244,6 +246,7 @@ export function createAgentLeafState(
           term.rows,
           onEvent,
           mode.resume,
+          mode.prompt,
         );
         id = opened.session.id;
         mode.onCheckout?.(opened.checkout);

@@ -10,8 +10,8 @@ use crate::agent::{
 };
 use crate::diff::{self, DiffMode, DiffSet};
 use crate::forge::{
-    self, workflow, ForgeApproval, ForgeIssue, ForgeJob, ForgeJobLog, ForgeMr, ForgePipeline,
-    ForgeStatus, ForgeThread, IssueQuery, IssueStart, ReviewCommentInput,
+    self, workflow, AssigneeFilter, ForgeApproval, ForgeIssue, ForgeJob, ForgeJobLog, ForgeMr,
+    ForgePipeline, ForgeStatus, ForgeThread, IssueQuery, IssueStart, ReviewCommentInput,
 };
 use crate::fs_api::{self, FileContent, TreeEntry};
 use crate::fs_watch;
@@ -659,14 +659,17 @@ pub async fn forge_list_issues(
     query: String,
     state_filter: String,
     limit: u32,
+    labels: Option<Vec<String>>,
+    assignee: Option<String>,
     state: State<'_, AppState>,
 ) -> AppResult<Vec<ForgeIssue>> {
     let (f, _) = resolve_forge(workspace_id, &state).await?;
     f.list_issues(&IssueQuery {
         search: query,
         state: state_filter,
+        labels: labels.unwrap_or_default(),
+        assignee: AssigneeFilter::parse(assignee.as_deref().unwrap_or_default()),
         limit,
-        ..Default::default()
     })
     .await
 }
@@ -1129,6 +1132,7 @@ pub async fn list_agent_activity(
 pub async fn open_planner(
     workspace_id: Option<WorkspaceId>,
     resume: Option<String>,
+    prompt: Option<String>,
     app: AppHandle,
     cols: u16,
     rows: u16,
@@ -1142,6 +1146,7 @@ pub async fn open_planner(
                 &state.scratch,
                 &state.agents,
                 resume,
+                prompt,
                 cols,
                 rows,
                 channel,
@@ -1161,6 +1166,7 @@ pub async fn open_planner(
                 &state.agents,
                 &ws,
                 resume,
+                prompt,
                 cols,
                 rows,
                 channel,
@@ -1168,6 +1174,21 @@ pub async fn open_planner(
             .await
         }
     }
+}
+
+/// Commits the repo planner's base ref has gained since its checkout was
+/// refreshed (fetches origin first); `None` before its first session.
+#[tauri::command]
+pub async fn planner_commits_behind(
+    workspace_id: WorkspaceId,
+    state: State<'_, AppState>,
+) -> AppResult<Option<u32>> {
+    let ws = state
+        .workspaces
+        .get(&workspace_id)
+        .map(|e| e.value().clone())
+        .ok_or_else(|| AppError::Unknown(format!("unknown workspace: {workspace_id}")))?;
+    crate::planner::commits_behind(&state.planners, &ws).await
 }
 
 /// A planner's past conversations (newest first), resumable via

@@ -174,6 +174,7 @@ pub fn run() {
         ipc::commands::worktree_mark_setup_ran,
         ipc::commands::forge_status,
         ipc::commands::forge_list_issues,
+        ipc::commands::planner_commits_behind,
         ipc::commands::forge_get_issue,
         ipc::commands::forge_set_issue_assignee,
         ipc::commands::forge_list_mrs,

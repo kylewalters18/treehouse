@@ -37,6 +37,7 @@ pub fn list(scope: CallerScope) -> Value {
             get_linked_issue_schema(),
             search_issues_schema(scope),
             get_issue_schema(scope),
+            update_issue_schema(scope),
             get_pr_threads_schema(),
             get_ci_status_schema(),
             get_ci_log_schema(),
@@ -51,6 +52,7 @@ pub fn list(scope: CallerScope) -> Value {
                 create_worktree_schema(scope),
                 search_issues_schema(scope),
                 get_issue_schema(scope),
+                update_issue_schema(scope),
             ])
         }
         CallerScope::Scratch => json!([
@@ -65,6 +67,7 @@ pub fn list(scope: CallerScope) -> Value {
             create_worktree_schema(scope),
             search_issues_schema(scope),
             get_issue_schema(scope),
+            update_issue_schema(scope),
         ]),
     }
 }
@@ -160,6 +163,35 @@ fn get_issue_schema(scope: CallerScope) -> Value {
         "name": "get_issue",
         "description": "Read one of this repo's issues in full: title, state, description, labels, \
             assignees, URL.",
+        "inputSchema": { "type": "object", "properties": properties, "required": required }
+    })
+}
+
+fn update_issue_schema(scope: CallerScope) -> Value {
+    let mut properties = json!({
+        "number": { "type": "integer", "description": "Issue number (GitLab iid)." },
+        "title": { "type": "string", "description": "New title. Omit to keep the current one." },
+        "body": {
+            "type": "string",
+            "description": "New description, replacing the whole current one. Omit to keep it."
+        },
+        "expected_updated_at": {
+            "type": "string",
+            "description": "The `updatedAt` from your last get_issue. When given, the edit is \
+                refused if the issue changed since — e.g. a person edited it — so you don't \
+                overwrite their change. Strongly recommended when changing `body`."
+        }
+    });
+    let mut required = vec!["number"];
+    if scope == CallerScope::Scratch {
+        properties["repo"] = repo_property();
+        required.insert(0, "repo");
+    }
+    json!({
+        "name": "update_issue",
+        "description": "Edit one of this repo's issues: its title and/or description (visible to \
+            the team). Read it with get_issue first — `body` replaces the whole description, so \
+            start from the current text.",
         "inputSchema": { "type": "object", "properties": properties, "required": required }
     })
 }
@@ -376,6 +408,7 @@ pub async fn call(app: &AppHandle, caller: McpCaller, params: &Value) -> Value {
         "get_linked_issue" => get_linked_issue(app, caller).await,
         "search_issues" => search_issues(app, caller, &args).await,
         "get_issue" => get_issue(app, caller, &args).await,
+        "update_issue" => update_issue(app, caller, &args).await,
         "get_pr_threads" => get_pr_threads(app, caller, &args).await,
         "get_ci_status" => get_ci_status(app, caller).await,
         "get_ci_log" => get_ci_log(app, caller, &args).await,
@@ -447,6 +480,7 @@ async fn create_issue(app: &AppHandle, caller: McpCaller, args: &Value) -> Resul
         .await
         .map_err(|e| e.to_string())?;
     tracing::info!(number = issue.number, "mcp: created issue");
+    let _ = app.emit(&events::issues_changed(workspace_id), issue.number);
     Ok(json!({ "number": issue.number, "url": issue.url, "title": issue.title }))
 }
 
@@ -663,12 +697,7 @@ fn issue_query(args: &Value) -> Result<IssueQuery, String> {
             .collect::<Result<_, _>>()?,
         Some(_) => return Err("`labels` must be an array of strings".into()),
     };
-    let assignee = match str_arg(args, "assignee").as_deref() {
-        None => AssigneeFilter::Any,
-        Some(a) if a.eq_ignore_ascii_case("none") => AssigneeFilter::Unassigned,
-        Some("@me") => AssigneeFilter::Me,
-        Some(u) => AssigneeFilter::User(u.trim_start_matches('@').to_string()),
-    };
+    let assignee = AssigneeFilter::parse(&str_arg(args, "assignee").unwrap_or_default());
     let state = str_arg(args, "state").unwrap_or_else(|| "open".into());
     if !matches!(state.as_str(), "open" | "closed" | "all") {
         return Err(format!(
@@ -726,6 +755,50 @@ async fn get_issue(app: &AppHandle, caller: McpCaller, args: &Value) -> Result<V
     Ok(issue_json(issue))
 }
 
+async fn update_issue(app: &AppHandle, caller: McpCaller, args: &Value) -> Result<Value, String> {
+    let n = args
+        .get("number")
+        .and_then(Value::as_u64)
+        .ok_or("`number` is required")?;
+    let title = str_arg(args, "title");
+    // An empty body is a real edit (clearing it); only absence keeps it.
+    let body = args.get("body").and_then(Value::as_str).map(str::to_string);
+    if title.is_none() && body.is_none() {
+        return Err("nothing to change — pass `title` and/or `body`".into());
+    }
+    let expected = str_arg(args, "expected_updated_at");
+    let (workspace_id, _) = target_workspace(app, caller, args)?;
+    let state = app.state::<AppState>();
+    let (forge, _) = resolve_forge(workspace_id, &state)
+        .await
+        .map_err(|e| e.to_string())?;
+    let current = forge
+        .get_issue(n)
+        .await
+        .map_err(|e| format!("couldn't read #{n}: {e}"))?;
+    if let Some(expected) = &expected {
+        if &current.updated_at != expected {
+            return Err(format!(
+                "#{n} changed since your get_issue (updatedAt is now {}) — read it again and \
+                 reapply your edit to the current text",
+                current.updated_at
+            ));
+        }
+    }
+    let issue = forge
+        .update_issue(
+            n,
+            title.as_deref().unwrap_or(&current.title),
+            body.as_deref().unwrap_or(&current.body),
+            None,
+        )
+        .await
+        .map_err(|e| format!("couldn't update #{n}: {e}"))?;
+    tracing::info!(number = n, "mcp: updated issue");
+    let _ = app.emit(&events::issues_changed(workspace_id), n);
+    Ok(json!({ "number": issue.number, "url": issue.url, "updatedAt": issue.updated_at }))
+}
+
 fn issue_json(issue: ForgeIssue) -> Value {
     json!({
         "number": issue.number,
@@ -735,6 +808,7 @@ fn issue_json(issue: ForgeIssue) -> Value {
         "labels": issue.labels,
         "assignees": issue.assignees,
         "url": issue.url,
+        "updatedAt": issue.updated_at,
     })
 }
 
@@ -1180,7 +1254,8 @@ mod tests {
                 "create_issue",
                 "create_worktree",
                 "search_issues",
-                "get_issue"
+                "get_issue",
+                "update_issue"
             ]
         );
         assert_eq!(
@@ -1191,6 +1266,10 @@ mod tests {
         assert_eq!(tools[3]["inputSchema"]["required"], json!(["repo"]));
         assert_eq!(
             tools[4]["inputSchema"]["required"],
+            json!(["repo", "number"])
+        );
+        assert_eq!(
+            tools[5]["inputSchema"]["required"],
             json!(["repo", "number"])
         );
     }
@@ -1204,7 +1283,8 @@ mod tests {
                 "create_issue",
                 "create_worktree",
                 "search_issues",
-                "get_issue"
+                "get_issue",
+                "update_issue"
             ]
         );
         for t in tools.as_array().unwrap() {
@@ -1230,6 +1310,7 @@ mod tests {
                 "get_linked_issue",
                 "search_issues",
                 "get_issue",
+                "update_issue",
                 "get_pr_threads",
                 "get_ci_status",
                 "get_ci_log",

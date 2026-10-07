@@ -24,7 +24,7 @@ of work into sibling worktrees, each with its own agent seeded with a prompt. Th
 them appear in treehouse's sidebar and reviews/merges them there.
 
 For issue work: search_issues finds existing issues (filter by labels / assignee; call \
-get_issue for the full text) — check it before filing a duplicate; create_issue files an issue \
+get_issue for the full text, update_issue to edit one) — check it before filing a duplicate; create_issue files an issue \
 on the repo's GitLab/GitHub project; create_worktree with `issue` starts a worktree + agent on an existing one; create_pr opens a \
 pull/merge request for your own worktree once your work is committed. To get PRs for \
 worktrees you start, tell their agents in `prompt` to commit and call create_pr when done.

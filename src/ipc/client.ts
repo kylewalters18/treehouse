@@ -499,23 +499,33 @@ export function attachAgent(
 /// into the channel) or starts one; a new repo planner first refreshes its
 /// checkout to `origin/<default>`, which can take a fetch's worth of time.
 /// With `resume` (a past conversation's session id), the planner's
-/// running session is replaced by that conversation.
+/// running session is replaced by that conversation. `prompt` is a new
+/// session's first message (ignored when attaching).
 export function openPlanner(
   workspaceId: WorkspaceId | null,
   cols: number,
   rows: number,
   onEvent: (ev: AgentEvent) => void,
   resume?: string,
+  prompt?: string,
 ): Promise<PlannerOpened> {
   const channel = new Channel<AgentEvent>();
   channel.onmessage = onEvent;
   return invoke<PlannerOpened>("open_planner", {
     workspaceId,
     resume: resume ?? null,
+    prompt: prompt ?? null,
     cols,
     rows,
     channel,
   });
+}
+
+/// Commits a repo planner's base ref (`origin/<default>`) has gained since
+/// its checkout was refreshed; fetches origin first. Null before its first
+/// session.
+export function plannerCommitsBehind(workspaceId: WorkspaceId): Promise<number | null> {
+  return invoke<number | null>("planner_commits_behind", { workspaceId });
 }
 
 /// A planner's past conversations, newest first (global = null).
@@ -789,17 +799,22 @@ export function forgeStatus(workspaceId: WorkspaceId): Promise<ForgeStatus> {
   return invoke<ForgeStatus>("forge_status", { workspaceId });
 }
 
+/// `filters.assignee`: a username, "@me", or "none" (unassigned).
+/// `filters.labels`: every one must match.
 export function forgeListIssues(
   workspaceId: WorkspaceId,
   query: string,
   stateFilter: "open" | "closed" | "all",
   limit: number,
+  filters: { labels?: string[]; assignee?: string } = {},
 ): Promise<ForgeIssue[]> {
   return invoke<ForgeIssue[]>("forge_list_issues", {
     workspaceId,
     query,
     stateFilter,
     limit,
+    labels: filters.labels ?? null,
+    assignee: filters.assignee ?? null,
   });
 }
 
@@ -908,6 +923,14 @@ export function onCiChanged(
   handler: (branch: string) => void,
 ): Promise<UnlistenFn> {
   return listen<string>(`workspace://${workspaceId}/ci-changed`, (e) => handler(e.payload));
+}
+
+/// An agent created or edited an issue over MCP. Payload: the issue number.
+export function onIssuesChanged(
+  workspaceId: WorkspaceId,
+  handler: (number: number) => void,
+): Promise<UnlistenFn> {
+  return listen<number>(`workspace://${workspaceId}/issues-changed`, (e) => handler(e.payload));
 }
 
 export function forgeApproveMr(

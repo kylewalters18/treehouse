@@ -32,6 +32,12 @@ pub fn issue_links_changed() -> String {
     "issue-links://changed".to_string()
 }
 
+/// An issue in this workspace's forge project was created or edited by an
+/// agent over MCP. Payload: the issue number.
+pub fn issues_changed(workspace_id: WorkspaceId) -> String {
+    format!("workspace://{workspace_id}/issues-changed")
+}
+
 /// CI for a branch in this workspace changed under the renderer — an agent
 /// retried a job over MCP. Payload: the branch name.
 pub fn ci_changed(workspace_id: WorkspaceId) -> String {

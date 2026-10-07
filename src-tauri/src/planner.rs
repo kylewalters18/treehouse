@@ -101,6 +101,11 @@ impl Planners {
             .collect()
     }
 
+    /// What `ws`'s planner is reading, once a session has started.
+    pub fn checkout(&self, ws: WorkspaceId) -> Option<PlannerCheckout> {
+        self.by_workspace.get(&ws)?.checkout.lock().clone()
+    }
+
     /// Kill a closed repo's planner and drop it. Its checkout stays on disk
     /// for next time.
     pub fn forget(&self, agents: &AgentRegistry, ws: WorkspaceId) {
@@ -119,7 +124,8 @@ pub struct PlannerOpened {
     pub checkout: Option<PlannerCheckout>,
 }
 
-/// Attach to `ws`'s running planner, or refresh its checkout and start one.
+/// Attach to `ws`'s running planner, or refresh its checkout and start one
+/// (with `prompt` as its first message; ignored when attaching).
 /// With `resume` (a past planning conversation, see `history`), the running
 /// session — itself resumable later — is replaced by that conversation.
 /// Resuming works because the checkout path is stable per repo: Claude
@@ -131,6 +137,7 @@ pub async fn open(
     agents: &AgentRegistry,
     ws: &Workspace,
     resume: Option<String>,
+    prompt: Option<String>,
     cols: u16,
     rows: u16,
     channel: Channel<AgentEvent>,
@@ -163,7 +170,7 @@ pub async fn open(
         dir,
         backend,
         Some(argv),
-        None,
+        prompt,
         resume,
         cols,
         rows,
@@ -270,6 +277,35 @@ async fn refresh_checkout(
     })
 }
 
+/// How many commits `ws`'s base ref has gained since the planner's checkout
+/// was refreshed — what the popup's "new commits on origin" badge shows.
+/// Fetches origin first (best-effort, like `refresh_checkout`). `None` before
+/// the planner's first session.
+pub async fn commits_behind(planners: &Planners, ws: &Workspace) -> AppResult<Option<u32>> {
+    let Some(checkout) = planners.checkout(ws.id) else {
+        return Ok(None);
+    };
+    Ok(Some(
+        count_behind(&ws.root, &ws.default_branch, &checkout).await?,
+    ))
+}
+
+async fn count_behind(
+    repo_root: &Path,
+    default_branch: &str,
+    checkout: &PlannerCheckout,
+) -> AppResult<u32> {
+    if checkout.base_ref.starts_with("origin/") {
+        let fetch = git_ops::git(repo_root, ["fetch", "--quiet", "origin", default_branch]);
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(30), fetch).await;
+    }
+    let range = format!("{}..{}", checkout.sha, checkout.base_ref);
+    let out = git_ops::git(repo_root, ["rev-list", "--count", range.as_str()]).await?;
+    out.trim()
+        .parse()
+        .map_err(|_| AppError::Unknown(format!("unexpected rev-list output: {out}")))
+}
+
 /// Extra Claude flags for a planner: no edit tools, and a system prompt
 /// saying where it is and how to turn plans into work. Every flag takes a
 /// following option (never the end of argv), so the variadic
@@ -360,5 +396,16 @@ mod tests {
         assert_eq!(git_ops::rev_parse(&dir, "HEAD").await.unwrap(), new_head);
         assert!(!dir.join("scratch.txt").exists());
         assert!(dir.join("NEW.md").exists());
+    }
+
+    #[tokio::test]
+    async fn count_behind_counts_commits_since_the_checkout() {
+        let repo = crate::test_support::TempRepo::new();
+        let dir = checkout_dir(&repo.root);
+        let c = refresh_checkout(&repo.root, "main", &dir).await.unwrap();
+        assert_eq!(count_behind(&repo.root, "main", &c).await.unwrap(), 0);
+        repo.commit_file("a.md", "a\n", "one");
+        repo.commit_file("b.md", "b\n", "two");
+        assert_eq!(count_behind(&repo.root, "main", &c).await.unwrap(), 2);
     }
 }

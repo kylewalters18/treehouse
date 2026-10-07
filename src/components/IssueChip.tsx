@@ -270,7 +270,7 @@ export function IssueChip({
   );
 }
 
-function IssueStateBadge({ state }: { state: string }) {
+export function IssueStateBadge({ state }: { state: string }) {
   const closed = state === "closed";
   const Icon = closed ? CircleCheck : CircleDot;
   return (
@@ -289,18 +289,29 @@ function IssueStateBadge({ state }: { state: string }) {
 }
 
 /// Forges don't hand us label colors here; hash the name so each label
-/// keeps a consistent tint.
-function LabelPill({ name }: { name: string }) {
+/// keeps a consistent tint. With `onClick` it's a button (e.g. filter by it).
+export function LabelPill({
+  name,
+  onClick,
+  title,
+}: {
+  name: string;
+  onClick?: (e: React.MouseEvent) => void;
+  title?: string;
+}) {
   const hue = nameHue(name);
-  return (
-    <span
-      className="rounded-full border px-1.5 py-[1px] text-[10px] font-medium"
-      style={{
-        color: `hsl(${hue} 70% 75%)`,
-        background: `hsl(${hue} 60% 50% / 0.12)`,
-        borderColor: `hsl(${hue} 60% 60% / 0.3)`,
-      }}
-    >
+  const style = {
+    color: `hsl(${hue} 70% 75%)`,
+    background: `hsl(${hue} 60% 50% / 0.12)`,
+    borderColor: `hsl(${hue} 60% 60% / 0.3)`,
+  };
+  const cls = "rounded-full border px-1.5 py-[1px] text-[10px] font-medium";
+  return onClick ? (
+    <button onClick={onClick} title={title} className={cn(cls, "hover:brightness-125")} style={style}>
+      {name}
+    </button>
+  ) : (
+    <span className={cls} style={style} title={title}>
       {name}
     </span>
   );
