@@ -107,6 +107,24 @@ function buildCommands(deps: {
     },
   });
   cmds.push({
+    id: "layout.widenCode",
+    category: "View",
+    title: "Widen code / restore split",
+    description: "Code takes most of the width; agent stays peeking (Cmd+Alt+Left)",
+    run: () => {
+      useUiStore.getState().toggleWidePane("code");
+    },
+  });
+  cmds.push({
+    id: "layout.widenAgent",
+    category: "View",
+    title: "Widen agent / restore split",
+    description: "Agent takes most of the width; code stays peeking (Cmd+Alt+Right)",
+    run: () => {
+      useUiStore.getState().toggleWidePane("agent");
+    },
+  });
+  cmds.push({
     id: "workspace.openAnother",
     category: "Workspace",
     title: "Open another repo",

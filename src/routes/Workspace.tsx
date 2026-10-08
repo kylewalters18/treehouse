@@ -4,6 +4,7 @@ import {
   Panel,
   PanelResizeHandle,
   type ImperativePanelHandle,
+  type ImperativePanelGroupHandle,
 } from "react-resizable-panels";
 import { useWorkspaceStore, workspaceForWorktree } from "@/stores/workspace";
 import { useWorktreesStore } from "@/stores/worktrees";
@@ -109,6 +110,39 @@ export function Workspace() {
     });
     return () => cancelAnimationFrame(id);
   }, [bottomMaximized, focusMode]);
+  // ⌘⌥← / ⌘⌥→ widen the code / agent side of the split; the other side
+  // keeps a peek strip. Entering remembers the split so leaving restores
+  // it — sidebar width is re-read each time, since ⌘B can change it in
+  // between. Dragging the handle while widened drops the mode and keeps
+  // the dragged layout (the remembered split is cleared first).
+  const widePane = useUiStore((s) => s.widePane);
+  const outerGroupRef = useRef<ImperativePanelGroupHandle>(null);
+  const splitBeforeWideRef = useRef<number | null>(null);
+  useEffect(() => {
+    const id = requestAnimationFrame(() => {
+      const group = outerGroupRef.current;
+      if (!group) return;
+      const [sidebar, center, agent] = group.getLayout();
+      const span = center + agent;
+      if (widePane) {
+        splitBeforeWideRef.current ??= center / span;
+        const peek = Math.min(WIDE_PEEK_PCT, span / 2);
+        const code = widePane === "code" ? span - peek : peek;
+        group.setLayout([sidebar, code, span - code]);
+      } else if (splitBeforeWideRef.current != null) {
+        const code = span * splitBeforeWideRef.current;
+        splitBeforeWideRef.current = null;
+        group.setLayout([sidebar, code, span - code]);
+      }
+    });
+    return () => cancelAnimationFrame(id);
+  }, [widePane]);
+  const onSplitDragging = (dragging: boolean) => {
+    if (!dragging || !useUiStore.getState().widePane) return;
+    splitBeforeWideRef.current = null;
+    useUiStore.getState().setWidePane(null);
+  };
+
   // Cmd+P "Go to file" picker. Open state lives here so the
   // shortcut works regardless of which pane has focus.
   const [fileFinderOpen, setFileFinderOpen] = useState(false);
@@ -181,6 +215,22 @@ export function Workspace() {
       e.preventDefault();
       e.stopPropagation();
       useUiStore.getState().toggleAgentBoard();
+    }
+    window.addEventListener("keydown", onKey, { capture: true });
+    return () => window.removeEventListener("keydown", onKey, { capture: true });
+  }, []);
+
+  // ⌘⌥← / ⌘⌥→ — widen code / agent. Capture phase so Monaco and xterm
+  // don't see it first.
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (!e.metaKey || !e.altKey || e.shiftKey || e.ctrlKey) return;
+      if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+      e.preventDefault();
+      e.stopPropagation();
+      useUiStore
+        .getState()
+        .toggleWidePane(e.key === "ArrowLeft" ? "code" : "agent");
     }
     window.addEventListener("keydown", onKey, { capture: true });
     return () => window.removeEventListener("keydown", onKey, { capture: true });
@@ -361,6 +411,7 @@ export function Workspace() {
             panels v2 handles the conditionally-rendered Agent pane as
             long as each Panel carries a stable `id` + `order`. */}
         <PanelGroup
+          ref={outerGroupRef}
           direction="horizontal"
           className="min-h-0 flex-1"
           autoSaveId="layout-normal"
@@ -408,7 +459,10 @@ export function Workspace() {
               </Panel>
             </PanelGroup>
           </Panel>
-          <PanelResizeHandle className="w-px bg-neutral-800 hover:bg-neutral-700" />
+          <PanelResizeHandle
+            className="w-px bg-neutral-800 hover:bg-neutral-700"
+            onDragging={onSplitDragging}
+          />
           {/* Agent panel stays mounted on main clone too — AgentPane
               renders an empty placeholder when on the main clone, but
               the panel group's widths stay stable across main/worktree
@@ -457,6 +511,10 @@ function SystemFileViewerMount() {
 /// Last path segment of a repo root — the breadcrumb shows the repo's
 /// name; the full path lives in the tooltip.
 const SIDEBAR_MIN_PCT = 14;
+
+/// Width of the narrowed side when code or agent is widened — matches the
+/// agent panel's `minSize`, so the agent never drops below its floor.
+const WIDE_PEEK_PCT = 20;
 
 /// Collapsed worktree rail width, in px.
 const RAIL_PX = 40;

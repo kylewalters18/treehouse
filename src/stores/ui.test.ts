@@ -39,6 +39,17 @@ describe("ui store", () => {
     expect(useUiStore.getState()).toMatchObject({ focusMode: true, bottomPaneMaximized: false });
   });
 
+  it("widens one side of the code | agent split at a time", () => {
+    const s = useUiStore.getState();
+    expect(useUiStore.getState().widePane).toBe(null);
+    s.toggleWidePane("code");
+    expect(useUiStore.getState().widePane).toBe("code");
+    s.toggleWidePane("agent");
+    expect(useUiStore.getState().widePane).toBe("agent");
+    s.toggleWidePane("agent");
+    expect(useUiStore.getState().widePane).toBe(null);
+  });
+
   it("toggles worktree sidebar independently of focus mode", () => {
     expect(useUiStore.getState().worktreeSidebarCollapsed).toBe(false);
     useUiStore.getState().toggleWorktreeSidebar();

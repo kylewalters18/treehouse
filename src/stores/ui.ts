@@ -14,6 +14,8 @@ export type BrowserDeviceId = keyof typeof BROWSER_DEVICES;
 /// A queued first launch for a new worktree's AgentPane.
 export type PendingAgentLaunch = { prompt?: string };
 
+export type WidePane = "code" | "agent";
+
 export type BottomPaneTab = "terminal" | "browser" | "problems" | "review" | "ci";
 
 type UiState = {
@@ -21,6 +23,9 @@ type UiState = {
   /// Diff takes over the whole center column (bottom pane collapsed).
   /// Mirror of `bottomPaneMaximized`; sidebar and agent pane stay put.
   focusMode: boolean;
+  /// Which side of the code | agent split is widened (⌘⌥← / ⌘⌥→). The
+  /// other side shrinks to a peek strip rather than collapsing.
+  widePane: WidePane | null;
   worktreeSidebarCollapsed: boolean;
   /// Workspace-wide toggle: when true, gitignored entries are surfaced
   /// in the file tree (dimmed) and the Cmd+P fuzzy finder. Default off.
@@ -114,6 +119,9 @@ type UiState = {
   selectWorktree: (id: WorktreeId | null) => void;
   toggleFocusMode: () => void;
   setFocusMode: (on: boolean) => void;
+  /// Widen `side`, or restore the split if it's already widened.
+  toggleWidePane: (side: WidePane) => void;
+  setWidePane: (side: WidePane | null) => void;
   toggleWorktreeSidebar: () => void;
   setWorktreeSidebarCollapsed: (on: boolean) => void;
   setShowIgnored: (on: boolean) => void;
@@ -169,6 +177,7 @@ type UiState = {
 export const useUiStore = create<UiState>((set, get) => ({
   selectedWorktreeId: null,
   focusMode: false,
+  widePane: null,
   worktreeSidebarCollapsed: false,
   showIgnored: false,
   activeAgentByWorktree: {},
@@ -208,6 +217,12 @@ export const useUiStore = create<UiState>((set, get) => ({
   },
   setFocusMode(on) {
     set(on ? { focusMode: true, bottomPaneMaximized: false } : { focusMode: false });
+  },
+  toggleWidePane(side) {
+    set((s) => ({ widePane: s.widePane === side ? null : side }));
+  },
+  setWidePane(side) {
+    set({ widePane: side });
   },
   toggleWorktreeSidebar() {
     set((s) => ({ worktreeSidebarCollapsed: !s.worktreeSidebarCollapsed }));
@@ -396,6 +411,7 @@ export const useUiStore = create<UiState>((set, get) => ({
     set({
       selectedWorktreeId: null,
       focusMode: false,
+      widePane: null,
       worktreeSidebarCollapsed: false,
       showIgnored: false,
       activeAgentByWorktree: {},

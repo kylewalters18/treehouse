@@ -308,6 +308,8 @@ const KEYBINDING_GROUPS: { group: string; items: Binding[] }[] = [
     items: [
       { combos: [["⌘", "B"]], label: "Toggle worktree sidebar" },
       { combos: [["⌘", "\\"]], label: "Toggle focus mode" },
+      { combos: [["⌘", "⌥", "←"]], label: "Widen code (agent stays peeking)" },
+      { combos: [["⌘", "⌥", "→"]], label: "Widen agent (code stays peeking)" },
       { combos: [["⌘", "⇧", "M"]], label: "Toggle Problems / Terminal" },
       { combos: [["⌘", "P"]], label: "Go to file" },
       { combos: [["⌘", "⇧", "P"]], label: "Command palette" },
