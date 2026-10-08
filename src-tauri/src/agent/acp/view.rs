@@ -507,6 +507,14 @@ impl AcpView {
         })
     }
 
+    /// Replace the command list from a vendor announcement (Kiro).
+    pub fn set_commands(&mut self, commands: Vec<AcpCommand>) -> AcpEvent {
+        self.commands = commands;
+        AcpEvent::Commands {
+            commands: self.commands.clone(),
+        }
+    }
+
     /// Adopt the older `models` field. `None` if it has no models.
     pub fn set_legacy_models(&mut self, models: &Value) -> Option<AcpEvent> {
         self.legacy_model = Some(parse_legacy_models(models)?);

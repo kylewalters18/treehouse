@@ -19,6 +19,7 @@
 //! replays it into a fresh Channel before live events resume.
 
 pub mod adapter;
+mod kiro;
 pub mod prompt;
 pub mod question;
 pub mod rpc;
@@ -49,7 +50,7 @@ use super::{
     AgentActivity, AgentBackendKind, AgentEvent, AgentOverview, AgentSession, AgentStatus,
     AgentTransport,
 };
-use rpc::{Incoming, RpcConn, AUTH_REQUIRED, METHOD_NOT_FOUND};
+use rpc::{Incoming, RpcConn, AUTH_REQUIRED, INVALID_PARAMS, METHOD_NOT_FOUND};
 pub use prompt::AcpAttachment;
 pub use view::{AcpEvent, AcpView};
 
@@ -72,6 +73,9 @@ struct AcpShared {
     queued: Vec<Vec<Value>>,
     /// `session/prompt` requests awaiting their response.
     in_flight: u32,
+    /// Kiro's built-in commands (no slash), run through its extension
+    /// rather than sent as prompt text (see `kiro`).
+    kiro_commands: Vec<String>,
     /// Prompts that interrupt the running turn: held until the cancelled
     /// turn settles (see `send_prompt`), so the cancel can't swallow them.
     redirects: Vec<Vec<Value>>,
@@ -357,6 +361,7 @@ pub fn launch(
         status: AgentStatus::Running,
         queued: Vec::new(),
         in_flight: 0,
+        kiro_commands: Vec::new(),
         redirects: Vec::new(),
         waiting: VecDeque::new(),
         stderr_tail: VecDeque::new(),
@@ -614,12 +619,20 @@ async fn handle_incoming(ctx: Ctx, mut incoming: tokio::sync::mpsc::UnboundedRec
                     Err(e) => tracing::trace!(id = %ctx.id, ?e, "acp: skipped session/update"),
                 }
             }
-            // Vendor extensions (Kiro's `_kiro.dev/*` commands, MCP and
-            // compaction events) aren't handled yet; log their shape.
+            Incoming::Notification { method, params } if method == kiro::COMMANDS_AVAILABLE => {
+                kiro_commands_available(&ctx, &params);
+            }
+            // Other vendor extensions (Kiro's MCP and compaction events)
+            // aren't handled yet; log their shape.
             Incoming::Notification { method, params } => {
                 let mut shape = params.to_string();
                 shape.truncate(2000);
                 tracing::debug!(id = %ctx.id, %method, params = %shape, "acp: unhandled notification");
+            }
+            // Some clients see the announcement arrive as a request.
+            Incoming::Request { id, method, params } if method == kiro::COMMANDS_AVAILABLE => {
+                kiro_commands_available(&ctx, &params);
+                ctx.conn.respond(id, json!({}));
             }
             Incoming::Request { id, method, params } if method == "session/request_permission" => {
                 match serde_json::from_value::<RequestPermissionRequest>(params) {
@@ -628,7 +641,7 @@ async fn handle_incoming(ctx: Ctx, mut incoming: tokio::sync::mpsc::UnboundedRec
                         sh.waiting.push_back((id, req));
                         sh.promote_waiting();
                     }
-                    Err(e) => ctx.conn.respond_error(id, -32602, &format!("invalid params: {e}")),
+                    Err(e) => ctx.conn.respond_error(id, INVALID_PARAMS, &format!("invalid params: {e}")),
                 }
             }
             Incoming::Request { id, method, params } if method == "elicitation/create" => {
@@ -717,6 +730,46 @@ fn spawn_prompt(ctx: Ctx, sid: String, blocks: Vec<Value>) {
     });
 }
 
+fn kiro_commands_available(ctx: &Ctx, params: &Value) {
+    let (commands, executable) = kiro::parse_available(params);
+    tracing::debug!(id = %ctx.id, count = commands.len(), "acp: kiro commands available");
+    let mut sh = ctx.shared.lock();
+    sh.kiro_commands = executable;
+    let ev = sh.view.set_commands(commands);
+    sh.emit_state(ev);
+}
+
+/// Run one of Kiro's built-in commands as a turn: its reply (if any) shows
+/// as agent text. If Kiro rejects the request, the line goes as a prompt.
+fn spawn_kiro_command(ctx: Ctx, sid: String, text: String, blocks: Vec<Value>) {
+    tauri::async_runtime::spawn(async move {
+        let res = ctx.conn.request(kiro::COMMANDS_EXECUTE, kiro::execute_params(&sid, &text)).await;
+        tracing::debug!(id = %ctx.id, command = %text, ?res, "acp: kiro command");
+        let mut sh = ctx.shared.lock();
+        let now = now_millis();
+        match res {
+            Ok(v) => {
+                if let Some(out) = kiro::execute_output(&v) {
+                    sh.emit(AcpEvent::AgentText { text: out });
+                }
+                let ev = sh.view.turn_ended("end_turn", now);
+                sh.emit(ev);
+            }
+            Err(e) if e.code == METHOD_NOT_FOUND || e.code == INVALID_PARAMS => {
+                drop(sh);
+                spawn_prompt(ctx, sid, blocks);
+            }
+            Err(e) => {
+                sh.emit(AcpEvent::Error {
+                    message: format!("Command failed: {e}"),
+                });
+                let ev = sh.view.turn_ended("error", now);
+                sh.emit(ev);
+            }
+        }
+    });
+}
+
 fn handle<'a>(
     registry: &'a AgentRegistry,
     id: AgentSessionId,
@@ -795,6 +848,10 @@ pub fn send_prompt(
                     }
                 }
             });
+        }
+        Some(sid) if attachments.is_empty() && kiro::is_command(text, &sh.kiro_commands) => {
+            drop(sh);
+            spawn_kiro_command(prompt_ctx(registry, &h, id), sid, text.to_string(), blocks);
         }
         Some(sid) => {
             drop(sh);
@@ -1258,6 +1315,7 @@ mod tests {
             status: AgentStatus::Running,
             queued: Vec::new(),
             in_flight: 0,
+            kiro_commands: Vec::new(),
             redirects: Vec::new(),
             waiting: VecDeque::new(),
             stderr_tail: VecDeque::new(),

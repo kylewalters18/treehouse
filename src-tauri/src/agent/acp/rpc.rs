@@ -20,6 +20,7 @@ use tokio::sync::{mpsc, oneshot};
 /// JSON-RPC "method not found" — the answer to any agent→client request we
 /// don't implement (`fs/*`, `terminal/*`, extensions).
 pub const METHOD_NOT_FOUND: i64 = -32601;
+pub const INVALID_PARAMS: i64 = -32602;
 /// ACP's "authentication required" error code.
 pub const AUTH_REQUIRED: i64 = -32000;
 
