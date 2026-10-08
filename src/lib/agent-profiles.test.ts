@@ -8,7 +8,7 @@ import {
 const commands = { claudeCode: "claude", codex: "codex", kiro: "kiro-cli" };
 
 describe("buildLaunchProfiles", () => {
-  it("keeps configured order and appends backend defaults", () => {
+  it("keeps configured order, then backends over ACP, then their TUIs", () => {
     const profiles = buildLaunchProfiles(
       [
         { workspace: "/r", name: "Reviewer", backend: "claudeCode", command: "claude --agent reviewer" },
@@ -19,10 +19,15 @@ describe("buildLaunchProfiles", () => {
     expect(profiles.map((p) => [p.key, p.scope])).toEqual([
       ["repo:Reviewer", "repo"],
       ["global:Fast", "global"],
-      ["default:claudeCode", "default"],
-      ["default:codex", "default"],
-      ["default:kiro", "default"],
+      ["acp:claudeCode", "default"],
+      ["acp:codex", "default"],
+      ["acp:kiro", "default"],
+      ["default:claudeCode", "terminal"],
+      ["default:codex", "terminal"],
+      ["default:kiro", "terminal"],
     ]);
+    expect(profiles.slice(2, 5).every((p) => p.transport === "acp")).toBe(true);
+    expect(profiles.slice(5).every((p) => p.transport === "pty")).toBe(true);
   });
 });
 
@@ -53,9 +58,13 @@ describe("resolveDefaultProfile", () => {
     expect(resolveDefaultProfile(profiles, "repo:Reviewer", "codex").name).toBe("Reviewer");
   });
 
-  it("falls back to the settings default backend when last-used is gone", () => {
-    expect(resolveDefaultProfile(profiles, "repo:Gone", "codex").key).toBe("default:codex");
-    expect(resolveDefaultProfile(profiles, null, "kiro").key).toBe("default:kiro");
+  it("falls back to the settings default backend over ACP", () => {
+    expect(resolveDefaultProfile(profiles, "repo:Gone", "codex").key).toBe("acp:codex");
+    expect(resolveDefaultProfile(profiles, null, "kiro").key).toBe("acp:kiro");
+  });
+
+  it("keeps an explicit terminal pick", () => {
+    expect(resolveDefaultProfile(profiles, "default:claudeCode", "codex").transport).toBe("pty");
   });
 });
 
@@ -71,20 +80,15 @@ describe("ACP profiles", () => {
     { backend: "kiro" as const, configured: null, label: "kiro-cli acp", needsInstall: false },
   ];
 
-  it("appends an ACP entry per backend after the defaults", () => {
+  it("hints each backend's adapter once known", () => {
     const profiles = buildLaunchProfiles([], commands, acp);
-    expect(profiles.slice(3).map((p) => [p.key, p.scope, p.transport])).toEqual([
-      ["acp:claudeCode", "acp", "acp"],
-      ["acp:codex", "acp", "acp"],
-      ["acp:kiro", "acp", "acp"],
-    ]);
     // Launch with an empty command so Rust resolves override vs managed.
-    expect(profiles.slice(3).map((p) => p.command)).toEqual(["", "", ""]);
-    expect(profiles[3].hint).toBe(
+    expect(profiles.slice(0, 3).map((p) => p.command)).toEqual(["", "", ""]);
+    expect(profiles[0].hint).toBe(
       "@agentclientprotocol/claude-agent-acp@0.86.0 (managed) · installs on first launch",
     );
-    expect(profiles[4].hint).toBe("my-codex-acp");
-    expect(profiles[0].transport).toBe("pty");
+    expect(profiles[1].hint).toBe("my-codex-acp");
+    expect(buildLaunchProfiles([], commands)[0].hint).toBe("ACP adapter");
   });
 
   it("carries a configured profile's transport and labels ACP tabs", () => {
@@ -97,6 +101,6 @@ describe("ACP profiles", () => {
     expect(tabLabelBase("claudeCode", ["my-adapter"], profiles, "acp")).toBe("Claude ACP");
     // Same argv over a PTY doesn't borrow the ACP profile's name.
     expect(tabLabelBase("claudeCode", ["my-adapter"], profiles)).toBe("Claude");
-    expect(tabLabelBase("codex", ["npx", "x"], profiles, "acp")).toBe("Codex ACP");
+    expect(tabLabelBase("codex", undefined, profiles, "acp")).toBe("Codex");
   });
 });

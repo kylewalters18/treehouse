@@ -15,7 +15,7 @@ const SCOPE_HEADINGS: Record<LaunchProfile["scope"], string> = {
   repo: "This repo",
   global: "All repos",
   default: "Defaults",
-  acp: "ACP · experimental",
+  terminal: "In a terminal (TUI)",
 };
 
 /// The agent pane's `▾` popover: pick a launch profile, or drop into
@@ -101,7 +101,8 @@ export function AgentLaunchMenu({
     const seed = from ?? profiles.find((p) => p.key === defaultKey);
     setBackend(seed?.backend ?? "claudeCode");
     setCommand(seed?.command ?? "");
-    setTransport(seed?.transport ?? "pty");
+    // A one-off command is a CLI command unless editing an ACP entry.
+    setTransport(from?.transport ?? "pty");
     setSaveName("");
     setEditing(true);
   }
@@ -292,7 +293,7 @@ export function AgentLaunchMenu({
                     : "border-neutral-700 text-neutral-500 hover:text-neutral-300",
                 )}
               >
-                {transport === "acp" ? "ACP" : "PTY"}
+                {transport === "acp" ? "ACP" : "TUI"}
               </button>
             </span>
             <div className="flex rounded-md border border-neutral-800 p-0.5">

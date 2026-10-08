@@ -57,7 +57,7 @@ src-tauri/src/
   worktree/               # Worktree type, git_ops (shell-out), manager (CRUD + merge + sync)
   agent/                  # AgentSession, supervisor (PTY-based; tabbed — many sessions per worktree),
                           #   hooks.rs wires Claude Code status hooks → WorktreeActivity
-                          #   acp/ = experimental Agent Client Protocol transport (JSON-RPC over the
+                          #   acp/ = Agent Client Protocol transport, the default for new tabs (JSON-RPC over the
                           #   adapter's stdio); sessions share the registry, so board/sidebar/MCP/
                           #   kill_all cover both transports. Adapters: `[agent.acp]` override, else
                           #   a pinned npm package installed once under <app_config>/acp-adapters/

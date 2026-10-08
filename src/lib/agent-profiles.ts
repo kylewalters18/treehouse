@@ -2,8 +2,9 @@ import type { AcpAdapterInfo, AgentBackendKind, AgentProfile, AgentTransport } f
 import { splitCommand } from "./shell-words";
 
 /// A launchable entry in the agent `+ ▾` menu: a `[[agent.profile]]` from
-/// `treehouse.toml` (repo-scoped or global), or one of the per-backend
-/// defaults whose command comes from Settings.
+/// `treehouse.toml` (repo-scoped or global), or a per-backend default —
+/// over ACP (the default) or in a terminal, whose command comes from
+/// Settings.
 export type LaunchProfile = {
   /// Stable across reloads — used to remember the last-used profile.
   key: string;
@@ -15,8 +16,10 @@ export type LaunchProfile = {
   transport: AgentTransport;
   /// Shown in place of an empty `command`: what Rust will resolve it to.
   hint?: string;
-  /// `acp` = the built-in ACP adapter entries (experimental).
-  scope: "repo" | "global" | "default" | "acp";
+  /// `default` = each backend over ACP (keys `acp:<backend>`);
+  /// `terminal` = each backend's TUI in a PTY (keys `default:<backend>`,
+  /// kept from before ACP was the default).
+  scope: "repo" | "global" | "default" | "terminal";
 };
 
 export const BACKENDS: AgentBackendKind[] = ["claudeCode", "codex", "kiro"];
@@ -34,9 +37,10 @@ export const BACKEND_TAB_LABELS: Record<AgentBackendKind, string> = {
   kiro: "Kiro",
 };
 
-/// Menu order: this repo's profiles, then global ones, then the three
-/// backend defaults, then the ACP adapters (when known). `configured`
-/// arrives from Rust already ordered repo-first.
+/// Menu order: this repo's profiles, then global ones, then each backend
+/// over ACP, then each backend's TUI. `configured` arrives from Rust
+/// already ordered repo-first; `acpAdapters` (once loaded) only adds
+/// hints — every backend has an ACP path.
 export function buildLaunchProfiles(
   configured: AgentProfile[],
   agentCommands: Record<AgentBackendKind, string>,
@@ -51,25 +55,26 @@ export function buildLaunchProfiles(
     scope: p.workspace ? "repo" : "global",
   }));
   for (const b of BACKENDS) {
+    const a = acpAdapters?.find((x) => x.backend === b);
+    out.push({
+      key: `acp:${b}`,
+      name: BACKEND_NAMES[b],
+      backend: b,
+      // Empty → Rust resolves the override / managed install at launch.
+      command: "",
+      hint: a ? (a.needsInstall ? `${a.label} · installs on first launch` : a.label) : "ACP adapter",
+      transport: "acp",
+      scope: "default",
+    });
+  }
+  for (const b of BACKENDS) {
     out.push({
       key: `default:${b}`,
       name: BACKEND_NAMES[b],
       backend: b,
       command: agentCommands[b] ?? "",
       transport: "pty",
-      scope: "default",
-    });
-  }
-  for (const a of acpAdapters ?? []) {
-    out.push({
-      key: `acp:${a.backend}`,
-      name: `${BACKEND_NAMES[a.backend]} (ACP)`,
-      backend: a.backend,
-      // Empty → Rust resolves the override / managed install at launch.
-      command: "",
-      hint: a.needsInstall ? `${a.label} · installs on first launch` : a.label,
-      transport: "acp",
-      scope: "acp",
+      scope: "terminal",
     });
   }
   return out;
@@ -103,7 +108,7 @@ export function tabLabelBase(
     );
     if (match) return match.name;
   }
-  if (transport === "acp") return `${BACKEND_TAB_LABELS[backend]} ACP`;
+  if (transport === "acp") return BACKEND_TAB_LABELS[backend];
   const base = BACKEND_TAB_LABELS[backend];
   const i = argv?.indexOf("--agent") ?? -1;
   return argv && i >= 0 && i + 1 < argv.length ? `${base} (${argv[i + 1]})` : base;
@@ -119,7 +124,9 @@ export function injectedTail(
   return backend === "claudeCode" ? "--mcp-config <treehouse>" : "";
 }
 
-const LAST_USED_KEY = "treehouse.lastAgentProfile";
+/// `.v2`: ACP became the default; earlier entries mostly recorded the old
+/// terminal default rather than a choice, so they're left behind.
+const LAST_USED_KEY = "treehouse.lastAgentProfile.v2";
 
 /// Last-launched profile key per repo root. Per-viewer convenience, so
 /// localStorage (not settings.json) is fine; failures read as "none".
@@ -141,7 +148,7 @@ export function setLastProfileKey(workspaceRoot: string, key: string) {
 }
 
 /// Which profile `+` / ⌘⇧A launches: the repo's last-used one if it still
-/// exists, else the Settings default backend.
+/// exists, else the Settings default backend over ACP.
 export function resolveDefaultProfile(
   profiles: LaunchProfile[],
   lastKey: string | null,
@@ -149,6 +156,7 @@ export function resolveDefaultProfile(
 ): LaunchProfile {
   return (
     profiles.find((p) => p.key === lastKey) ??
+    profiles.find((p) => p.key === `acp:${defaultBackend}`) ??
     profiles.find((p) => p.key === `default:${defaultBackend}`) ??
     profiles[profiles.length - 1]
   );

@@ -29,7 +29,7 @@ import { cn } from "@/lib/cn";
 import { acceptsPositionalPrompt } from "@/lib/agent";
 import { asMessage } from "@/lib/errors";
 import { instanceStrip, instanceTab, instanceTabClose } from "@/lib/pane-chrome";
-import { ChevronDown, Plus, X } from "lucide-react";
+import { ChevronDown, Plus, TerminalSquare, X } from "lucide-react";
 import {
   buildLaunchProfiles,
   commandArgv,
@@ -497,8 +497,12 @@ function AgentTabs({
   }
 
   /// Reopen a saved conversation in a new tab, or switch to the tab that
-  /// already has it.
-  function resumeSession(entry: AgentHistoryEntry, transport: AgentTransport = "pty") {
+  /// already has it. Claude conversations reopen over ACP unless asked
+  /// for a terminal; other backends' ids belong to their CLIs.
+  function resumeSession(
+    entry: AgentHistoryEntry,
+    transport: AgentTransport = entry.backend === "claudeCode" ? "acp" : "pty",
+  ) {
     setHistoryOpen(false);
     if (entry.liveAgentId) {
       const open = tabsRef.current.find(
@@ -700,6 +704,11 @@ function AgentTabs({
           >
             <BackendIcon backend={tab.backend} />
             <span className="font-mono">{tab.label}</span>
+            {tab.transport === "pty" && (
+              <span className="text-neutral-500" title="Running in a terminal (TUI)">
+                <TerminalSquare size={10} />
+              </span>
+            )}
             {tab.resumed && (
               <span className="text-neutral-500" title="Resumed conversation">
                 ↺
@@ -781,8 +790,8 @@ function AgentTabs({
         <AgentHistoryMenu
           worktreeName={worktreeName}
           entries={history}
-          onResume={resumeSession}
-          onResumeAcp={(e) => resumeSession(e, "acp")}
+          onResume={(e) => resumeSession(e)}
+          onResumeInTerminal={(e) => resumeSession(e, "pty")}
           onForget={forgetSession}
           onClose={() => setHistoryOpen(false)}
         />
@@ -819,8 +828,8 @@ function AgentTabs({
                 </div>
                 <AgentHistoryList
                   entries={history.slice(0, 3)}
-                  onResume={resumeSession}
-                  onResumeAcp={(e) => resumeSession(e, "acp")}
+                  onResume={(e) => resumeSession(e)}
+                  onResumeInTerminal={(e) => resumeSession(e, "pty")}
                 />
               </div>
             )}

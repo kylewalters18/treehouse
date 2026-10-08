@@ -9,13 +9,13 @@ import { formatWhen } from "@/lib/time";
 export function AgentHistoryList({
   entries,
   onResume,
-  onResumeAcp,
+  onResumeInTerminal,
   onForget,
 }: {
   entries: AgentHistoryEntry[];
   onResume: (entry: AgentHistoryEntry) => void;
-  /// Reopen a Claude conversation in an ACP tab instead of a terminal.
-  onResumeAcp?: (entry: AgentHistoryEntry) => void;
+  /// Reopen a Claude conversation in a terminal (TUI) instead of over ACP.
+  onResumeInTerminal?: (entry: AgentHistoryEntry) => void;
   /// Omitted in the empty-state card, which only resumes.
   onForget?: (entry: AgentHistoryEntry) => void;
 }) {
@@ -49,16 +49,16 @@ export function AgentHistoryList({
                   open
                 </span>
               )}
-              {onResumeAcp && !open && e.backend === "claudeCode" && (
+              {onResumeInTerminal && !open && e.backend === "claudeCode" && (
                 <button
                   onClick={(ev) => {
                     ev.stopPropagation();
-                    onResumeAcp(e);
+                    onResumeInTerminal(e);
                   }}
-                  title="Resume in an ACP tab (structured transcript) instead of a terminal"
+                  title="Resume in a terminal (TUI) instead"
                   className="rounded border border-neutral-700 px-1 text-[10px] text-neutral-400 opacity-0 transition hover:border-blue-500 hover:text-blue-300 group-hover:opacity-100"
                 >
-                  ACP
+                  TUI
                 </button>
               )}
               <span>{formatWhen(e.lastActiveAt)}</span>
@@ -89,14 +89,14 @@ export function AgentHistoryMenu({
   worktreeName,
   entries,
   onResume,
-  onResumeAcp,
+  onResumeInTerminal,
   onForget,
   onClose,
 }: {
   worktreeName: string;
   entries: AgentHistoryEntry[];
   onResume: (entry: AgentHistoryEntry) => void;
-  onResumeAcp?: (entry: AgentHistoryEntry) => void;
+  onResumeInTerminal?: (entry: AgentHistoryEntry) => void;
   onForget: (entry: AgentHistoryEntry) => void;
   onClose: () => void;
 }) {
@@ -134,7 +134,7 @@ export function AgentHistoryMenu({
           <AgentHistoryList
             entries={entries}
             onResume={onResume}
-            onResumeAcp={onResumeAcp}
+            onResumeInTerminal={onResumeInTerminal}
             onForget={onForget}
           />
         </div>
