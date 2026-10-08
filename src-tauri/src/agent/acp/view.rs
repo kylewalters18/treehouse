@@ -189,6 +189,42 @@ pub fn parse_config_options(v: &Value) -> Vec<AcpConfigOption> {
         .collect()
 }
 
+/// Id of the model picker synthesized from the older `models` field
+/// (`session/set_model`), for agents that predate `configOptions` — Kiro
+/// CLI v2. Set through `session/set_model`, not `set_config_option`.
+pub const LEGACY_MODEL_ID: &str = "_model";
+
+/// A model picker from a `session/new` / `session/load` response's
+/// `models` (`{ currentModelId, availableModels: [{ modelId, name,
+/// description }] }`), shaped like a config option.
+pub fn parse_legacy_models(v: &Value) -> Option<AcpConfigOption> {
+    let str_of = |v: &Value, k: &str| v.get(k).and_then(Value::as_str).map(str::to_string);
+    let options: Vec<AcpConfigValue> = v
+        .get("availableModels")?
+        .as_array()?
+        .iter()
+        .filter_map(|m| {
+            let value = str_of(m, "modelId")?;
+            Some(AcpConfigValue {
+                name: str_of(m, "name").unwrap_or_else(|| value.clone()),
+                description: str_of(m, "description").filter(|d| !d.is_empty()),
+                value,
+            })
+        })
+        .collect();
+    if options.is_empty() {
+        return None;
+    }
+    Some(AcpConfigOption {
+        id: LEGACY_MODEL_ID.into(),
+        name: "Model".into(),
+        description: None,
+        category: Some("model".into()),
+        current: str_of(v, "currentModelId").unwrap_or_else(|| options[0].value.clone()),
+        options,
+    })
+}
+
 /// Content the agent accepts in prompts beyond text (`initialize`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PromptCaps {
@@ -330,6 +366,8 @@ pub struct AcpView {
     tools: HashMap<String, AcpToolCall>,
     pub modes: Option<AcpModes>,
     pub config: Vec<AcpConfigOption>,
+    /// The `models` picker, shown only while `config` has no model option.
+    pub legacy_model: Option<AcpConfigOption>,
     pub commands: Vec<AcpCommand>,
     pub usage: Option<AcpUsage>,
     pub caps: PromptCaps,
@@ -465,18 +503,46 @@ impl AcpView {
         }
         self.config = parsed;
         Some(AcpEvent::Config {
-            options: self.config.clone(),
+            options: self.all_config(),
         })
+    }
+
+    /// Adopt the older `models` field. `None` if it has no models.
+    pub fn set_legacy_models(&mut self, models: &Value) -> Option<AcpEvent> {
+        self.legacy_model = Some(parse_legacy_models(models)?);
+        Some(AcpEvent::Config {
+            options: self.all_config(),
+        })
+    }
+
+    /// `session/set_model` succeeded.
+    pub fn legacy_model_changed(&mut self, model_id: &str) -> Option<AcpEvent> {
+        let m = self.legacy_model.as_mut()?;
+        m.current = model_id.to_string();
+        Some(AcpEvent::Config {
+            options: self.all_config(),
+        })
+    }
+
+    /// The settings the composer shows: `configOptions`, plus the legacy
+    /// model picker when the agent offers models no other way.
+    pub fn all_config(&self) -> Vec<AcpConfigOption> {
+        let mut out = self.config.clone();
+        if let Some(m) = &self.legacy_model {
+            if !out.iter().any(|o| o.category.as_deref() == Some("model")) {
+                out.push(m.clone());
+            }
+        }
+        out
     }
 
     /// The state events (`Config`, `Commands`, `Usage`) a fresh attach
     /// needs; they're kept here rather than in the log.
     pub fn state_events(&self) -> Vec<AcpEvent> {
         let mut out = Vec::new();
-        if !self.config.is_empty() {
-            out.push(AcpEvent::Config {
-                options: self.config.clone(),
-            });
+        let config = self.all_config();
+        if !config.is_empty() {
+            out.push(AcpEvent::Config { options: config });
         }
         if !self.commands.is_empty() {
             out.push(AcpEvent::Commands {
@@ -1329,4 +1395,39 @@ mod tests {
         v.turn_ended("end_turn", 5);
         assert_eq!(v.turns, 0);
     }
+
+    /// Kiro CLI v2 offers models through the older `models` field; it
+    /// becomes a model picker unless `configOptions` already has one.
+    #[test]
+    fn legacy_models_become_a_model_picker() {
+        let mut v = AcpView::new(0);
+        let ev = v
+            .set_legacy_models(&json!({
+                "currentModelId": "claude-sonnet",
+                "availableModels": [
+                    { "modelId": "auto", "name": "Auto", "description": "Picks per task" },
+                    { "modelId": "claude-sonnet", "name": "Claude Sonnet" },
+                ],
+            }))
+            .unwrap();
+        let AcpEvent::Config { options } = ev else { panic!() };
+        assert_eq!(options.len(), 1);
+        assert_eq!(options[0].id, LEGACY_MODEL_ID);
+        assert_eq!(options[0].category.as_deref(), Some("model"));
+        assert_eq!(options[0].current, "claude-sonnet");
+        assert_eq!(options[0].options[0].description.as_deref(), Some("Picks per task"));
+
+        let AcpEvent::Config { options } = v.legacy_model_changed("auto").unwrap() else { panic!() };
+        assert_eq!(options[0].current, "auto");
+        assert_eq!(v.state_events().len(), 1);
+
+        // A real model config option wins.
+        v.set_config(&json!([{ "id": "model", "name": "Model", "category": "model", "type": "select",
+            "currentValue": "x", "options": [{ "value": "x", "name": "X" }] }]));
+        let ids: Vec<_> = v.all_config().into_iter().map(|o| o.id).collect();
+        assert_eq!(ids, ["model"]);
+
+        assert!(parse_legacy_models(&json!({ "availableModels": [] })).is_none());
+    }
+
 }

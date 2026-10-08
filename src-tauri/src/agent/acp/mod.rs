@@ -568,6 +568,9 @@ async fn try_handshake(ctx: &Ctx, mcp: Option<(String, String)>) -> Result<(), S
         if let Some(ev) = new.get("configOptions").and_then(|c| sh.view.set_config(c)) {
             sh.emit_state(ev);
         }
+        if let Some(ev) = new.get("models").and_then(|m| sh.view.set_legacy_models(m)) {
+            sh.emit_state(ev);
+        }
         let accepts_images = sh.view.caps.image;
         sh.emit(AcpEvent::Ready {
             session_id: sid.clone(),
@@ -611,7 +614,13 @@ async fn handle_incoming(ctx: Ctx, mut incoming: tokio::sync::mpsc::UnboundedRec
                     Err(e) => tracing::trace!(id = %ctx.id, ?e, "acp: skipped session/update"),
                 }
             }
-            Incoming::Notification { .. } => {}
+            // Vendor extensions (Kiro's `_kiro.dev/*` commands, MCP and
+            // compaction events) aren't handled yet; log their shape.
+            Incoming::Notification { method, params } => {
+                let mut shape = params.to_string();
+                shape.truncate(2000);
+                tracing::debug!(id = %ctx.id, %method, params = %shape, "acp: unhandled notification");
+            }
             Incoming::Request { id, method, params } if method == "session/request_permission" => {
                 match serde_json::from_value::<RequestPermissionRequest>(params) {
                     Ok(req) => {
@@ -905,7 +914,7 @@ pub fn set_config(
             .ok_or_else(|| AppError::Unknown("The agent is still starting.".into()))?;
         let valid = sh
             .view
-            .config
+            .all_config()
             .iter()
             .any(|o| o.id == config_id && o.options.iter().any(|x| x.value == value));
         if !valid {
@@ -917,22 +926,35 @@ pub fn set_config(
     };
     let config_id = config_id.to_string();
     let value = value.to_string();
+    let legacy_model = config_id == view::LEGACY_MODEL_ID;
     tauri::async_runtime::spawn(async move {
-        let res = conn
-            .request(
+        let res = if legacy_model {
+            conn.request("session/set_model", json!({ "sessionId": sid, "modelId": value }))
+                .await
+        } else {
+            conn.request(
                 "session/set_config_option",
                 json!({ "sessionId": sid, "configId": config_id, "value": value }),
             )
-            .await;
+            .await
+        };
         let mut sh = shared.lock();
         match res {
+            Ok(_) if legacy_model => {
+                if let Some(ev) = sh.view.legacy_model_changed(&value) {
+                    sh.emit_state(ev);
+                }
+            }
             Ok(v) => {
                 if let Some(ev) = v.get("configOptions").and_then(|c| sh.view.set_config(c)) {
                     sh.emit_state(ev);
                 }
             }
             Err(e) => sh.emit(AcpEvent::Error {
-                message: format!("Couldn't change {config_id}: {e}"),
+                message: format!(
+                    "Couldn't change {}: {e}",
+                    if legacy_model { "model" } else { config_id.as_str() }
+                ),
             }),
         }
     });
