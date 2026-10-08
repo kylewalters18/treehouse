@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useState } from "react";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { Highlighter } from "shiki";
 import { Check, Copy } from "lucide-react";
 
@@ -65,6 +65,24 @@ export function langForPath(path: string): string {
   return map[ext] ?? "text";
 }
 
+/// Where a wrapped line's continuation starts, in ch: its own indentation
+/// (tabs at 4, matching `tab-size` in styles.css; past a diff's +/-
+/// marker) — like VS Code's `wrappingIndent: "same"`. CodeBlock adds a
+/// 2ch hanging indent on top so continuations don't read as siblings.
+export function lineIndents(code: string, lang?: string): number[] {
+  const skip = lang === "diff" ? 1 : 0;
+  return code.split("\n").map((line) => {
+    let w = skip;
+    for (let i = skip; i < line.length; i++) {
+      if (line[i] === " ") w += 1;
+      else if (line[i] === "\t") w += 4 - ((w - skip) % 4);
+      else return w;
+    }
+    // Blank / whitespace-only lines never wrap.
+    return 0;
+  });
+}
+
 /// Rendered height of one line in a `.shiki` block (12.5px × 1.6) and its
 /// vertical padding — for collapsing to a line count. `compact` blocks
 /// match `.code-compact` in styles.css.
@@ -75,9 +93,12 @@ const COMPACT_PAD_PX = 14;
 
 /// A highlighted code block with a copy button (on hover). `lang` is a
 /// fence language; unknown languages render plain. Copies `code` as-is.
-/// With `maxLines`, longer code starts collapsed behind a "Show all" toggle
-/// rather than scrolling inside its own box. Long lines scroll sideways
-/// inside the block; it never widens its container. `compact` is the
+/// With `maxLines`, taller code starts collapsed behind a "Show all" toggle
+/// rather than scrolling inside its own box. Long lines soft-wrap with a
+/// hanging indent past their own indentation, so the block never widens
+/// its container or scrolls sideways; "taller" is measured after wrapping.
+/// Multi-line non-diff code gets a line-number gutter, so a wrapped row
+/// (no number) is distinguishable from a new line. `compact` is the
 /// denser size for tool output.
 export const CodeBlock = memo(function CodeBlock({
   code,
@@ -93,17 +114,32 @@ export const CodeBlock = memo(function CodeBlock({
   compact?: boolean;
 }) {
   const highlighter = useMarkdownHighlighter();
+  const indents = useMemo(() => lineIndents(code, lang), [code, lang]);
   const html = useMemo(
-    () => (highlighter && lang ? highlightCode(highlighter, code, lang) : null),
-    [highlighter, code, lang],
+    () => (highlighter && lang ? highlightCode(highlighter, code, lang, indents) : null),
+    [highlighter, code, lang, indents],
   );
-  const lineCount = useMemo(() => code.split("\n").length, [code]);
-  const collapsible = maxLines !== undefined && lineCount > maxLines + 2;
+  const lineCount = indents.length;
+  const numbered = lineCount > 1 && lang !== "diff";
+  const linePx = compact ? COMPACT_LINE_PX : LINE_PX;
+  const maxHeight = (maxLines ?? 0) * linePx + (compact ? COMPACT_PAD_PX : PAD_PX);
+  // Wrapped lines make the text's line count a poor guide to height, so
+  // measure: collapse only when the content runs 2+ lines past the cap.
+  const contentRef = useRef<HTMLDivElement>(null);
+  const [tall, setTall] = useState(false);
+  useLayoutEffect(() => {
+    const el = contentRef.current;
+    if (maxLines === undefined || !el) return;
+    const measure = () => setTall(el.offsetHeight > maxHeight + 2 * linePx);
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [maxLines, maxHeight, linePx]);
+  const collapsible = maxLines !== undefined && tall;
   const [expanded, setExpanded] = useState(false);
   const collapsed = collapsible && !expanded;
-  const maxHeight = compact
-    ? (maxLines ?? 0) * COMPACT_LINE_PX + COMPACT_PAD_PX
-    : (maxLines ?? 0) * LINE_PX + PAD_PX;
   const fill = compact ? "#0F1114" : "#16191D";
   return (
     <div
@@ -114,13 +150,25 @@ export const CodeBlock = memo(function CodeBlock({
       )}
     >
       <div className={cn(collapsed && "overflow-hidden")} style={collapsed ? { maxHeight } : undefined}>
-        {html ? (
-          <div dangerouslySetInnerHTML={{ __html: html }} />
-        ) : (
-          <pre className="shiki">
-            <code>{code}</code>
-          </pre>
-        )}
+        <div
+          ref={contentRef}
+          className={cn(numbered && "code-numbered")}
+          style={numbered ? ({ "--gutter": String(lineCount).length } as React.CSSProperties) : undefined}
+        >
+          {html ? (
+            <div dangerouslySetInnerHTML={{ __html: html }} />
+          ) : (
+            <pre className="shiki">
+              <code>
+                {code.split("\n").map((line, i) => (
+                  <span key={i} className="line" style={{ "--indent": indents[i] } as React.CSSProperties}>
+                    {line}
+                  </span>
+                ))}
+              </code>
+            </pre>
+          )}
+        </div>
       </div>
       {collapsible && (
         <button

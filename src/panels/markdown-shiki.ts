@@ -83,22 +83,43 @@ export function highlightCode(
   highlighter: Highlighter,
   code: string,
   lang: string,
+  indents?: number[],
 ): string {
   // `getLoadedLanguages` includes aliases, so ```ts / ```rs / ```py /
   // ```sh / ```yml resolve to their full grammars.
   lang = lang.toLowerCase();
-  if (!highlighter.getLoadedLanguages().includes(lang)) return passthroughHtml(code);
+  if (!highlighter.getLoadedLanguages().includes(lang)) return passthroughHtml(code, indents);
   try {
-    return highlighter.codeToHtml(code, { lang, theme: THEME_NAME });
+    return highlighter.codeToHtml(code, {
+      lang,
+      theme: THEME_NAME,
+      transformers: indents
+        ? [
+            {
+              line(node, line) {
+                node.properties.style = `--indent:${indents[line - 1] ?? 0}`;
+              },
+            },
+          ]
+        : [],
+    });
   } catch {
-    return passthroughHtml(code);
+    return passthroughHtml(code, indents);
   }
 }
 
-function passthroughHtml(code: string): string {
+/// `indents` (per line, in ch) lands on each `.line` as `--indent`, for
+/// CodeBlock's wrap indent.
+function passthroughHtml(code: string, indents?: number[]): string {
   const escaped = code
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;");
-  return `<pre class="shiki"><code>${escaped}</code></pre>`;
+  const lines = escaped
+    .split("\n")
+    .map((l, i) =>
+      indents ? `<span class="line" style="--indent:${indents[i] ?? 0}">${l}</span>` : `<span class="line">${l}</span>`,
+    )
+    .join("\n");
+  return `<pre class="shiki"><code>${lines}</code></pre>`;
 }
