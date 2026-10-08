@@ -28,11 +28,18 @@ pub const AUTH_REQUIRED: i64 = -32000;
 pub struct RpcError {
     pub code: i64,
     pub message: String,
+    /// The error's `data`, when it's a string (agents often put the
+    /// parser's complaint there).
+    pub detail: Option<String>,
 }
 
 impl std::fmt::Display for RpcError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{} (code {})", self.message, self.code)
+        write!(f, "{} (code {})", self.message, self.code)?;
+        match &self.detail {
+            Some(d) => write!(f, ": {d}"),
+            None => Ok(()),
+        }
     }
 }
 
@@ -113,10 +120,7 @@ impl RpcConn {
             }
             let waiting: Vec<_> = pending_r.lock().drain().collect();
             for (_, tx) in waiting {
-                let _ = tx.send(Err(RpcError {
-                    code: -32099,
-                    message: "agent connection closed".into(),
-                }));
+                let _ = tx.send(Err(closed()));
             }
         });
 
@@ -166,6 +170,7 @@ fn closed() -> RpcError {
     RpcError {
         code: -32099,
         message: "agent connection closed".into(),
+        detail: None,
     }
 }
 
@@ -196,6 +201,11 @@ fn dispatch(mut msg: Value, pending: &Pending, incoming: &mpsc::UnboundedSender<
                         .and_then(Value::as_str)
                         .unwrap_or("unknown error")
                         .to_string(),
+                    detail: err.get("data").and_then(|d| match d {
+                        Value::String(s) => Some(s.clone()),
+                        Value::Null => None,
+                        other => Some(other.to_string()),
+                    }),
                 }),
                 _ => Ok(msg.get_mut("result").map(Value::take).unwrap_or(Value::Null)),
             };
