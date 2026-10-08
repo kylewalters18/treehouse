@@ -1,6 +1,7 @@
 //! Push "some agent's activity changed" to the renderer, so the sidebar
 //! dot, agent board and planner pill update the moment an ACP turn starts,
-//! a permission is requested, a Claude hook fires or a session exits —
+//! a permission is requested, a Claude hook fires, a session exits, or a
+//! worktree's git state (dirty / ahead / merged) changes —
 //! rather than on their next poll. Bursts coalesce into one event; the
 //! payload is empty and listeners refetch (`list_agent_activity`, …).
 //!

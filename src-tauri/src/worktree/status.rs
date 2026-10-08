@@ -18,7 +18,7 @@ use crate::worktree::git_ops;
 
 /// What the sidebar actually needs per worktree. Stored in
 /// `AppState::worktree_status` under the worktree's id.
-#[derive(Debug, Clone, Copy, Serialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
 pub struct WorktreeStatus {
@@ -89,7 +89,7 @@ pub async fn recompute(app: &AppHandle, worktree_id: WorktreeId) -> WorktreeStat
             dirty,
             merged: false,
         };
-        state.worktree_status.insert(worktree_id, status);
+        store(&state, worktree_id, status);
         return status;
     }
 
@@ -158,8 +158,16 @@ pub async fn recompute(app: &AppHandle, worktree_id: WorktreeId) -> WorktreeStat
         ahead, behind, dirty, merged,
         "recomputed worktree status"
     );
-    state.worktree_status.insert(worktree_id, status);
+    store(&state, worktree_id, status);
     status
+}
+
+/// Cache `status`, and when it changed tell the renderer (the sidebar's
+/// activity fetch carries it) rather than waiting for its fallback poll.
+fn store(state: &AppState, worktree_id: WorktreeId, status: WorktreeStatus) {
+    if state.worktree_status.insert(worktree_id, status) != Some(status) {
+        crate::agent::notify::activity_changed();
+    }
 }
 
 /// Seed the cache for every worktree in a workspace. Called after
