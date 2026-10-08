@@ -29,7 +29,7 @@ use tauri::AppHandle;
 use ts_rs::TS;
 
 use crate::agent::supervisor::{self, AgentRegistry};
-use crate::agent::{AgentActivity, AgentBackendKind, AgentEvent, AgentSession};
+use crate::agent::{AgentActivity, AgentBackendKind, AgentEvent, AgentSession, AgentTransport};
 use crate::storage;
 use crate::util::errors::{AppError, AppResult};
 use crate::util::ids::{AgentSessionId, WorkspaceId, WorktreeId};
@@ -138,6 +138,7 @@ pub async fn open(
     ws: &Workspace,
     resume: Option<String>,
     prompt: Option<String>,
+    transport: AgentTransport,
     cols: u16,
     rows: u16,
     channel: Channel<AgentEvent>,
@@ -145,7 +146,9 @@ pub async fn open(
     let planner = planners.entry(ws.id);
     let existing = *planner.agent.lock();
     if let Some(id) = existing.filter(|id| supervisor::is_live(agents, *id)) {
-        if resume.is_none() {
+        // Attach only to a session the caller can render; a different
+        // transport is replaced (the old conversation stays in history).
+        if resume.is_none() && agents.transport_of(id) == Some(transport) {
             return Ok(PlannerOpened {
                 session: supervisor::attach(agents, id, channel)?,
                 checkout: planner.checkout.lock().clone(),
@@ -158,24 +161,43 @@ pub async fn open(
     let checkout = refresh_checkout(&ws.root, &ws.default_branch, &dir).await?;
     let settings = storage::load_settings(app).await.unwrap_or_default();
     let backend = settings.default_agent_backend;
-    let mut argv = crate::mcp::split_command(settings.agent_commands.for_backend(backend));
-    if backend == AgentBackendKind::ClaudeCode {
-        argv.extend(claude_planner_flags(&repo_name(&ws.root), &checkout));
-    }
-
-    let session = supervisor::launch(
-        app,
-        agents,
-        planner.worktree_id,
-        dir,
-        backend,
-        Some(argv),
-        prompt,
-        resume,
-        cols,
-        rows,
-        Some(channel),
-    )?;
+    let repo = repo_name(&ws.root);
+    let session = if transport == AgentTransport::Acp {
+        let (argv, env) = crate::agent::acp::adapter::launch_spec(app, backend).await?;
+        // Claude's adapter takes the same restrictions as session options.
+        let meta = (backend == AgentBackendKind::ClaudeCode).then(|| claude_planner_meta(&repo, &checkout));
+        crate::agent::acp::launch(
+            app,
+            agents,
+            planner.worktree_id,
+            dir,
+            backend,
+            argv,
+            env,
+            prompt,
+            resume,
+            meta,
+            Some(channel),
+        )?
+    } else {
+        let mut argv = crate::mcp::split_command(settings.agent_commands.for_backend(backend));
+        if backend == AgentBackendKind::ClaudeCode {
+            argv.extend(claude_planner_flags(&repo, &checkout));
+        }
+        supervisor::launch(
+            app,
+            agents,
+            planner.worktree_id,
+            dir,
+            backend,
+            Some(argv),
+            prompt,
+            resume,
+            cols,
+            rows,
+            Some(channel),
+        )?
+    };
     *planner.agent.lock() = Some(session.id);
     *planner.checkout.lock() = Some(checkout.clone());
     Ok(PlannerOpened {
@@ -314,7 +336,21 @@ fn claude_planner_flags(repo: &str, checkout: &PlannerCheckout) -> Vec<String> {
     let mut out = vec!["--disallowedTools".to_string()];
     out.extend(DISALLOWED_TOOLS.iter().map(|t| t.to_string()));
     out.push("--append-system-prompt".into());
-    out.push(format!(
+    out.push(planner_system_prompt(repo, checkout));
+    out
+}
+
+/// The same restrictions for Claude's ACP adapter, as `session/new`
+/// `_meta`: an appended system prompt and SDK `disallowedTools`.
+fn claude_planner_meta(repo: &str, checkout: &PlannerCheckout) -> serde_json::Value {
+    serde_json::json!({
+        "systemPrompt": { "append": planner_system_prompt(repo, checkout) },
+        "claudeCode": { "options": { "disallowedTools": DISALLOWED_TOOLS } },
+    })
+}
+
+fn planner_system_prompt(repo: &str, checkout: &PlannerCheckout) -> String {
+    format!(
         "You are the treehouse planner for the `{repo}` repo. Your working directory is a \
          disposable, read-only copy of {base} at {sha} — not the user's checkout, and not where \
          work happens. Read the code freely to plan; you cannot edit files. Turn decisions into \
@@ -323,8 +359,7 @@ fn claude_planner_flags(repo: &str, checkout: &PlannerCheckout) -> Vec<String> {
          user wants a PR).",
         base = checkout.base_ref,
         sha = checkout.sha,
-    ));
-    out
+    )
 }
 
 #[cfg(test)]
@@ -352,6 +387,23 @@ mod tests {
             .worktrees
             .iter()
             .all(|e| !e.value().path.ends_with(".planner")));
+    }
+
+    #[test]
+    fn planner_acp_meta_carries_the_same_restrictions() {
+        let c = PlannerCheckout {
+            base_ref: "origin/main".into(),
+            sha: "abc1234".into(),
+            warning: None,
+        };
+        let meta = claude_planner_meta("treehouse", &c);
+        assert_eq!(
+            meta.pointer("/claudeCode/options/disallowedTools").unwrap(),
+            &serde_json::json!(DISALLOWED_TOOLS)
+        );
+        let append = meta.pointer("/systemPrompt/append").unwrap().as_str().unwrap();
+        assert!(append.contains("`treehouse`") && append.contains("origin/main at abc1234"));
+        assert_eq!(append, planner_system_prompt("treehouse", &c));
     }
 
     #[test]

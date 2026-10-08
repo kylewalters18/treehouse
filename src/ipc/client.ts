@@ -515,6 +515,9 @@ export function openPlanner(
   onEvent: (ev: AgentEvent) => void,
   resume?: string,
   prompt?: string,
+  /// A new session's transport (default PTY). A running session on the
+  /// other transport is replaced rather than attached.
+  transport?: AgentTransport,
 ): Promise<PlannerOpened> {
   const channel = new Channel<AgentEvent>();
   channel.onmessage = onEvent;
@@ -522,6 +525,7 @@ export function openPlanner(
     workspaceId,
     resume: resume ?? null,
     prompt: prompt ?? null,
+    transport: transport ?? null,
     cols,
     rows,
     channel,

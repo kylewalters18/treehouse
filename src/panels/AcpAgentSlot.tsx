@@ -109,6 +109,7 @@ export function AcpAgentSlot({
   visible,
   leafStates,
   onSession,
+  insertRequest = null,
 }: {
   worktreeId: WorktreeId;
   mode: AgentLeafMode;
@@ -116,6 +117,8 @@ export function AcpAgentSlot({
   visible: boolean;
   leafStates: Map<string, AcpLeafState>;
   onSession: (id: AgentSessionId) => void;
+  /// Text to append to the composer's draft (see `AcpPromptBox`).
+  insertRequest?: { text: string; nonce: number } | null;
 }) {
   // Create (or adopt) the pooled state once per pool identity — see the
   // deps note on `AgentLeafSlot`.
@@ -335,6 +338,7 @@ export function AcpAgentSlot({
         focusNonce={focusNonce}
         history={history}
         editRequest={editRequest}
+        insertRequest={insertRequest}
         narrow={narrow}
       />
     </div>

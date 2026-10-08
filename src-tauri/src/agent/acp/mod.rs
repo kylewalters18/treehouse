@@ -287,6 +287,9 @@ struct Ctx {
     cli: Option<String>,
     /// The saved conversation this session reopened (`session/load`).
     resumed_from: Option<String>,
+    /// `_meta` for `session/new` / `load` / `resume` — agent-specific
+    /// session options (the planner's restrictions for Claude's adapter).
+    session_meta: Option<Value>,
 }
 
 /// Spawn `argv` as an ACP agent in `cwd` and start the handshake. Returns
@@ -303,6 +306,7 @@ pub fn launch(
     env: Vec<(String, String)>,
     prompt: Option<String>,
     resume: Option<String>,
+    session_meta: Option<Value>,
     channel: Option<Channel<AgentEvent>>,
 ) -> AppResult<AgentSession> {
     if argv.is_empty() {
@@ -383,6 +387,7 @@ pub fn launch(
             .find(|(k, _)| k == adapter::CLAUDE_EXECUTABLE_ENV)
             .map(|(_, v)| v.clone()),
         resumed_from: resume,
+        session_meta,
     };
 
     registry.acp.insert(
@@ -505,7 +510,7 @@ async fn try_handshake(ctx: &Ctx, mcp: Option<(String, String)>) -> Result<(), S
                 .conn
                 .request(
                     "session/new",
-                    json!({ "cwd": ctx.cwd, "mcpServers": mcp_servers }),
+                    with_meta(json!({ "cwd": ctx.cwd, "mcpServers": mcp_servers }), &ctx.session_meta),
                 )
                 .await
                 .map_err(|e| {
@@ -540,7 +545,10 @@ async fn try_handshake(ctx: &Ctx, mcp: Option<(String, String)>) -> Result<(), S
                 .conn
                 .request(
                     method,
-                    json!({ "sessionId": id, "cwd": ctx.cwd, "mcpServers": mcp_servers }),
+                    with_meta(
+                        json!({ "sessionId": id, "cwd": ctx.cwd, "mcpServers": mcp_servers }),
+                        &ctx.session_meta,
+                    ),
                 )
                 .await;
             ctx.shared.lock().view.replay_finished(now_millis());
@@ -586,6 +594,14 @@ async fn try_handshake(ctx: &Ctx, mcp: Option<(String, String)>) -> Result<(), S
         spawn_prompt(ctx.clone(), sid.clone(), blocks);
     }
     Ok(())
+}
+
+/// `params` with `_meta` set when there is one.
+fn with_meta(mut params: Value, meta: &Option<Value>) -> Value {
+    if let (Some(meta), Some(obj)) = (meta, params.as_object_mut()) {
+        obj.insert("_meta".into(), meta.clone());
+    }
+    params
 }
 
 /// Claude's adapter accepts `session/new` signed out and fails the first
@@ -814,6 +830,7 @@ fn prompt_ctx(registry: &AgentRegistry, h: &AcpHandle, id: AgentSessionId) -> Ct
         pid: h.pid,
         cli: None,
         resumed_from: if h.session.resumed { sid } else { None },
+        session_meta: None,
     }
 }
 

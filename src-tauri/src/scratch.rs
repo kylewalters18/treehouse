@@ -17,7 +17,7 @@ use tauri::ipc::Channel;
 use tauri::AppHandle;
 
 use crate::agent::supervisor::{self, AgentRegistry};
-use crate::agent::{AgentActivity, AgentEvent, AgentSession};
+use crate::agent::{AgentActivity, AgentEvent, AgentSession, AgentTransport};
 use crate::storage;
 use crate::util::errors::{AppError, AppResult};
 use crate::util::ids::{AgentSessionId, WorktreeId};
@@ -52,20 +52,24 @@ pub fn dir(app: &AppHandle) -> AppResult<std::path::PathBuf> {
 /// isn't a live one. Either way the caller gets output from the start: a new
 /// session streams straight into `channel`, an existing one replays its ring
 /// buffer first. With `resume`, the running session is replaced by that
-/// past conversation.
+/// past conversation. `transport` applies only to a new session.
+#[allow(clippy::too_many_arguments)]
 pub async fn open(
     app: &AppHandle,
     scratch: &ScratchState,
     agents: &AgentRegistry,
     resume: Option<String>,
     prompt: Option<String>,
+    transport: AgentTransport,
     cols: u16,
     rows: u16,
     channel: Channel<AgentEvent>,
 ) -> AppResult<AgentSession> {
     let existing = *scratch.agent.lock();
     if let Some(id) = existing.filter(|id| supervisor::is_live(agents, *id)) {
-        if resume.is_none() {
+        // Attach only to a session the caller can render; a different
+        // transport is replaced (the old conversation stays in history).
+        if resume.is_none() && agents.transport_of(id) == Some(transport) {
             return supervisor::attach(agents, id, channel);
         }
         supervisor::kill_for_worktree(agents, scratch.worktree_id);
@@ -76,21 +80,38 @@ pub async fn open(
         .map_err(|e| AppError::Unknown(format!("create scratch dir: {e}")))?;
     let settings = storage::load_settings(app).await.unwrap_or_default();
     let backend = settings.default_agent_backend;
-    let argv = crate::mcp::split_command(settings.agent_commands.for_backend(backend));
 
-    let session = supervisor::launch(
-        app,
-        agents,
-        scratch.worktree_id,
-        cwd,
-        backend,
-        Some(argv),
-        prompt,
-        resume,
-        cols,
-        rows,
-        Some(channel),
-    )?;
+    let session = if transport == AgentTransport::Acp {
+        let (argv, env) = crate::agent::acp::adapter::launch_spec(app, backend).await?;
+        crate::agent::acp::launch(
+            app,
+            agents,
+            scratch.worktree_id,
+            cwd,
+            backend,
+            argv,
+            env,
+            prompt,
+            resume,
+            None,
+            Some(channel),
+        )?
+    } else {
+        let argv = crate::mcp::split_command(settings.agent_commands.for_backend(backend));
+        supervisor::launch(
+            app,
+            agents,
+            scratch.worktree_id,
+            cwd,
+            backend,
+            Some(argv),
+            prompt,
+            resume,
+            cols,
+            rows,
+            Some(channel),
+        )?
+    };
     *scratch.agent.lock() = Some(session.id);
     Ok(session)
 }

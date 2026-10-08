@@ -988,15 +988,7 @@ pub async fn launch_agent(
             None => agent::acp::adapter::resolve(&app, backend).await?,
         };
         // Drive the user's own `claude` rather than the SDK's bundled copy.
-        let mut env = Vec::new();
-        if backend == AgentBackendKind::ClaudeCode {
-            if let Some(exe) = agent::acp::adapter::claude_executable(&app).await {
-                env.push((
-                    agent::acp::adapter::CLAUDE_EXECUTABLE_ENV.to_string(),
-                    exe.to_string_lossy().into_owned(),
-                ));
-            }
-        }
+        let env = agent::acp::adapter::launch_env(&app, backend).await;
         return agent::acp::launch(
             &app,
             &state.agents,
@@ -1007,6 +999,7 @@ pub async fn launch_agent(
             env,
             prompt,
             resume,
+            None,
             Some(channel),
         );
     }
@@ -1254,6 +1247,7 @@ pub async fn open_planner(
     workspace_id: Option<WorkspaceId>,
     resume: Option<String>,
     prompt: Option<String>,
+    transport: Option<AgentTransport>,
     app: AppHandle,
     cols: u16,
     rows: u16,
@@ -1268,6 +1262,7 @@ pub async fn open_planner(
                 &state.agents,
                 resume,
                 prompt,
+                transport.unwrap_or(AgentTransport::Pty),
                 cols,
                 rows,
                 channel,
@@ -1288,6 +1283,7 @@ pub async fn open_planner(
                 &ws,
                 resume,
                 prompt,
+                transport.unwrap_or(AgentTransport::Pty),
                 cols,
                 rows,
                 channel,

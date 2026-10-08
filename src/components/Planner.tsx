@@ -10,8 +10,10 @@
 /// recent conversations); a repo planner can also show its issue drawer, and
 /// flags when origin has moved past what it's reading.
 ///
-/// Hiding only detaches the xterm — every planner keeps running and its
-/// conversation is there next time. Past conversations are listed under
+/// New sessions run over ACP (a structured transcript, `AcpAgentSlot`);
+/// resuming a non-Claude conversation still uses a terminal. Hiding only
+/// detaches the view — every planner keeps running and its conversation is
+/// there next time. Past conversations are listed under
 /// History and resume in place (each planner's directory is stable). Esc is
 /// deliberately NOT a close key: Claude uses it.
 
@@ -27,9 +29,11 @@ import {
 import type {
   AgentActivity,
   AgentHistoryEntry,
+  AgentTransport,
   ForgeIssue,
   PlannerCheckout,
   WorkspaceId,
+  WorktreeId,
 } from "@/ipc/types";
 import { pasteText } from "@/lib/agent";
 import { cn } from "@/lib/cn";
@@ -40,6 +44,12 @@ import {
   type AgentLeafState,
 } from "@/panels/agent-leaf-state";
 import { fitAndPin } from "@/panels/xterm-fit";
+import {
+  createAcpLeafState,
+  detachAcpLeafState,
+  type AcpLeafState,
+} from "@/panels/acp-leaf-state";
+import { AcpAgentSlot } from "@/panels/AcpAgentSlot";
 import { AgentHistoryMenu, HistoryIcon } from "@/panels/AgentHistory";
 import { useForgeStore } from "@/stores/forge";
 import { useUiStore } from "@/stores/ui";
@@ -53,11 +63,21 @@ const POLL_MS = 1500;
 const BEHIND_POLL_MS = 3 * 60_000;
 const GLOBAL = "global";
 
-/// Module-level so each planner's xterm (scrollback, selection) survives the
-/// popup unmounting between opens and switching between planners — same idea
-/// as the AgentPane leaf pool. Keyed by workspace id, or `GLOBAL`. No leaf =
-/// no session yet: the popup shows the landing view.
-const leaves = new Map<string, AgentLeafState>();
+/// A planner's view state: an xterm (PTY) or an ACP transcript. `id`
+/// distinguishes successive leaves under one key, so a replaced session
+/// remounts its view.
+type PlannerLeaf =
+  | { kind: "pty"; id: number; state: AgentLeafState }
+  | { kind: "acp"; id: number; state: AcpLeafState };
+let nextLeafId = 1;
+
+/// Module-level so each planner's view (xterm scrollback, ACP transcript)
+/// survives the popup unmounting between opens and switching between
+/// planners — same idea as the AgentPane leaf pools. Keyed by workspace id,
+/// or `GLOBAL`. No leaf = no session yet: the popup shows the landing view.
+const leaves = new Map<string, PlannerLeaf>();
+/// The ACP leaves' states by key, in the shape `AcpAgentSlot` adopts from.
+const acpStates = new Map<string, AcpLeafState>();
 /// What each repo planner is reading, once its session is up.
 const checkouts = new Map<string, PlannerCheckout | null>();
 const listeners = new Set<() => void>();
@@ -73,37 +93,53 @@ function keyOf(scope: WorkspaceId | null): string {
 function dropLeaf(key: string) {
   const leaf = leaves.get(key);
   leaves.delete(key);
+  acpStates.delete(key);
   checkouts.delete(key);
-  if (leaf) detachAgentLeafState(leaf);
+  if (leaf?.kind === "pty") detachAgentLeafState(leaf.state);
+  if (leaf?.kind === "acp") detachAcpLeafState(leaf.state);
 }
 
-/// Start (or, with `resume`, replace) the planner's session. `prompt` is a
-/// new session's first message.
+/// Start (or, with `resume`, replace) the planner's session over
+/// `transport`. `prompt` is a new session's first message.
 function startLeaf(
   scope: WorkspaceId | null,
-  opts: { resume?: string; prompt?: string } = {},
-): AgentLeafState {
+  opts: { resume?: string; prompt?: string; transport?: AgentTransport } = {},
+): PlannerLeaf {
   const key = keyOf(scope);
-  if (opts.resume || leaves.get(key)?.exited) dropLeaf(key);
+  if (opts.resume || leaves.get(key)?.state.exited) dropLeaf(key);
   let leaf = leaves.get(key);
   if (!leaf) {
-    leaf = createAgentLeafState(
-      null,
-      {
-        kind: "planner",
-        workspaceId: scope,
-        resume: opts.resume,
-        prompt: opts.prompt,
-        onCheckout: (c) => {
-          checkouts.set(key, c);
-          notify();
-        },
+    const mode = {
+      kind: "planner" as const,
+      workspaceId: scope,
+      resume: opts.resume,
+      prompt: opts.prompt,
+      onCheckout: (c: PlannerCheckout | null) => {
+        checkouts.set(key, c);
+        notify();
       },
-      notify,
-    );
+    };
+    const id = nextLeafId++;
+    if ((opts.transport ?? "acp") === "acp") {
+      const state = createAcpLeafState(NO_WORKTREE, mode, notify);
+      leaf = { kind: "acp", id, state };
+      acpStates.set(key, state);
+    } else {
+      leaf = { kind: "pty", id, state: createAgentLeafState(null, mode, notify) };
+    }
     leaves.set(key, leaf);
   }
   return leaf;
+}
+
+/// Planners aren't worktrees; the ACP pane's worktree-only affordances
+/// (`@file` completion, opening files) stay inert.
+const NO_WORKTREE = "" as WorktreeId;
+
+/// Claude conversations reopen over ACP; other backends' saved ids belong
+/// to their CLIs, so those resume in a terminal.
+function resumeTransport(entry: AgentHistoryEntry): AgentTransport {
+  return entry.backend === "claudeCode" ? "acp" : "pty";
 }
 
 /// Every planner's activity, polled while `enabled` (global key = `GLOBAL`).
@@ -184,6 +220,8 @@ export function PlannerPopup() {
   /// Landing-view prompt drafts, per planner.
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [behind, setBehind] = useState<number | null>(null);
+  /// Issue references bound for an ACP planner's composer.
+  const [insert, setInsert] = useState<{ text: string; nonce: number } | null>(null);
   const [, rerender] = useReducer((n: number) => n + 1, 0);
 
   useEffect(() => {
@@ -196,7 +234,7 @@ export function PlannerPopup() {
   // A session that ended (`/exit`, a crash, its repo closed) goes back to
   // the landing view on the next open rather than showing a tombstone.
   useEffect(() => {
-    if (open && leaves.get(key)?.exited) {
+    if (open && leaves.get(key)?.state.exited) {
       dropLeaf(key);
       rerender();
     }
@@ -205,8 +243,9 @@ export function PlannerPopup() {
   useEffect(() => {
     if (!open) return;
     const slot = slotRef.current;
-    const state = leaves.get(key);
-    if (!slot || !state) return;
+    const leaf = leaves.get(key);
+    if (!slot || leaf?.kind !== "pty") return;
+    const state = leaf.state;
     slot.appendChild(state.host);
     setError(state.error);
     state.errorListeners.add(setError);
@@ -225,7 +264,7 @@ export function PlannerPopup() {
 
   const leaf = leaves.get(key);
   const landing = !leaf;
-  const ready = leaf?.sessionId != null;
+  const ready = leaf?.state.sessionId != null;
   const checkout = checkouts.get(key) ?? null;
   const repo = scope ? workspaces.find((w) => w.id === scope) : undefined;
   const forgeReady = !!repo && !!forgeStatus?.authenticated;
@@ -285,8 +324,8 @@ export function PlannerPopup() {
   function resume(entry: AgentHistoryEntry) {
     setHistoryOpen(false);
     // Already the conversation on screen → nothing to do.
-    if (entry.liveAgentId && entry.liveAgentId === leaf?.sessionId) return;
-    startLeaf(scope, { resume: entry.sessionId });
+    if (entry.liveAgentId && entry.liveAgentId === leaf?.state.sessionId) return;
+    startLeaf(scope, { resume: entry.sessionId, transport: resumeTransport(entry) });
     setGeneration((g) => g + 1);
   }
 
@@ -301,7 +340,7 @@ export function PlannerPopup() {
     // Wait for the kill before showing the landing view, so a quick restart
     // can't race it and re-attach to the dying session. The next start
     // refreshes the checkout.
-    if (old?.sessionId) await killAgent(old.sessionId).catch(() => {});
+    if (old?.state.sessionId) await killAgent(old.state.sessionId).catch(() => {});
     dropLeaf(key);
     setGeneration((g) => g + 1);
   }
@@ -309,11 +348,11 @@ export function PlannerPopup() {
   /// Bring the checkout up to date without losing the conversation: resume
   /// the running conversation, which refreshes the checkout on relaunch.
   async function refreshCheckout() {
-    const sessionId = leaf?.sessionId;
+    const sessionId = leaf?.state.sessionId;
     const entries = await listPlannerHistory(scope).catch(() => []);
     const current = entries.find((e) => e.liveAgentId && e.liveAgentId === sessionId);
     if (!current) return void newSession();
-    startLeaf(scope, { resume: current.sessionId });
+    startLeaf(scope, { resume: current.sessionId, transport: leaf?.kind });
     setGeneration((g) => g + 1);
   }
 
@@ -326,9 +365,13 @@ export function PlannerPopup() {
       });
       return;
     }
-    if (!leaf.sessionId) return;
-    void pasteText(leaf.sessionId, `${ref} `);
-    leaf.term.focus();
+    if (leaf.kind === "acp") {
+      setInsert((prev) => ({ text: `${ref} `, nonce: (prev?.nonce ?? 0) + 1 }));
+      return;
+    }
+    if (!leaf.state.sessionId) return;
+    void pasteText(leaf.state.sessionId, `${ref} `);
+    leaf.state.term.focus();
   }
 
   function startWorktree(issue: ForgeIssue) {
@@ -482,7 +525,7 @@ export function PlannerPopup() {
             </span>
           )}
         </div>
-        {error && (
+        {error && leaf?.kind === "pty" && (
           <div className="m-3 shrink-0 rounded border border-red-900/60 bg-red-950/40 px-3 py-2 text-xs text-red-300">
             {error}
           </div>
@@ -510,6 +553,19 @@ export function PlannerPopup() {
                 onStart={start}
                 onResume={resume}
               />
+            ) : leaf.kind === "acp" ? (
+              <div className="absolute inset-0 overflow-hidden">
+                <AcpAgentSlot
+                  key={leaf.id}
+                  worktreeId={NO_WORKTREE}
+                  mode={{ kind: "attach", agentId: leaf.state.sessionId ?? "" }}
+                  poolKey={key}
+                  visible={open}
+                  leafStates={acpStates}
+                  onSession={() => {}}
+                  insertRequest={insert}
+                />
+              </div>
             ) : (
               <div ref={slotRef} className="absolute inset-0 overflow-hidden" />
             )}
@@ -530,11 +586,11 @@ export function PlannerPill() {
   const currentRepo = useCurrentRepo();
   const scope = usePlannerScope();
   const [hasSession, setHasSession] = useState(() =>
-    [...leaves.values()].some((l) => l.sessionId != null),
+    [...leaves.values()].some((l) => l.state.sessionId != null),
   );
 
   useEffect(() => {
-    const cb = () => setHasSession([...leaves.values()].some((l) => l.sessionId != null));
+    const cb = () => setHasSession([...leaves.values()].some((l) => l.state.sessionId != null));
     listeners.add(cb);
     return () => {
       listeners.delete(cb);

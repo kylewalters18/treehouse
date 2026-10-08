@@ -151,6 +151,28 @@ pub async fn resolve(app: &AppHandle, backend: AgentBackendKind) -> AppResult<Ve
 /// it drives instead of the copy bundled with the SDK.
 pub const CLAUDE_EXECUTABLE_ENV: &str = "CLAUDE_CODE_EXECUTABLE";
 
+/// argv and extra env for an ACP launch of `backend` with the default
+/// adapter (may `npm install` the pinned one first). For Claude, the env
+/// points the adapter at the user's own `claude` (see `claude_executable`).
+pub async fn launch_spec(
+    app: &AppHandle,
+    backend: AgentBackendKind,
+) -> AppResult<(Vec<String>, Vec<(String, String)>)> {
+    let argv = resolve(app, backend).await?;
+    Ok((argv, launch_env(app, backend).await))
+}
+
+/// The extra env an ACP launch of `backend` gets.
+pub async fn launch_env(app: &AppHandle, backend: AgentBackendKind) -> Vec<(String, String)> {
+    let mut env = Vec::new();
+    if backend == AgentBackendKind::ClaudeCode {
+        if let Some(exe) = claude_executable(app).await {
+            env.push((CLAUDE_EXECUTABLE_ENV.to_string(), exe.to_string_lossy().into_owned()));
+        }
+    }
+    env
+}
+
 /// The Claude CLI a PTY tab would run — the program in Settings' Claude
 /// command (default `claude`), found on the imported shell PATH — so ACP and
 /// PTY sessions run the same CLI version and their conversations resume in

@@ -129,6 +129,8 @@ test("planner opens on a landing view and its prompt starts the session", async 
   const args = (await recorded(page)).open[0];
   expect(args.workspaceId).toBe(FAKE_WORKSPACE.id);
   expect(args.prompt).toBe("plan the LSP work");
+  // New planner sessions run over ACP.
+  expect(args.transport).toBe("acp");
   await expect(dialog.getByText("84ae864")).toBeVisible();
   await expect(dialog.getByRole("button", { name: /3 new commits on origin\/main/ })).toBeVisible();
 });

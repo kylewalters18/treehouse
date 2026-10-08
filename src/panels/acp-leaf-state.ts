@@ -1,4 +1,4 @@
-import { attachAgent, killAgent, launchAgent } from "@/ipc/client";
+import { attachAgent, killAgent, launchAgent, openPlanner } from "@/ipc/client";
 import type { AgentEvent, AgentSessionId, WorktreeId } from "@/ipc/types";
 import { applyAcpEvent, emptyTranscript, type AcpTranscript } from "@/lib/acp-transcript";
 import type { AgentLeafMode } from "./agent-leaf-state";
@@ -124,7 +124,20 @@ export function createAcpLeafState(
         id = (await attachAgent(mode.agentId, onEvent)).id;
         if (state.killed) return;
       } else {
-        throw new Error("planners don't run over ACP");
+        const opened = await openPlanner(
+          mode.workspaceId,
+          0,
+          0,
+          onEvent,
+          mode.resume,
+          mode.prompt,
+          "acp",
+        );
+        id = opened.session.id;
+        mode.onCheckout?.(opened.checkout);
+        // Closed while starting: the backend keeps the session (like a
+        // PTY planner); "New session" kills it explicitly.
+        if (state.killed) return;
       }
       state.sessionId = id;
       onSession(id);
@@ -139,6 +152,12 @@ export function createAcpLeafState(
   })();
 
   return state;
+}
+
+/// Stop rendering, leaving the agent running (a hidden planner).
+export function detachAcpLeafState(state: AcpLeafState): void {
+  state.killed = true;
+  state.listeners.clear();
 }
 
 /// Stop rendering AND kill the agent. Called on explicit tab close.

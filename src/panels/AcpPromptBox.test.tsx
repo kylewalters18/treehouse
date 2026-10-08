@@ -39,6 +39,7 @@ function setup(
   overrides: Partial<{
     running: boolean;
     editRequest: { text: string; nonce: number } | null;
+    insertRequest: { text: string; nonce: number } | null;
     narrow: boolean;
   }> = {},
 ) {
@@ -62,6 +63,7 @@ function setup(
       history={HISTORY}
       editRequest={o.editRequest ?? null}
       narrow={o.narrow ?? false}
+      insertRequest={o.insertRequest ?? null}
     />
   );
   const { rerender } = render(box(overrides));
@@ -208,5 +210,15 @@ describe("AcpPromptBox narrow", () => {
     await userEvent.click(model);
     await userEvent.click(screen.getByRole("option", { name: /Haiku 4\.5/ }));
     expect(onSetting).toHaveBeenCalledWith(expect.objectContaining({ via: "config" }), "haiku");
+  });
+});
+
+describe("AcpPromptBox inserts", () => {
+  it("appends inserted text, but not a request that predates mount", async () => {
+    const { input, rerender } = setup({ insertRequest: { text: "#1 Old ", nonce: 1 } });
+    expect(input.value).toBe("");
+    await userEvent.type(input, "look at");
+    rerender({ insertRequest: { text: "#42 Fix login ", nonce: 2 } });
+    expect(input.value).toBe("look at #42 Fix login ");
   });
 });

@@ -74,6 +74,7 @@ export function AcpPromptBox({
   focusNonce,
   history,
   editRequest,
+  insertRequest = null,
   narrow = false,
 }: {
   worktreeId: WorktreeId;
@@ -98,6 +99,9 @@ export function AcpPromptBox({
   history: string[];
   /// Load a sent prompt to edit and resend; a new nonce loads again.
   editRequest: { text: string; nonce: number } | null;
+  /// Append text to the draft (e.g. an issue reference); a new nonce
+  /// inserts again.
+  insertRequest?: { text: string; nonce: number } | null;
   /// Narrow pane: icon-only pickers, shorter copy, no Interrupt button
   /// (⌘⏎ still interrupts).
   narrow?: boolean;
@@ -190,6 +194,18 @@ export function AcpPromptBox({
     const el = inputRef.current;
     if (el) setCaret(el.selectionStart ?? 0);
   }
+
+  // Only inserts requested after mount: a remount (switching planners)
+  // mustn't replay the last one.
+  const seenInsert = useRef(insertRequest?.nonce);
+  useEffect(() => {
+    if (!insertRequest || insertRequest.nonce === seenInsert.current) return;
+    seenInsert.current = insertRequest.nonce;
+    const cur = inputRef.current?.value ?? draft;
+    replaceDraft(cur && !/\s$/.test(cur) ? `${cur} ${insertRequest.text}` : `${cur}${insertRequest.text}`);
+    setHistoryIndex(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [insertRequest?.nonce]);
 
   /// Swap the whole draft, caret at the end.
   function replaceDraft(text: string) {
