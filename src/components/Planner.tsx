@@ -38,6 +38,7 @@ import type {
 import { pasteText } from "@/lib/agent";
 import { cn } from "@/lib/cn";
 import { resolvePlannerScope } from "@/lib/planner-scope";
+import { useAgentActivityRefresh } from "@/lib/use-agent-activity-refresh";
 import {
   createAgentLeafState,
   detachAgentLeafState,
@@ -58,7 +59,8 @@ import { useWorktreesStore } from "@/stores/worktrees";
 import { PlannerIssues } from "./PlannerIssues";
 import { PlannerLanding } from "./PlannerLanding";
 
-const POLL_MS = 1500;
+/// Fallback poll; changes are pushed (`useAgentActivityRefresh`).
+const POLL_MS = 5000;
 /// How often an open repo planner re-checks origin for new commits.
 const BEHIND_POLL_MS = 3 * 60_000;
 const GLOBAL = "global";
@@ -145,24 +147,21 @@ function resumeTransport(entry: AgentHistoryEntry): AgentTransport {
 /// Every planner's activity, polled while `enabled` (global key = `GLOBAL`).
 function usePlannerActivities(enabled: boolean): Map<string, AgentActivity> {
   const [activities, setActivities] = useState<Map<string, AgentActivity>>(new Map());
-  useEffect(() => {
-    if (!enabled) return;
-    let cancelled = false;
-    const tick = () =>
+  const seq = useRef(0);
+  useAgentActivityRefresh(
+    () => {
+      const mine = ++seq.current;
       plannerActivities()
         .then(
           (list) =>
-            !cancelled &&
+            mine === seq.current &&
             setActivities(new Map(list.map((a) => [keyOf(a.workspaceId), a.activity]))),
         )
         .catch(() => {});
-    tick();
-    const t = window.setInterval(tick, POLL_MS);
-    return () => {
-      cancelled = true;
-      window.clearInterval(t);
-    };
-  }, [enabled]);
+    },
+    POLL_MS,
+    enabled,
+  );
   return activities;
 }
 

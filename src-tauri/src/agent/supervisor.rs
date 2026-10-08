@@ -179,6 +179,7 @@ impl AgentRegistry {
         let meta = self.history_meta.clone();
         let hist = self.history.clone();
         let w = hooks::start_watcher(app, self.hook_sessions.clone(), move |id, event, hook| {
+            super::notify::activity_changed();
             // A turn starting (first one names the record) or ending (the
             // reply to show) is all the history needs.
             if !matches!(event, "UserPromptSubmit" | "Stop") {
@@ -282,6 +283,7 @@ impl AgentRegistry {
     }
 
     fn drop_session_state(&self, id: &AgentSessionId) {
+        super::notify::activity_changed();
         self.hook_sessions.remove(id);
         self.history_meta.remove(id);
         self.kiro_meta.remove(id);
@@ -817,6 +819,7 @@ pub fn launch(
             if let Some(ch) = sh.channel.as_ref() {
                 let _ = ch.send(AgentEvent::Status { status: exit });
             }
+            super::notify::activity_changed();
             tracing::info!(%session_id, "agent stream closed");
         })
         .map_err(|e| AppError::Unknown(format!("spawn agent reader: {e}")))?;
@@ -859,6 +862,7 @@ pub fn launch(
         },
     );
     tracing::info!(%session_id, %worktree_id, ?argv, "launched agent");
+    super::notify::activity_changed();
 
     Ok(session)
 }
@@ -999,6 +1003,7 @@ pub fn respond_permission(
     }
     write_stdin(registry, id, if allow { b"\r" } else { b"\x1b" })?;
     let now = Instant::now();
+    super::notify::activity_changed();
     if let Some(mut hook) = registry.hook_sessions.get_mut(&id) {
         if allow {
             // PreToolUse/PostToolUse will confirm; show it moving meanwhile.

@@ -45,6 +45,7 @@ import type {
   WorktreeId,
 } from "@/ipc/types";
 import { cn } from "@/lib/cn";
+import { useAgentActivityRefresh } from "@/lib/use-agent-activity-refresh";
 import { iconButton } from "@/lib/pane-chrome";
 import { runWorktreeSetup } from "@/lib/worktree-setup";
 import {
@@ -56,6 +57,9 @@ import {
   type Acks,
   type StatusCounts,
 } from "./worktree-sidebar-model";
+
+/// Fallback poll for the activity dots; changes are pushed.
+const ACTIVITY_FALLBACK_MS = 4000;
 
 export function WorktreeSidebar() {
   const workspaces = useWorkspaceStore((s) => s.workspaces);
@@ -146,33 +150,32 @@ export function WorktreeSidebar() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workspaceIdsKey, refresh]);
 
-  // Poll agent activity for every open workspace so the dot next to
-  // each worktree (across all repos) stays fresh.
-  useEffect(() => {
-    if (workspaces.length === 0) return;
-    let cancelled = false;
-    async function tick() {
-      const lists = await Promise.allSettled(
+  // Agent activity for every open workspace, so the dot next to each
+  // worktree (across all repos) stays fresh: refetched when Rust reports a
+  // change, with a slower poll for output-timed terminal agents. Responses
+  // can land out of order; only the latest request's answer is applied.
+  const activitySeq = useRef(0);
+  useAgentActivityRefresh(
+    () => {
+      const seq = ++activitySeq.current;
+      void Promise.allSettled(
         useWorkspaceStore
           .getState()
           .workspaces.map((ws) => listAgentActivity(ws.id)),
-      );
-      if (cancelled) return;
-      const map: Record<WorktreeId, WorktreeActivity> = {};
-      for (const r of lists) {
-        if (r.status !== "fulfilled") continue;
-        for (const w of r.value) map[w.worktreeId] = w;
-      }
-      setActivity(map);
-    }
-    void tick();
-    const handle = window.setInterval(tick, 1500);
-    return () => {
-      cancelled = true;
-      window.clearInterval(handle);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [workspaceIdsKey]);
+      ).then((lists) => {
+        if (seq !== activitySeq.current) return;
+        const map: Record<WorktreeId, WorktreeActivity> = {};
+        for (const r of lists) {
+          if (r.status !== "fulfilled") continue;
+          for (const w of r.value) map[w.worktreeId] = w;
+        }
+        setActivity(map);
+      });
+    },
+    ACTIVITY_FALLBACK_MS,
+    workspaces.length > 0,
+    [workspaceIdsKey],
+  );
 
   const showRepoChips = workspaces.length > 1;
 

@@ -2,6 +2,7 @@ pub mod acp;
 pub mod history;
 pub mod hooks;
 pub mod kiro_history;
+pub mod notify;
 pub mod patterns;
 pub mod supervisor;
 

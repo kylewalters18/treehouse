@@ -235,6 +235,7 @@ pub fn run() {
             tracing::info!("treehouse started");
             let handle = app.handle().clone();
             let state: tauri::State<AppState> = handle.state();
+            agent::notify::init(&handle);
             if let Err(e) = state.agents.start_hook_watcher(&handle) {
                 tracing::warn!(?e, "failed to start Claude hook watcher");
             }

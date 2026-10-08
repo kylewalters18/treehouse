@@ -19,6 +19,7 @@ import type {
   WorktreeId,
 } from "@/ipc/types";
 import { cn } from "@/lib/cn";
+import { useAgentActivityRefresh } from "@/lib/use-agent-activity-refresh";
 import { asMessage } from "@/lib/errors";
 import { commentStatus, useCommentsStore } from "@/stores/comments";
 import { useDiffsStore } from "@/stores/diffs";
@@ -38,7 +39,9 @@ import {
   type BoardColumn,
 } from "./agent-board-model";
 
-const POLL_MS = 1000;
+/// Fallback poll (changes are pushed): keeps relative times and
+/// output-timed terminal agents current.
+const POLL_MS = 2000;
 
 /// Everything a card renders beyond the overview itself.
 type CardContext = {
@@ -132,11 +135,9 @@ function AgentBoardOverlay() {
     }
   }, []);
 
-  useEffect(() => {
-    void refresh();
-    const handle = window.setInterval(() => void refresh(), POLL_MS);
-    return () => window.clearInterval(handle);
-  }, [refresh, workspaceIdsKey]);
+  // Refetched on every activity change Rust reports; the poll keeps
+  // relative times and output-timed terminal agents current.
+  useAgentActivityRefresh(() => void refresh(), POLL_MS, true, [refresh, workspaceIdsKey]);
 
   useEffect(() => {
     rootRef.current?.focus();

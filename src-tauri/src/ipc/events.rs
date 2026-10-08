@@ -6,6 +6,10 @@
 
 use crate::util::ids::{WorkspaceId, WorktreeId};
 
+/// Some agent's activity (or liveness) changed — see `agent::notify`. No
+/// payload; listeners refetch.
+pub const AGENT_ACTIVITY_CHANGED: &str = "agents://activity-changed";
+
 pub fn worktrees_changed(workspace_id: WorkspaceId) -> String {
     format!("workspace://{workspace_id}/worktrees-changed")
 }

@@ -81,6 +81,8 @@ struct AcpShared {
     stderr_tail: VecDeque<String>,
     /// Set by `kill`, so the teardown that follows isn't reported as a crash.
     killed: bool,
+    /// Activity and liveness last pushed (see `notify_if_changed`).
+    reported: Option<(AgentActivity, bool)>,
     exited_at: Option<u64>,
 }
 
@@ -92,6 +94,17 @@ impl AcpShared {
             }
         }
         push_log(&mut self.log, ev);
+        self.notify_if_changed();
+    }
+
+    /// Tell the renderer when this session's activity or liveness moved.
+    /// Every activity change comes with a transcript event or a status.
+    fn notify_if_changed(&mut self) {
+        let now = Some((self.view.activity(), self.live()));
+        if self.reported != now {
+            self.reported = now;
+            super::notify::activity_changed();
+        }
     }
 
     /// Stream a state event (`Commands`, `Usage`) without logging it; the
@@ -119,6 +132,7 @@ impl AcpShared {
         if let Some(ch) = &self.channel {
             let _ = ch.send(AgentEvent::Status { status });
         }
+        self.notify_if_changed();
     }
 
     fn live(&self) -> bool {
@@ -365,6 +379,7 @@ pub fn launch(
         waiting: VecDeque::new(),
         stderr_tail: VecDeque::new(),
         killed: false,
+        reported: None,
         exited_at: None,
     };
     shared.set_status(AgentStatus::Running);
@@ -1276,6 +1291,7 @@ mod tests {
             waiting: VecDeque::new(),
             stderr_tail: VecDeque::new(),
             killed: false,
+            reported: None,
             exited_at: None,
         };
         registry.acp.insert(

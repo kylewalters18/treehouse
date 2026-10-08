@@ -113,6 +113,11 @@ export function listRecentWorkspaces(): Promise<RecentWorkspace[]> {
 /// listens for it on mount and (re)calls listWorkspaces() to hydrate
 /// the store — handles the race where the renderer mounts before
 /// restore completes.
+/// Some agent's activity changed (Rust `agent::notify`); refetch.
+export function onAgentActivityChanged(handler: () => void): Promise<UnlistenFn> {
+  return listen<void>("agents://activity-changed", () => handler());
+}
+
 export function onWorkspacesRestored(
   handler: () => void,
 ): Promise<UnlistenFn> {
