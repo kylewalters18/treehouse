@@ -283,3 +283,85 @@ export function lineOfSnippet(text: string, snippet: string): number | null {
   const idx = lines.findIndex((l) => l.includes(first));
   return idx >= 0 ? idx + 1 : null;
 }
+
+/// Above this many cells (old × new lines left after trimming the shared
+/// head and tail) the line diff stops looking for moved/kept lines and
+/// counts the whole middle as replaced.
+const LCS_MAX_CELLS = 1_000_000;
+
+/// Lines added and removed going from `oldText` to `newText`: a real line
+/// diff (longest common subsequence), so an edit that changes one line of
+/// a ten-line snippet counts +1 −1, not +10 −10.
+export function lineDiffStats(oldText: string, newText: string): { added: number; removed: number } {
+  const split = (s: string) => (s === "" ? [] : s.replace(/\n$/, "").split("\n"));
+  const a = split(oldText);
+  const b = split(newText);
+  let start = 0;
+  while (start < a.length && start < b.length && a[start] === b[start]) start++;
+  let endA = a.length;
+  let endB = b.length;
+  while (endA > start && endB > start && a[endA - 1] === b[endB - 1]) {
+    endA--;
+    endB--;
+  }
+  const m = endA - start;
+  const n = endB - start;
+  if (m === 0 || n === 0 || m * n > LCS_MAX_CELLS) return { added: n, removed: m };
+  // One-row LCS length.
+  let prev = new Uint32Array(n + 1);
+  let cur = new Uint32Array(n + 1);
+  for (let i = 1; i <= m; i++) {
+    const ai = a[start + i - 1];
+    for (let j = 1; j <= n; j++) {
+      cur[j] = ai === b[start + j - 1] ? prev[j - 1] + 1 : Math.max(prev[j], cur[j - 1]);
+    }
+    [prev, cur] = [cur, prev];
+  }
+  const common = prev[n];
+  return { added: n - common, removed: m - common };
+}
+
+/// One file a turn changed, with line counts summed over its edits.
+export type TurnChange = {
+  /// As the agent reported it (usually absolute).
+  path: string;
+  status: "added" | "modified" | "deleted";
+  added: number;
+  removed: number;
+};
+
+/// The files edited in the turn that `end` (a `turnEnd` item's index)
+/// closes: its tool calls' diffs and deletes, back to the previous turn's
+/// end, in first-touched order. Failed calls don't count.
+export function turnChanges(items: AcpItem[], end: number): TurnChange[] {
+  let start = end - 1;
+  while (start >= 0 && items[start].kind !== "turnEnd") start--;
+  const byPath = new Map<string, TurnChange & { created: boolean }>();
+  const entry = (path: string) => {
+    let c = byPath.get(path);
+    if (!c) {
+      c = { path, status: "modified", added: 0, removed: 0, created: false };
+      byPath.set(path, c);
+    }
+    return c;
+  };
+  for (let i = start + 1; i < end; i++) {
+    const it = items[i];
+    if (it.kind !== "tool" || it.tool.status === "failed") continue;
+    const { tool } = it;
+    if (tool.kind === "delete") {
+      for (const l of tool.locations) entry(l.path).status = "deleted";
+      continue;
+    }
+    for (const c of tool.content) {
+      if (c.kind !== "diff") continue;
+      const e = entry(c.path);
+      if (!c.oldText && e.added === 0 && e.removed === 0) e.created = true;
+      const s = lineDiffStats(c.oldText ?? "", c.newText);
+      e.added += s.added;
+      e.removed += s.removed;
+      e.status = e.created ? "added" : "modified";
+    }
+  }
+  return [...byPath.values()].map(({ created: _created, ...c }) => c);
+}

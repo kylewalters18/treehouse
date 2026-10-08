@@ -29,6 +29,7 @@ import type { AcpLeafState } from "./acp-leaf-state";
 import { applyAcpEvent, emptyTranscript } from "@/lib/acp-transcript";
 import type { AcpEvent, AcpToolCall } from "@/ipc/types";
 import { useWorktreesStore } from "@/stores/worktrees";
+import { useDiffsStore } from "@/stores/diffs";
 
 function renderSlot(events: AcpEvent[]) {
   const transcript = emptyTranscript();
@@ -191,5 +192,45 @@ describe("⌃C", () => {
     await userEvent.click(screen.getByRole("textbox"));
     await userEvent.keyboard("{Control>}c{/Control}");
     expect(client.acpCancel).toHaveBeenCalledWith("agent-1");
+  });
+});
+
+describe("files changed this turn", () => {
+  const edit = (id: string, path: string, oldText: string | null, newText: string): AcpEvent => ({
+    kind: "tool",
+    tool: {
+      id,
+      title: `Edit ${path}`,
+      kind: "edit",
+      status: "completed",
+      name: "Edit",
+      locations: [],
+      content: [{ kind: "diff", path, oldText, newText }],
+      rawInput: null,
+    },
+  });
+
+  it("summarizes the turn's files and opens one in the diff", async () => {
+    renderSlot([
+      { kind: "userMessage", text: "refactor", attachments: [] },
+      edit("t1", "/repo/src/lib.rs", "a\nb\nc", "a\nB\nc"),
+      edit("t2", "/repo/src/new.rs", null, "x\ny"),
+      { kind: "turnEnded", stopReason: "end_turn" } as AcpEvent,
+    ]);
+    expect(screen.getByText("2 files changed")).toBeTruthy();
+    await userEvent.click(screen.getByTitle("Open src/new.rs in the diff"));
+    const d = useDiffsStore.getState();
+    expect(d.selectedFile["wt-1"]).toBe("src/new.rs");
+    expect(d.selectedGroup["wt-1"]).toBe("branch");
+    expect(d.view["wt-1"]).toBe("diff");
+  });
+
+  it("shows nothing for a turn without edits", () => {
+    renderSlot([
+      { kind: "userMessage", text: "hi", attachments: [] },
+      { kind: "agentText", text: "hello" } as AcpEvent,
+      { kind: "turnEnded", stopReason: "end_turn" } as AcpEvent,
+    ]);
+    expect(screen.queryByText(/files? changed/)).toBeNull();
   });
 });

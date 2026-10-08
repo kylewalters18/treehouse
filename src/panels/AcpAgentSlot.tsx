@@ -16,6 +16,7 @@ import {
   ChevronDown,
   ChevronRight,
   Circle,
+  FileDiff,
   CircleCheck,
   CircleDot,
   FileText,
@@ -63,12 +64,17 @@ import {
   canSubmitAnswer,
   commandOf,
   diffText,
+  lineDiffStats,
   lineOfSnippet,
   questionAnswer,
   stopReasonLabel,
+  turnChanges,
   type AcpItem,
   type FormValue,
+  type TurnChange,
 } from "@/lib/acp-transcript";
+import { useDiffsStore } from "@/stores/diffs";
+import { useUiStore } from "@/stores/ui";
 import { useWorktreesStore } from "@/stores/worktrees";
 import { openWorktreeFile } from "./term-path-links";
 import { useToastsStore } from "@/stores/toasts";
@@ -144,9 +150,20 @@ export function AcpAgentSlot({
   const userTexts = t.items.flatMap((it) => (it.kind === "user" ? [it.text] : []));
   const history = useMemo(() => promptHistory(userTexts), [userTexts.join("\u0000")]);
   let lastUser = -1;
+  let lastTurnEnd = -1;
   t.items.forEach((it, i) => {
     if (it.kind === "user" && it.text.trim()) lastUser = i;
+    if (it.kind === "turnEnd") lastTurnEnd = i;
   });
+  /// Files each finished turn changed, by its `turnEnd` index.
+  const changesByEnd = useMemo(() => {
+    const out = new Map<number, TurnChange[]>();
+    t.items.forEach((it, i) => {
+      if (it.kind === "turnEnd") out.set(i, turnChanges(t.items, i));
+    });
+    return out;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.version]);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -315,6 +332,8 @@ export function AcpAgentSlot({
                 onAnswer={answer}
                 onAnswerQuestion={answerQuestion}
                 onEdit={group.start === lastUser && canEdit ? editLast : undefined}
+                changes={changesByEnd.get(group.start)}
+                latest={group.start === lastTurnEnd}
               />
             ),
           )}
@@ -383,9 +402,15 @@ const Row = memo(function Row({
   onAnswer,
   onAnswerQuestion,
   onEdit,
+  changes,
+  latest = false,
 }: {
   item: AcpItem;
   pending: boolean;
+  /// For a `turnEnd`: the files its turn changed.
+  changes?: TurnChange[];
+  /// This is the transcript's last finished turn (its summary opens).
+  latest?: boolean;
   /// Offered on the last sent prompt: load it into the composer to edit.
   onEdit?: (text: string) => void;
   onAnswer: (req: AcpPermissionRequest, optionId: string) => void;
@@ -443,7 +468,13 @@ const Row = memo(function Row({
       return <QuestionCard item={item} pending={pending} onAnswer={onAnswerQuestion} />;
     case "turnEnd": {
       const label = stopReasonLabel(item.stopReason);
-      return label ? <div className="text-[11px] text-neutral-500">{label}</div> : null;
+      if (!label && !changes?.length) return null;
+      return (
+        <div className="flex min-w-0 flex-col gap-1.5">
+          {label && <div className="text-[11px] text-neutral-500">{label}</div>}
+          {changes && changes.length > 0 && <TurnSummary changes={changes} defaultOpen={latest} />}
+        </div>
+      );
     }
     case "error":
       return <ErrorRow message={item.message} />;
@@ -491,19 +522,18 @@ const KIND_ICON: Record<string, LucideIcon> = {
   switch_mode: ListChecks,
 };
 
-/// Added / removed line counts across a tool call's diffs, or null when
-/// it has none. The agent sends whole snippets, so these count snippet
-/// lines on each side, not a minimal diff.
+/// Added / removed line counts across a tool call's diffs (a line diff of
+/// each snippet), or null when it has none.
 function diffStats(tool: AcpToolCall): { added: number; removed: number } | null {
-  const lines = (s: string) => (s ? s.replace(/\n$/, "").split("\n").length : 0);
   let added = 0;
   let removed = 0;
   let any = false;
   for (const c of tool.content) {
     if (c.kind !== "diff") continue;
     any = true;
-    added += lines(c.newText);
-    removed += lines(c.oldText ?? "");
+    const s = lineDiffStats(c.oldText ?? "", c.newText);
+    added += s.added;
+    removed += s.removed;
   }
   return any ? { added, removed } : null;
 }
@@ -543,12 +573,7 @@ function ToolRow({ tool }: { tool: AcpToolCall }) {
         >
           {toolTitle(tool)}
         </span>
-        {stats && (
-          <span className="shrink-0 font-mono text-[10.5px] tabular-nums">
-            <span className="text-emerald-400/80">+{stats.added}</span>{" "}
-            <span className="text-rose-400/80">−{stats.removed}</span>
-          </span>
-        )}
+        {stats && <DiffCounts added={stats.added} removed={stats.removed} />}
         {failed && <span className="shrink-0 text-[10.5px] text-rose-400">failed</span>}
         <span className="ml-auto flex shrink-0 items-center gap-0.5">
           {target && <OpenFileButton target={target} />}
@@ -1119,4 +1144,136 @@ function PlanList({ entries, narrow }: { entries: AcpPlanEntry[]; narrow: boolea
       </div>
     </div>
   );
+}
+
+/// Show this many files before "Show N more".
+const SUMMARY_FILES = 6;
+
+/// A finished turn's changed files with line counts. Each opens in the diff
+/// pane; the latest turn's starts open, earlier ones fold to one line.
+function TurnSummary({ changes, defaultOpen }: { changes: TurnChange[]; defaultOpen: boolean }) {
+  const ctx = useContext(WorktreeContext);
+  const [open, setOpen] = useState(defaultOpen);
+  const [all, setAll] = useState(false);
+  // A newer turn finishing folds this one away.
+  useEffect(() => setOpen(defaultOpen), [defaultOpen]);
+  const rows = changes.map((c) => ({ ...c, rel: ctx ? relativeTo(ctx.root, c.path) : null }));
+  const added = changes.reduce((n, c) => n + c.added, 0);
+  const removed = changes.reduce((n, c) => n + c.removed, 0);
+  const firstRel = rows.find((r) => r.rel !== null)?.rel ?? null;
+  const shown = all ? rows : rows.slice(0, SUMMARY_FILES);
+  return (
+    <div className="min-w-0 rounded-md border border-neutral-800 bg-neutral-900/60">
+      <div className="flex min-w-0 items-center gap-2 px-2.5 py-1.5 text-[11.5px]">
+        <button
+          onClick={() => setOpen((o) => !o)}
+          className="flex min-w-0 items-center gap-2 text-left"
+          aria-expanded={open}
+        >
+          <FileDiff size={12} className="shrink-0 text-neutral-500" />
+          <span className="truncate text-neutral-300">
+            {changes.length} file{changes.length === 1 ? "" : "s"} changed
+          </span>
+          <DiffCounts added={added} removed={removed} />
+          <ChevronRight
+            size={11}
+            className={cn("shrink-0 text-neutral-500 transition-transform", open && "rotate-90")}
+          />
+        </button>
+        {ctx && firstRel !== null && (
+          <button
+            onClick={() => openInDiff(ctx.worktreeId, firstRel)}
+            title="Open these changes in the diff"
+            className="ml-auto flex h-5 shrink-0 items-center rounded px-1.5 text-[11px] text-blue-400 transition-colors hover:bg-neutral-800"
+          >
+            Review
+          </button>
+        )}
+      </div>
+      {open && (
+        <div className="border-t border-neutral-800 py-1">
+          {shown.map((r) => (
+            <ChangeRow key={r.path} change={r} rel={r.rel} worktreeId={ctx?.worktreeId ?? null} />
+          ))}
+          {rows.length > SUMMARY_FILES && (
+            <button
+              onClick={() => setAll((a) => !a)}
+              className="px-2.5 py-0.5 text-[11px] text-neutral-500 hover:text-neutral-300"
+            >
+              {all ? "Show fewer" : `Show ${rows.length - SUMMARY_FILES} more`}
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+const CHANGE_MARK: Record<TurnChange["status"], { mark: string; className: string; label: string }> = {
+  added: { mark: "A", className: "text-emerald-400/80", label: "Added" },
+  modified: { mark: "M", className: "text-neutral-500", label: "Modified" },
+  deleted: { mark: "D", className: "text-rose-400/80", label: "Deleted" },
+};
+
+function ChangeRow({
+  change,
+  rel,
+  worktreeId,
+}: {
+  change: TurnChange;
+  rel: string | null;
+  worktreeId: WorktreeId | null;
+}) {
+  const shown = rel ?? change.path;
+  const slash = shown.lastIndexOf("/");
+  const mark = CHANGE_MARK[change.status];
+  const body = (
+    <>
+      <span className={cn("w-3 shrink-0 font-mono text-[10.5px]", mark.className)} title={mark.label}>
+        {mark.mark}
+      </span>
+      <span className="min-w-0 flex-1 truncate font-mono text-[11px]">
+        {slash >= 0 && <span className="text-neutral-500">{shown.slice(0, slash + 1)}</span>}
+        <span className={rel !== null ? "text-neutral-200" : "text-neutral-400"}>{shown.slice(slash + 1)}</span>
+      </span>
+      {change.status !== "deleted" && <DiffCounts added={change.added} removed={change.removed} />}
+    </>
+  );
+  if (rel === null || worktreeId === null) {
+    return (
+      <div className="flex min-w-0 items-center gap-2 px-2.5 py-[3px]" title={`${change.path} (outside this worktree)`}>
+        {body}
+      </div>
+    );
+  }
+  return (
+    <button
+      onClick={() => openInDiff(worktreeId, rel)}
+      title={`Open ${rel} in the diff`}
+      className="flex w-full min-w-0 items-center gap-2 px-2.5 py-[3px] text-left hover:bg-neutral-800/60"
+    >
+      {body}
+    </button>
+  );
+}
+
+function DiffCounts({ added, removed }: { added: number; removed: number }) {
+  return (
+    <span className="shrink-0 font-mono text-[10.5px] tabular-nums">
+      <span className="text-emerald-400/80">+{added}</span>{" "}
+      <span className="text-rose-400/80">−{removed}</span>
+    </span>
+  );
+}
+
+/// Show `rel` in the diff pane: the branch's changes (what merge-back
+/// ships), with the Changes list beside it, and the diff not hidden behind
+/// a maximized bottom pane.
+function openInDiff(worktreeId: WorktreeId, rel: string) {
+  const ui = useUiStore.getState();
+  ui.setDiffSidebarTab("changes");
+  if (ui.bottomPaneMaximized) useUiStore.setState({ bottomPaneMaximized: false });
+  const diffs = useDiffsStore.getState();
+  diffs.selectFile(worktreeId, rel, "branch");
+  diffs.setView(worktreeId, "diff");
 }
