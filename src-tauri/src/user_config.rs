@@ -1,7 +1,8 @@
 //! Unified user-edited configuration at `<app_config>/treehouse.toml`.
 //!
 //! Replaces the per-feature TOMLs we used to ship (`languages.toml`,
-//! `worktree_lsp.toml`, `workspace_setup.toml`, `agent_status.toml`)
+//! `worktree_lsp.toml`, `workspace_setup.toml`, and the since-retired
+//! `agent_status.toml`)
 //! with a single file the user can edit once. App-managed UI state
 //! (theme, default sync strategy, the per-language enabled flags
 //! you flip from the cog menu) still lives in `settings.json` —
@@ -71,12 +72,10 @@
 //! # ACP mode (Kiro) — see `agent::acp::adapter`.
 //! [agent.acp]
 //! claudeCode = "/opt/my-claude-acp"
-//!
-//! # Agent status patterns — substrings scanned on PTY output.
-//! [agent.status]
-//! attention = ["[y/N]", "Press enter", "requires approval"]
-//! idle = ["ask a question or describe a task"]
 //! ```
+//!
+//! An `[agent.status]` table from older versions (PTY status patterns) is
+//! ignored: terminal agents other than Claude no longer report status.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -85,7 +84,6 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 use ts_rs::TS;
 
-use crate::agent::patterns::{AgentPatterns, BackendPatterns};
 use crate::agent::{AgentBackendKind, AgentTransport};
 use crate::lsp::overrides::LspOverride;
 use crate::lsp::LspConfig;
@@ -146,11 +144,8 @@ const SEED_HEADER: &str = "\
 #   [agent.acp]                          # override an ACP adapter (optional;
 #       claudeCode = \"/opt/my-claude-acp\" # default: treehouse-managed install)
 #
-#   [agent.status]
-#       attention = [\"[y/N]\", \"Press enter\", \"requires approval\"]
-#       idle = [\"ask a question or describe a task\"]
-#
-# Reload via Cmd+Shift+P → \"Settings: Reload\".
+# Changes apply the next time each setting is read (a file open, a
+# worktree create, an agent launch); no reload needed.
 ";
 
 /// Top-level user config.
@@ -209,8 +204,6 @@ pub struct WorktreeHookEntry {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AgentSection {
-    #[serde(default)]
-    pub status: AgentPatterns,
     /// Named launch profiles (`[[agent.profile]]`) for the agent pane's
     /// launch menu.
     #[serde(default, rename = "profile", skip_serializing_if = "Vec::is_empty")]
@@ -519,47 +512,6 @@ pub async fn set_worktree_hooks(
     .await
 }
 
-/// Insert or replace the `[agent.status.<backend>]` table for one
-/// backend, leaving the other backends' sections (and the rest of the
-/// file) untouched. `backend_key` is the camelCase serde key
-/// (`claudeCode` / `kiro` / `codex`).
-pub async fn upsert_agent_backend(
-    app: &AppHandle,
-    backend_key: &str,
-    patterns: &BackendPatterns,
-) -> AppResult<()> {
-    write_edited(app, |doc| {
-        upsert_agent_backend_in(doc, backend_key, patterns)
-    })
-    .await
-}
-
-/// Drop the `[agent.status.<backend>]` table so [`agent::patterns::load`]
-/// re-fills that backend's built-in defaults. Prunes the now-empty
-/// `[agent.status]` / `[agent]` parents so we don't leave dangling
-/// headers. No-op when absent.
-pub async fn remove_agent_backend(app: &AppHandle, backend_key: &str) -> AppResult<()> {
-    write_edited(app, |doc| {
-        remove_agent_backend_in(doc, backend_key);
-        Ok(())
-    })
-    .await
-}
-
-/// Backend keys (`claudeCode` / `kiro` / `codex`) that have an explicit
-/// `[agent.status.<backend>]` table on disk — i.e. customized backends.
-/// Drives the per-backend "Reset to default" affordance in Settings,
-/// mirroring `language_ids`.
-pub async fn customized_backends(app: &AppHandle) -> AppResult<Vec<String>> {
-    let path = config_path(app)?;
-    let text = match tokio::fs::read_to_string(&path).await {
-        Ok(s) => s,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(e) => return Err(AppError::Io(format!("read {}: {e}", path.display()))),
-    };
-    Ok(customized_backends_in(&text))
-}
-
 /// Read-edit-write a `treehouse.toml` document through a comment-
 /// preserving `toml_edit` transform. Ensures the file exists (seeding
 /// the header) first, so a first-ever Settings write lands in a useful
@@ -612,77 +564,6 @@ fn replace_array_of_tables<T: Serialize>(
         arr.push(entry);
     }
     Ok(())
-}
-
-/// Pure core of [`upsert_agent_backend`]. Builds the
-/// `[agent.status.<backend>]` leaf table, creating the implicit
-/// `[agent]` / `[agent.status]` parents so the output is the idiomatic
-/// nested-header form rather than bare `[agent]`.
-fn upsert_agent_backend_in(
-    doc: &mut toml_edit::DocumentMut,
-    backend_key: &str,
-    patterns: &BackendPatterns,
-) -> Result<(), String> {
-    use toml_edit::{Item, Table};
-    let root = doc.as_table_mut();
-    let agent = ensure_table(root, "agent", true);
-    let status = ensure_table(agent, "status", true);
-    let serialized = toml_edit::ser::to_document(patterns).map_err(|e| e.to_string())?;
-    let mut leaf = Table::new();
-    for (k, v) in serialized.as_table().iter() {
-        leaf.insert(k, v.clone());
-    }
-    status.insert(backend_key, Item::Table(leaf));
-    Ok(())
-}
-
-/// Pure core of [`remove_agent_backend`].
-fn remove_agent_backend_in(doc: &mut toml_edit::DocumentMut, backend_key: &str) {
-    use toml_edit::Item;
-    let root = doc.as_table_mut();
-    let Some(agent) = root.get_mut("agent").and_then(Item::as_table_mut) else {
-        return;
-    };
-    if let Some(status) = agent.get_mut("status").and_then(Item::as_table_mut) {
-        status.remove(backend_key);
-        if status.is_empty() {
-            agent.remove("status");
-        }
-    }
-    if agent.is_empty() {
-        root.remove("agent");
-    }
-}
-
-/// Pure core of [`customized_backends`].
-fn customized_backends_in(text: &str) -> Vec<String> {
-    let doc = match text.parse::<toml_edit::DocumentMut>() {
-        Ok(d) => d,
-        Err(_) => return Vec::new(),
-    };
-    let status = doc.get("agent").and_then(|a| a.get("status"));
-    ["claudeCode", "kiro", "codex"]
-        .into_iter()
-        .filter(|k| status.and_then(|s| s.get(k)).is_some())
-        .map(|k| k.to_string())
-        .collect()
-}
-
-/// Ensure a child table exists under `parent`, returning a mut ref.
-/// `implicit` controls whether the table emits its own `[header]`
-/// (false) or stays a path segment for nested leaves (true).
-fn ensure_table<'a>(
-    parent: &'a mut toml_edit::Table,
-    key: &str,
-    implicit: bool,
-) -> &'a mut toml_edit::Table {
-    use toml_edit::{Item, Table};
-    if !parent.get(key).map(Item::is_table).unwrap_or(false) {
-        let mut t = Table::new();
-        t.set_implicit(implicit);
-        parent.insert(key, Item::Table(t));
-    }
-    parent.get_mut(key).unwrap().as_table_mut().unwrap()
 }
 
 /// Find-or-create the `[[<parent>.<array>]]` array-of-tables, creating
@@ -759,16 +640,10 @@ pub async fn migrate(app: &AppHandle) -> AppResult<()> {
     let legacy_languages = dir.join("languages.toml");
     let legacy_overrides = dir.join("worktree_lsp.toml");
     let legacy_setup = dir.join("workspace_setup.toml");
-    let legacy_patterns = dir.join("agent_status.toml");
 
-    let any_legacy = [
-        &legacy_languages,
-        &legacy_overrides,
-        &legacy_setup,
-        &legacy_patterns,
-    ]
-    .into_iter()
-    .any(|p| std::fs::metadata(p).is_ok());
+    let any_legacy = [&legacy_languages, &legacy_overrides, &legacy_setup]
+        .into_iter()
+        .any(|p| std::fs::metadata(p).is_ok());
     if !any_legacy {
         // Nothing to migrate; user is fresh-installed or already migrated.
         // Don't write `treehouse.toml` yet — empty file just clutters
@@ -849,37 +724,6 @@ pub async fn migrate(app: &AppHandle) -> AppResult<()> {
         }
     }
 
-    if let Ok(s) = tokio::fs::read_to_string(&legacy_patterns).await {
-        // Legacy schema was a flat `attention = [...]` / `idle = [...]`
-        // pair, applied to every backend. The defaults skewed
-        // Kiro-specific (`requires approval`, the REPL banner), so we
-        // map legacy customizations onto the kiro section. Users who
-        // had Codex-relevant patterns can re-home them after seeing
-        // the new layout in treehouse.toml.
-        #[derive(Deserialize)]
-        struct LegacyFlatPatterns {
-            #[serde(default)]
-            attention: Vec<String>,
-            #[serde(default)]
-            idle: Vec<String>,
-        }
-        match toml::from_str::<LegacyFlatPatterns>(&s) {
-            Ok(parsed) => {
-                if !parsed.attention.is_empty() || !parsed.idle.is_empty() {
-                    cfg.agent.status.kiro = crate::agent::patterns::BackendPatterns {
-                        attention: parsed.attention,
-                        idle: parsed.idle,
-                    };
-                }
-            }
-            Err(e) => tracing::warn!(
-                ?e,
-                path = %legacy_patterns.display(),
-                "migrate: parse failed; skipping",
-            ),
-        }
-    }
-
     // Write treehouse.toml: header comment + serialized sections,
     // keeping the user-friendly preamble in front of the data so a
     // freshly-migrated file still teaches its own format.
@@ -910,12 +754,7 @@ pub async fn migrate(app: &AppHandle) -> AppResult<()> {
     // Rename legacies so reruns are no-ops and the user can recover
     // the originals if our migration mishandled anything. Best-effort
     // — a rename failure doesn't undo the new file.
-    for legacy in [
-        &legacy_languages,
-        &legacy_overrides,
-        &legacy_setup,
-        &legacy_patterns,
-    ] {
+    for legacy in [&legacy_languages, &legacy_overrides, &legacy_setup] {
         if std::fs::metadata(legacy).is_ok() {
             let bak = legacy.with_extension("toml.bak");
             if let Err(e) = std::fs::rename(legacy, &bak) {
@@ -993,7 +832,7 @@ mod tests {
 
     #[test]
     fn upsert_profile_replaces_by_workspace_and_name() {
-        let mut doc = "# keep me\n[agent.status.claudeCode]\nidle = [\"x\"]\n"
+        let mut doc = "# keep me\n[agent.acp]\nclaudeCode = \"x\"\n"
             .parse::<toml_edit::DocumentMut>()
             .unwrap();
         upsert_agent_profile_in(&mut doc, &profile(Some("/r"), "Rev", "claude --agent a")).unwrap();
@@ -1007,7 +846,14 @@ mod tests {
         assert_eq!(parsed.agent.profiles.len(), 2);
         assert_eq!(parsed.agent.profiles[0].command, "claude --agent b");
         assert_eq!(parsed.agent.profiles[1].workspace, None);
-        assert_eq!(parsed.agent.status.claude_code.idle, ["x"]);
+        assert_eq!(
+            parsed
+                .agent
+                .acp
+                .configured(AgentBackendKind::ClaudeCode)
+                .as_deref(),
+            Some("x")
+        );
     }
 
     #[test]
@@ -1114,7 +960,7 @@ attention = [\"[y/N]\"]  # inline comment kept too
     // A retained, self-contained section unrelated to worktree hooks,
     // with a leading comment — lets us assert that a hook edit leaves
     // other sections and document content intact.
-    const KEPT_SECTION: &str = "# keep me\n[agent.status.codex]\nattention = [\"[y/N]\"]\n";
+    const KEPT_SECTION: &str = "# keep me\n[agent.acp]\ncodex = \"my-codex-acp\"\n";
 
     #[test]
     fn replace_array_keeps_other_sections_and_round_trips() {
@@ -1128,11 +974,18 @@ attention = [\"[y/N]\"]  # inline comment kept too
         .unwrap();
         let out = doc.to_string();
         assert!(out.contains("# keep me"));
-        assert!(out.contains("[agent.status.codex]"));
+        assert!(out.contains("[agent.acp]"));
         let parsed: TreehouseConfig = toml::from_str(&out).unwrap();
         assert_eq!(parsed.worktree.on_create.len(), 1);
         assert_eq!(parsed.worktree.on_create[0].name, "bring up");
-        assert_eq!(parsed.agent.status.codex.attention, vec!["[y/N]"]);
+        assert_eq!(
+            parsed
+                .agent
+                .acp
+                .configured(AgentBackendKind::Codex)
+                .as_deref(),
+            Some("my-codex-acp")
+        );
     }
 
     #[test]
@@ -1145,50 +998,27 @@ attention = [\"[y/N]\"]  # inline comment kept too
             .unwrap();
         let out = doc.to_string();
         assert!(out.contains("# keep me"));
-        assert!(out.contains("[agent.status.codex]"));
+        assert!(out.contains("[agent.acp]"));
         assert!(!out.contains("worktree"));
         let parsed: TreehouseConfig = toml::from_str(&out).unwrap();
         assert!(parsed.worktree.on_create.is_empty());
     }
 
+    /// Files from before status patterns were retired still load; the
+    /// `[agent.status]` table is ignored.
     #[test]
-    fn upsert_agent_backend_is_per_backend_and_resettable() {
-        let bp = BackendPatterns {
-            attention: vec!["needs you".into()],
-            idle: vec![],
-        };
-        let mut doc = parse("# notes\n");
-        upsert_agent_backend_in(&mut doc, "kiro", &bp).unwrap();
-        let out = doc.to_string();
-        assert!(out.contains("# notes"));
-        assert!(out.contains("[agent.status.kiro]"));
-        let parsed: TreehouseConfig = toml::from_str(&out).unwrap();
-        assert_eq!(parsed.agent.status.kiro.attention, vec!["needs you"]);
-        assert_eq!(customized_backends_in(&out), vec!["kiro".to_string()]);
-
-        // Reset prunes the whole agent section back out.
-        let mut doc2 = parse(&out);
-        remove_agent_backend_in(&mut doc2, "kiro");
-        let out2 = doc2.to_string();
-        assert!(out2.contains("# notes"));
-        assert!(!out2.contains("agent"));
-        assert!(customized_backends_in(&out2).is_empty());
-    }
-
-    #[test]
-    fn upsert_agent_backend_leaves_other_backends_intact() {
-        let mut doc = parse("[agent.status.codex]\nattention = [\"[y/N]\"]\n");
-        upsert_agent_backend_in(
-            &mut doc,
-            "kiro",
-            &BackendPatterns {
-                attention: vec!["approve".into()],
-                idle: vec![],
-            },
+    fn legacy_agent_status_table_is_ignored() {
+        let parsed: TreehouseConfig = toml::from_str(
+            "[agent.status.kiro]\nattention = [\"requires approval\"]\n[agent.acp]\nkiro = \"k\"\n",
         )
         .unwrap();
-        let parsed: TreehouseConfig = toml::from_str(&doc.to_string()).unwrap();
-        assert_eq!(parsed.agent.status.codex.attention, vec!["[y/N]"]);
-        assert_eq!(parsed.agent.status.kiro.attention, vec!["approve"]);
+        assert_eq!(
+            parsed
+                .agent
+                .acp
+                .configured(AgentBackendKind::Kiro)
+                .as_deref(),
+            Some("k")
+        );
     }
 }

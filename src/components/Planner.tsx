@@ -61,7 +61,7 @@ import { PlannerIssues } from "./PlannerIssues";
 import { PlannerLanding } from "./PlannerLanding";
 
 /// Fallback poll; changes are pushed (`useAgentActivityRefresh`).
-const POLL_MS = 5000;
+const POLL_MS = 10_000;
 /// How often an open repo planner re-checks origin for new commits.
 const BEHIND_POLL_MS = 3 * 60_000;
 const GLOBAL = "global";
@@ -170,7 +170,9 @@ function dotClass(activity: AgentActivity | undefined): string {
       ? "bg-blue-400"
       : activity === undefined || activity === "inactive"
         ? "bg-neutral-600"
-        : "bg-emerald-400";
+        : activity === "untracked"
+          ? "border border-neutral-500"
+          : "bg-emerald-400";
 }
 
 /// The repo ⌘J is "in": the selected worktree's, else the only/first open
@@ -625,7 +627,9 @@ export function PlannerPill() {
               ? "bg-blue-400"
               : mine === "inactive"
                 ? "bg-neutral-600"
-                : "bg-emerald-400",
+                : mine === "untracked"
+                  ? "border border-neutral-500"
+                  : "bg-emerald-400",
         )}
       />
       {waiting ? "planner needs you" : "planner"}

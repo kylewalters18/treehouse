@@ -31,8 +31,6 @@ import type {
   LspServerSession,
   WorktreeHooks,
   WorktreeHookEntry,
-  AgentPatternsView,
-  BackendPatterns,
   MergeResult,
   MergeBackStrategy,
   SyncResult,
@@ -778,44 +776,12 @@ export function worktreeHooksSet(
   return invoke<WorktreeHooks>("worktree_hooks_set", { onCreate, onDestroy });
 }
 
-/// Effective agent status patterns (defaults filled in for uncustomized
-/// backends) + the list of explicitly-customized backend keys.
-export function agentPatternsGet(): Promise<AgentPatternsView> {
-  return invoke<AgentPatternsView>("agent_patterns_get");
-}
-
-/// Persist one backend's status patterns. Applied live to running
-/// agents (shared pattern handle; takes effect on the next PTY chunk).
-export function agentPatternsSet(
-  backend: AgentBackendKind,
-  patterns: BackendPatterns,
-): Promise<AgentPatternsView> {
-  return invoke<AgentPatternsView>("agent_patterns_set", { backend, patterns });
-}
-
-/// Drop one backend's customization so its built-in defaults apply.
-export function agentPatternsReset(
-  backend: AgentBackendKind,
-): Promise<AgentPatternsView> {
-  return invoke<AgentPatternsView>("agent_patterns_reset", { backend });
-}
-
 /// Ensure `treehouse.toml` exists (seeded with a header + schema
 /// comment on first call) and open it in the user's default `.toml`
 /// editor. Backs the "Settings: Edit" palette entry; we don't have
 /// an in-app editor for the file since editor write-back is post-MVP.
 export function treehouseConfigOpenFile(): Promise<void> {
   return invoke<void>("treehouse_config_open_file");
-}
-
-/// Re-read `treehouse.toml` after the user edits it out-of-app and
-/// apply the new agent-status pattern set to all running agents.
-/// Reader threads share the pattern handle, so the change takes
-/// effect on the next PTY chunk — no agent restart needed. LSP
-/// overrides / custom languages / worktree hooks read fresh on each
-/// lookup, so they don't need an explicit reload.
-export function treehouseConfigReload(): Promise<void> {
-  return invoke<void>("treehouse_config_reload");
 }
 
 /// Reveal `~/Library/Logs/com.treehouse.app/` in Finder. Backed by

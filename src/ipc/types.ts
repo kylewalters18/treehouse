@@ -85,9 +85,6 @@ export type { HookFailure } from "./bindings/HookFailure";
 export type { WorktreeHookEntry } from "./bindings/WorktreeHookEntry";
 export type { WorktreeHooks } from "./bindings/WorktreeHooks";
 export type { AgentProfile } from "./bindings/AgentProfile";
-export type { AgentPatterns } from "./bindings/AgentPatterns";
-export type { BackendPatterns } from "./bindings/BackendPatterns";
-export type { AgentPatternsView } from "./bindings/AgentPatternsView";
 
 export type { AppFileContent } from "./bindings/AppFileContent";
 

@@ -3,7 +3,6 @@ pub mod history;
 pub mod hooks;
 pub mod kiro_history;
 pub mod notify;
-pub mod patterns;
 pub mod supervisor;
 
 use serde::{Deserialize, Serialize};
@@ -125,8 +124,12 @@ pub enum AgentActivity {
     Working,
     /// Briefly quiet — rendering or thinking.
     Idle,
-    /// Quiet long enough that the agent is almost certainly awaiting input.
+    /// Blocked on the user (a permission prompt, a question).
     NeedsAttention,
+    /// Running, but its status isn't known: a terminal agent without
+    /// status hooks (Codex, Kiro over a PTY). Only ACP sessions and Claude
+    /// (via hooks) report Working / Idle / NeedsAttention.
+    Untracked,
 }
 
 /// What a blocked agent is waiting on, as reported by Claude Code hooks.

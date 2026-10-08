@@ -11,7 +11,6 @@ import { useLspStore } from "@/stores/lsp";
 import { disposeSessionsForWorktree } from "@/lsp/manager";
 import {
   treehouseConfigOpenFile,
-  treehouseConfigReload,
 } from "@/ipc/client";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { useWorkspaceStore, workspaceForWorktree } from "@/stores/workspace";
@@ -72,7 +71,7 @@ function buildCommands(deps: {
     category: "Settings",
     title: "Edit",
     description:
-      "Open treehouse.toml (LSP overrides, custom languages, worktree hooks, agent profiles + status patterns) in an in-app editor — Cmd+S saves",
+      "Open treehouse.toml (LSP overrides, custom languages, worktree hooks, agent profiles, ACP adapters) in an in-app editor — Cmd+S saves",
     run: () => {
       useUiStore.getState().openSystemFileViewer("treehouseConfig");
     },
@@ -85,16 +84,6 @@ function buildCommands(deps: {
       "Open treehouse.toml in your OS default .toml handler (VS Code, Sublime, etc.) instead of the in-app editor",
     run: async () => {
       await treehouseConfigOpenFile();
-    },
-  });
-  cmds.push({
-    id: "settings.reload",
-    category: "Settings",
-    title: "Reload",
-    description:
-      "Re-read treehouse.toml after editing; running agents pick up the new patterns on the next chunk",
-    run: async () => {
-      await treehouseConfigReload();
     },
   });
   cmds.push({

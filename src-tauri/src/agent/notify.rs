@@ -4,9 +4,9 @@
 //! rather than on their next poll. Bursts coalesce into one event; the
 //! payload is empty and listeners refetch (`list_agent_activity`, …).
 //!
-//! Their polls stay as a slower fallback: terminal agents without hooks
-//! (Codex, Kiro over a PTY) derive activity from output timing, which
-//! changes with time rather than events.
+//! Their polls stay as a slow fallback for the few time-driven changes: a
+//! Claude permission prompt expiring after it's been typed into (see
+//! `session_activity`), and the board's relative times.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;

@@ -116,6 +116,15 @@ describe("statusCounts", () => {
   });
 });
 
+describe("untracked agents", () => {
+  it("keep their worktree active but aren't tallied", () => {
+    const ws = [wt("a"), wt("b")];
+    const a = act({ a: { activity: "untracked" }, b: { activity: "idle" } });
+    expect(splitActive(ws, a).active.map((w) => w.id)).toEqual(["a", "b"]);
+    expect(statusCounts(ws, a)).toEqual({ working: 0, idle: 1, needsAttention: 0 });
+  });
+});
+
 describe("pinnedWorktrees", () => {
   it("returns pinned worktrees in pin order and skips unknown paths", () => {
     const [a, b, c] = [wt("a"), wt("b"), wt("c")];

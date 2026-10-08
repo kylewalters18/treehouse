@@ -42,7 +42,7 @@ src-tauri/src/
   storage.rs              # Persisted JSON under ~/Library/Application Support/com.treehouse.app/
                           #   recent workspaces, comments, pins, worktree→issue links, settings
   user_config.rs          # User-edited treehouse.toml: custom LSPs, LSP overrides, worktree hooks,
-                          #   agent status patterns
+                          #   agent launch profiles, ACP adapter overrides
   scratch.rs              # Global ⌘J scratch agent, not tied to a repo (ACP by default, like planners)
   planner.rs              # Per-repo ⌘J planner: read-only `clone --shared` of origin/<default> at
                           #   <repo>__worktrees/.planner (not a git worktree → never adopted), refreshed
@@ -59,7 +59,8 @@ src-tauri/src/
                           #   hooks.rs wires Claude Code status hooks → WorktreeActivity
                           #   notify.rs pushes `agents://activity-changed` (coalesced) on ACP activity,
                           #   hook, launch and exit changes; sidebar/board/planner refetch on it and
-                          #   keep a slow poll for output-timed PTY agents
+                          #   keep a slow poll for relative times. Status comes only from ACP and
+                          #   Claude hooks; terminal Codex / Kiro tabs report `untracked`
                           #   acp/ = Agent Client Protocol transport, the default for new tabs (JSON-RPC over the
                           #   adapter's stdio); sessions share the registry, so board/sidebar/MCP/
                           #   kill_all cover both transports. Adapters: `[agent.acp]` override, else

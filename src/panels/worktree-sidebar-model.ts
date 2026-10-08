@@ -92,7 +92,8 @@ export type StatusCounts = {
 };
 
 /// Per-repo tally for the section header, so a collapsed repo still
-/// shows what its agents are doing.
+/// shows what its agents are doing. Agents with untracked status (terminal
+/// Codex / Kiro) aren't tallied.
 export function statusCounts(
   worktrees: Worktree[],
   activity: ActivityMap,
@@ -100,7 +101,7 @@ export function statusCounts(
   const c: StatusCounts = { working: 0, idle: 0, needsAttention: 0 };
   for (const w of worktrees) {
     const act = activityOf(activity, w.id);
-    if (act !== "inactive") c[act] += 1;
+    if (act !== "inactive" && act !== "untracked") c[act] += 1;
   }
   return c;
 }

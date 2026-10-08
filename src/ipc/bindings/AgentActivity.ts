@@ -5,4 +5,4 @@
  * else time-since-last-output. The sidebar polls `list_agent_activity`
  * every ~1.5s and paints a dot.
  */
-export type AgentActivity = "inactive" | "working" | "idle" | "needsAttention";
+export type AgentActivity = "inactive" | "working" | "idle" | "needsAttention" | "untracked";

@@ -49,7 +49,7 @@ The first build compiles roughly 450 Rust crates and takes a few minutes.
 ## Configuration
 
 - App settings: `~/Library/Application Support/com.treehouse.app/settings.json` (managed by the UI).
-- User configuration: `~/Library/Application Support/com.treehouse.app/treehouse.toml` — custom language servers, per-workspace LSP overrides, worktree create/destroy hooks, and agent status patterns.
+- User configuration: `~/Library/Application Support/com.treehouse.app/treehouse.toml` — custom language servers, per-workspace LSP overrides, worktree create/destroy hooks, agent launch profiles, and ACP adapter overrides.
 
 treehouse never creates commits on your behalf. If a merge would be a no-op because changes are uncommitted, it reports that instead.
 

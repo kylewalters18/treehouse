@@ -59,7 +59,7 @@ import {
 } from "./worktree-sidebar-model";
 
 /// Fallback poll for the activity dots; changes are pushed.
-const ACTIVITY_FALLBACK_MS = 4000;
+const ACTIVITY_FALLBACK_MS = 10_000;
 
 export function WorktreeSidebar() {
   const workspaces = useWorkspaceStore((s) => s.workspaces);
@@ -152,7 +152,7 @@ export function WorktreeSidebar() {
 
   // Agent activity for every open workspace, so the dot next to each
   // worktree (across all repos) stays fresh: refetched when Rust reports a
-  // change, with a slower poll for output-timed terminal agents. Responses
+  // change, with a slow fallback poll. Responses
   // can land out of order; only the latest request's answer is applied.
   const activitySeq = useRef(0);
   useAgentActivityRefresh(
@@ -1545,6 +1545,15 @@ function StatusDot({
             size={12}
             className="animate-pulse text-amber-400"
           />
+        </span>
+      );
+    case "untracked":
+      return (
+        <span
+          title="agent running in a terminal — status is only tracked over ACP"
+          className={cn(wrapper, className)}
+        >
+          <span className="h-2 w-2 rounded-full border border-neutral-500" />
         </span>
       );
     case "inactive":

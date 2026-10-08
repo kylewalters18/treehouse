@@ -1926,75 +1926,6 @@ pub async fn worktree_hooks_set(
     })
 }
 
-/// The effective agent status patterns (built-in defaults filled in
-/// for any backend the user hasn't customized) plus the list of
-/// backends that *are* explicitly customized in `treehouse.toml` —
-/// drives the per-backend "Reset to default" affordance.
-#[derive(Debug, serde::Serialize, ts_rs::TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export)]
-pub struct AgentPatternsView {
-    pub patterns: agent::patterns::AgentPatterns,
-    /// camelCase backend keys (`claudeCode` / `kiro` / `codex`).
-    pub customized: Vec<String>,
-}
-
-/// camelCase serde/TOML key for a backend — the section name under
-/// `[agent.status]`.
-fn backend_key(b: agent::AgentBackendKind) -> &'static str {
-    match b {
-        agent::AgentBackendKind::ClaudeCode => "claudeCode",
-        agent::AgentBackendKind::Codex => "codex",
-        agent::AgentBackendKind::Kiro => "kiro",
-    }
-}
-
-async fn agent_patterns_view(app: &AppHandle) -> AppResult<AgentPatternsView> {
-    Ok(AgentPatternsView {
-        patterns: agent::patterns::load(app).await?,
-        customized: crate::user_config::customized_backends(app).await?,
-    })
-}
-
-/// Read the effective agent status patterns + customized-backend list.
-#[tauri::command]
-pub async fn agent_patterns_get(app: AppHandle) -> AppResult<AgentPatternsView> {
-    agent_patterns_view(&app).await
-}
-
-/// Persist one backend's status patterns and apply them live: reader
-/// threads share an `Arc<RwLock<AgentPatterns>>`, so reloading it here
-/// means running agents pick up the new patterns on their next PTY
-/// chunk — no respawn. Returns the refreshed view.
-#[tauri::command]
-pub async fn agent_patterns_set(
-    backend: agent::AgentBackendKind,
-    patterns: agent::patterns::BackendPatterns,
-    app: AppHandle,
-    state: State<'_, AppState>,
-) -> AppResult<AgentPatternsView> {
-    crate::user_config::upsert_agent_backend(&app, backend_key(backend), &patterns).await?;
-    state
-        .agents
-        .set_patterns(agent::patterns::load(&app).await?);
-    agent_patterns_view(&app).await
-}
-
-/// Drop one backend's customization so its built-in defaults apply
-/// again, then reload the live pattern set. Returns the refreshed view.
-#[tauri::command]
-pub async fn agent_patterns_reset(
-    backend: agent::AgentBackendKind,
-    app: AppHandle,
-    state: State<'_, AppState>,
-) -> AppResult<AgentPatternsView> {
-    crate::user_config::remove_agent_backend(&app, backend_key(backend)).await?;
-    state
-        .agents
-        .set_patterns(agent::patterns::load(&app).await?);
-    agent_patterns_view(&app).await
-}
-
 /// Resolve the post-create hook steps for a worktree. Looks up the
 /// owning workspace, walks the in-repo + user-level config layers,
 /// and substitutes `${WORKTREE_PATH}`, `${WORKTREE_NAME}`,
@@ -2222,23 +2153,6 @@ pub async fn open_logs_folder() -> AppResult<()> {
         .arg(&dir)
         .spawn()
         .map_err(|e| AppError::Unknown(format!("open {}: {e}", dir.display())))?;
-    Ok(())
-}
-
-/// Reload `treehouse.toml`. Used by the "Settings: Reload" command
-/// after the user edits the file out-of-app. Re-reads the agent
-/// status patterns into the registry — reader threads share an
-/// `Arc<RwLock<AgentPatterns>>` and pick up the new list on the
-/// next chunk, so no respawn is needed.
-///
-/// LSP overrides, custom languages, and worktree hooks are read
-/// fresh on each lookup, so they don't need an explicit reload —
-/// the next file open / worktree create / language toggle picks up
-/// the new values automatically.
-#[tauri::command]
-pub async fn treehouse_config_reload(app: AppHandle, state: State<'_, AppState>) -> AppResult<()> {
-    let p = agent::patterns::load(&app).await?;
-    state.agents.set_patterns(p);
     Ok(())
 }
 

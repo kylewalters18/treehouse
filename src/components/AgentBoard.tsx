@@ -39,9 +39,8 @@ import {
   type BoardColumn,
 } from "./agent-board-model";
 
-/// Fallback poll (changes are pushed): keeps relative times and
-/// output-timed terminal agents current.
-const POLL_MS = 2000;
+/// Fallback poll (changes are pushed): keeps relative times current.
+const POLL_MS = 5000;
 
 /// Everything a card renders beyond the overview itself.
 type CardContext = {
@@ -136,7 +135,7 @@ function AgentBoardOverlay() {
   }, []);
 
   // Refetched on every activity change Rust reports; the poll keeps
-  // relative times and output-timed terminal agents current.
+  // relative times current.
   useAgentActivityRefresh(() => void refresh(), POLL_MS, true, [refresh, workspaceIdsKey]);
 
   useEffect(() => {
@@ -503,6 +502,12 @@ function Glyph({ activity }: { activity: AgentActivity }) {
       return (
         <span className={wrap}>
           <AlertTriangle size={12} className="animate-pulse text-amber-400 motion-reduce:animate-none" />
+        </span>
+      );
+    case "untracked":
+      return (
+        <span className={wrap} title="Running in a terminal — status is only tracked over ACP">
+          <span className="h-2 w-2 rounded-full border border-neutral-500" />
         </span>
       );
     default:

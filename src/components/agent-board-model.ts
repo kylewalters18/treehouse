@@ -30,6 +30,7 @@ export function columnOf(o: AgentOverview, seenAt: SeenAt): BoardColumn {
       return "working";
     case "idle":
       return (seenAt[o.session.id] ?? 0) < o.changedAt ? "review" : "quiet";
+    // Untracked (terminal Codex / Kiro) and exited agents: nothing to act on.
     default:
       return "quiet";
   }

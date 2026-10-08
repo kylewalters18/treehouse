@@ -4,8 +4,9 @@ import { onAgentActivityChanged } from "@/ipc/client";
 
 /// Run `refresh` now, whenever Rust reports an agent activity change
 /// (`agents://activity-changed`), and every `fallbackMs` — the poll covers
-/// terminal agents whose activity is inferred from output timing, which
-/// changes without an event. `deps` restart it; `enabled: false` stops it.
+/// the few changes that come with time rather than an event (relative
+/// times, an answered Claude prompt expiring). `deps` restart it;
+/// `enabled: false` stops it.
 export function useAgentActivityRefresh(
   refresh: () => void,
   fallbackMs: number,
