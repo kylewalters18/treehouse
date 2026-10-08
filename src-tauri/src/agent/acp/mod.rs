@@ -749,8 +749,16 @@ fn spawn_kiro_command(ctx: Ctx, sid: String, text: String, blocks: Vec<Value>) {
         let now = now_millis();
         match res {
             Ok(v) => {
+                if let Some(message) = kiro::execute_failure(&v) {
+                    sh.emit(AcpEvent::Error { message });
+                    let ev = sh.view.turn_ended("error", now);
+                    sh.emit(ev);
+                    return;
+                }
                 if let Some(out) = kiro::execute_output(&v) {
-                    sh.emit(AcpEvent::AgentText { text: out });
+                    sh.emit(AcpEvent::AgentText {
+                        text: kiro::as_markdown(&out),
+                    });
                 }
                 let ev = sh.view.turn_ended("end_turn", now);
                 sh.emit(ev);
