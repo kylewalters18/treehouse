@@ -796,18 +796,17 @@ fn spawn_prompt(ctx: Ctx, sid: String, blocks: Vec<Value>) {
         for blocks in redirects {
             spawn_prompt(ctx.clone(), sid.clone(), blocks);
         }
-        // Claude's adapter persists the conversation under the same id the
-        // CLI uses, so it lands in history and resumes in a PTY tab.
-        if matches!(ctx.backend, AgentBackendKind::ClaudeCode) {
-            ctx.history.observe(
-                &ctx.cwd,
-                ctx.resumed_from.as_deref(),
-                &sid,
-                turn.0.as_deref(),
-                &turn.1,
-                now_millis(),
-            );
-        }
+        // Every ACP conversation lands in history under the agent's own id,
+        // which `session/load` reopens (Claude's CLI takes it too).
+        ctx.history.observe_as(
+            ctx.backend,
+            &ctx.cwd,
+            ctx.resumed_from.as_deref(),
+            &sid,
+            turn.0.as_deref(),
+            &turn.1,
+            now_millis(),
+        );
     });
 }
 

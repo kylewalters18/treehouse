@@ -39,6 +39,7 @@ import {
   tabLabelBase,
   type LaunchProfile,
 } from "@/lib/agent-profiles";
+import { preferredTransport } from "@/lib/history-transport";
 import { AgentLaunchMenu } from "@/components/AgentLaunchMenu";
 import { BackendIcon } from "@/components/BackendIcon";
 import { fitAndPin } from "./xterm-fit";
@@ -497,11 +498,11 @@ function AgentTabs({
   }
 
   /// Reopen a saved conversation in a new tab, or switch to the tab that
-  /// already has it. Claude conversations reopen over ACP unless asked
-  /// for a terminal; other backends' ids belong to their CLIs.
+  /// already has it. It reopens the way its entry prefers (ACP, except
+  /// Kiro's terminal conversations) unless a terminal is asked for.
   function resumeSession(
     entry: AgentHistoryEntry,
-    transport: AgentTransport = entry.backend === "claudeCode" ? "acp" : "pty",
+    transport: AgentTransport = preferredTransport(entry),
   ) {
     setHistoryOpen(false);
     if (entry.liveAgentId) {

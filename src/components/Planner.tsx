@@ -11,7 +11,7 @@
 /// flags when origin has moved past what it's reading.
 ///
 /// New sessions run over ACP (a structured transcript, `AcpAgentSlot`);
-/// resuming a non-Claude conversation still uses a terminal. Hiding only
+/// a saved conversation reopens the way its history entry prefers. Hiding only
 /// detaches the view — every planner keeps running and its conversation is
 /// there next time. Past conversations are listed under
 /// History and resume in place (each planner's directory is stable). Esc is
@@ -38,6 +38,7 @@ import type {
 import { pasteText } from "@/lib/agent";
 import { cn } from "@/lib/cn";
 import { resolvePlannerScope } from "@/lib/planner-scope";
+import { preferredTransport } from "@/lib/history-transport";
 import { useAgentActivityRefresh } from "@/lib/use-agent-activity-refresh";
 import {
   createAgentLeafState,
@@ -138,11 +139,7 @@ function startLeaf(
 /// (`@file` completion, opening files) stay inert.
 const NO_WORKTREE = "" as WorktreeId;
 
-/// Claude conversations reopen over ACP; other backends' saved ids belong
-/// to their CLIs, so those resume in a terminal.
-function resumeTransport(entry: AgentHistoryEntry): AgentTransport {
-  return entry.backend === "claudeCode" ? "acp" : "pty";
-}
+
 
 /// Every planner's activity, polled while `enabled` (global key = `GLOBAL`).
 function usePlannerActivities(enabled: boolean): Map<string, AgentActivity> {
@@ -324,7 +321,7 @@ export function PlannerPopup() {
     setHistoryOpen(false);
     // Already the conversation on screen → nothing to do.
     if (entry.liveAgentId && entry.liveAgentId === leaf?.state.sessionId) return;
-    startLeaf(scope, { resume: entry.sessionId, transport: resumeTransport(entry) });
+    startLeaf(scope, { resume: entry.sessionId, transport: preferredTransport(entry) });
     setGeneration((g) => g + 1);
   }
 

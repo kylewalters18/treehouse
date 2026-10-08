@@ -1,6 +1,9 @@
-//! Resumable Claude Code conversations, per worktree. Kiro's are read from
-//! Kiro's own store instead (see `agent::kiro_history`); the two lists are
-//! merged by `AgentRegistry::history_for`.
+//! Resumable conversations, per worktree: every Claude Code session (PTY
+//! or ACP) and every ACP session of another backend (Codex, Kiro), keyed by
+//! the agent's own session id — which `session/load` reopens over ACP, and
+//! for Claude also `claude --resume`. Kiro's terminal (v2) conversations
+//! are read from Kiro's own store instead (see `agent::kiro_history`); the
+//! lists are merged by `AgentRegistry::history_for`.
 //!
 //! Claude keeps every transcript on disk itself and `claude --resume <id>`
 //! reopens one in the same directory, so all we remember is which
@@ -21,7 +24,7 @@ use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use super::AgentBackendKind;
+use super::{AgentBackendKind, AgentTransport};
 use crate::util::ids::AgentSessionId;
 
 pub const HISTORY_FILE: &str = "agent_history.json";
@@ -32,7 +35,11 @@ const PER_WORKTREE_MAX: usize = 20;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 struct Record {
+    /// The agent's session id (named for the original Claude-only file).
     claude_session_id: String,
+    /// Absent in files from before other backends were recorded: Claude.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    backend: Option<AgentBackendKind>,
     worktree_path: PathBuf,
     title: Option<String>,
     /// First line of the most recent prompt, so a resumed agent's board
@@ -88,6 +95,9 @@ pub struct AgentHistoryEntry {
     pub last_active_at: u64,
     /// The running agent that has this conversation open, if any.
     pub live_agent_id: Option<AgentSessionId>,
+    /// How it can be reopened, preferred first: Claude's over ACP or in a
+    /// terminal, other ACP sessions over ACP, Kiro's terminal ones in one.
+    pub transports: Vec<AgentTransport>,
 }
 
 #[derive(Default)]
@@ -124,13 +134,37 @@ impl AgentHistory {
         turn: &LastTurn,
         now_ms: u64,
     ) {
+        self.observe_as(
+            AgentBackendKind::ClaudeCode,
+            worktree_path,
+            resumed_from,
+            claude_session_id,
+            first_prompt,
+            turn,
+            now_ms,
+        );
+    }
+
+    /// `observe` for a conversation of `backend`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn observe_as(
+        &self,
+        backend: AgentBackendKind,
+        worktree_path: &Path,
+        resumed_from: Option<&str>,
+        session_id: &str,
+        first_prompt: Option<&str>,
+        turn: &LastTurn,
+        now_ms: u64,
+    ) {
         let mut records = self.records.lock();
         let before = records.clone();
         upsert(
             &mut records,
+            backend,
             worktree_path,
             resumed_from,
-            claude_session_id,
+            session_id,
             first_prompt,
             turn,
             now_ms,
@@ -148,14 +182,22 @@ impl AgentHistory {
             .lock()
             .iter()
             .filter(|r| r.worktree_path == worktree_path)
-            .map(|r| AgentHistoryEntry {
-                session_id: r.claude_session_id.clone(),
-                backend: AgentBackendKind::ClaudeCode,
-                title: r.ai_title.clone().or_else(|| r.title.clone()),
-                last_message: r.last_message.clone(),
-                started_at: r.started_at,
-                last_active_at: r.last_active_at,
-                live_agent_id: None,
+            .map(|r| {
+                let backend = r.backend.unwrap_or(AgentBackendKind::ClaudeCode);
+                AgentHistoryEntry {
+                    session_id: r.claude_session_id.clone(),
+                    backend,
+                    title: r.ai_title.clone().or_else(|| r.title.clone()),
+                    last_message: r.last_message.clone(),
+                    started_at: r.started_at,
+                    last_active_at: r.last_active_at,
+                    live_agent_id: None,
+                    transports: if backend == AgentBackendKind::ClaudeCode {
+                        vec![AgentTransport::Acp, AgentTransport::Pty]
+                    } else {
+                        vec![AgentTransport::Acp]
+                    },
+                }
             })
             .collect();
         out.sort_by(|a, b| b.last_active_at.cmp(&a.last_active_at));
@@ -192,6 +234,14 @@ impl AgentHistory {
             dismissed.drain(..excess);
         }
         self.save(&records);
+    }
+
+    /// Whether this conversation has a record here.
+    pub fn contains(&self, session_id: &str) -> bool {
+        self.records
+            .lock()
+            .iter()
+            .any(|r| r.claude_session_id == session_id)
     }
 
     /// Whether the user hid this (Kiro) conversation with `forget`.
@@ -234,8 +284,10 @@ impl AgentHistory {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn upsert(
     records: &mut Vec<Record>,
+    backend: AgentBackendKind,
     worktree_path: &Path,
     resumed_from: Option<&str>,
     claude_session_id: &str,
@@ -255,6 +307,7 @@ fn upsert(
         None => {
             records.push(Record {
                 claude_session_id: claude_session_id.to_string(),
+                backend: None,
                 worktree_path: worktree_path.to_path_buf(),
                 title: None,
                 last_prompt: None,
@@ -267,6 +320,7 @@ fn upsert(
         }
     };
     rec.claude_session_id = claude_session_id.to_string();
+    rec.backend = (backend != AgentBackendKind::ClaudeCode).then_some(backend);
     rec.worktree_path = worktree_path.to_path_buf();
     if rec.title.is_none() {
         rec.title = first_prompt.map(str::to_string);
@@ -298,13 +352,16 @@ fn upsert(
     }
 }
 
-/// Claude and Kiro session ids are UUIDs. Anything else is refused before it can
-/// reach an argv, so a stray value can't turn into a flag.
+/// Session ids are UUIDs, or `sess_<uuid>` (Kiro's v3 engine). Anything
+/// else is refused before it can reach an argv, so a stray value can't turn
+/// into a flag.
 pub fn is_valid_session_id(id: &str) -> bool {
     !id.is_empty()
-        && id.len() <= 64
+        && id.len() <= 80
         && !id.starts_with('-')
-        && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
 #[cfg(test)]
@@ -328,6 +385,7 @@ mod tests {
         let mut r = Vec::new();
         upsert(
             &mut r,
+            AgentBackendKind::ClaudeCode,
             &wt(),
             None,
             "s1",
@@ -337,6 +395,7 @@ mod tests {
         );
         upsert(
             &mut r,
+            AgentBackendKind::ClaudeCode,
             &wt(),
             None,
             "s1",
@@ -356,6 +415,7 @@ mod tests {
         let mut r = Vec::new();
         upsert(
             &mut r,
+            AgentBackendKind::ClaudeCode,
             &wt(),
             None,
             "s1",
@@ -365,6 +425,7 @@ mod tests {
         );
         upsert(
             &mut r,
+            AgentBackendKind::ClaudeCode,
             &wt(),
             Some("s1"),
             "s2",
@@ -382,10 +443,20 @@ mod tests {
     fn keeps_newest_per_worktree() {
         let mut r = Vec::new();
         let other = PathBuf::from("/r__worktrees/b");
-        upsert(&mut r, &other, None, "other", None, &LastTurn::default(), 0);
+        upsert(
+            &mut r,
+            AgentBackendKind::ClaudeCode,
+            &other,
+            None,
+            "other",
+            None,
+            &LastTurn::default(),
+            0,
+        );
         for i in 0..(PER_WORKTREE_MAX as u64 + 3) {
             upsert(
                 &mut r,
+                AgentBackendKind::ClaudeCode,
                 &wt(),
                 None,
                 &format!("s{i}"),
@@ -416,6 +487,9 @@ mod tests {
         assert!(!is_valid_session_id(""));
         assert!(!is_valid_session_id("--dangerously-skip-permissions"));
         assert!(!is_valid_session_id("a b"));
+        assert!(is_valid_session_id(
+            "sess_18f8b08c-9a5b-4183-ad54-df46291ec2f4"
+        ));
     }
 
     #[test]
@@ -475,6 +549,46 @@ mod tests {
         assert_eq!(
             h.list_for(&wt())[0].title.as_deref(),
             Some("Login redirect loop")
+        );
+    }
+
+    #[test]
+    fn records_other_backends_resumable_over_acp_only() {
+        let h = AgentHistory::default();
+        h.observe(&wt(), None, "claude-1", Some("a"), &LastTurn::default(), 1);
+        h.observe_as(
+            AgentBackendKind::Codex,
+            &wt(),
+            None,
+            "codex-1",
+            Some("b"),
+            &LastTurn::default(),
+            2,
+        );
+        let list = h.list_for(&wt());
+        assert_eq!(list[0].session_id, "codex-1");
+        assert_eq!(list[0].backend, AgentBackendKind::Codex);
+        assert_eq!(list[0].transports, vec![AgentTransport::Acp]);
+        assert_eq!(list[1].backend, AgentBackendKind::ClaudeCode);
+        assert_eq!(
+            list[1].transports,
+            vec![AgentTransport::Acp, AgentTransport::Pty]
+        );
+        assert!(h.contains("codex-1") && !h.contains("nope"));
+    }
+
+    #[test]
+    fn old_records_without_a_backend_read_as_claude() {
+        let rec: Record = serde_json::from_value(serde_json::json!({
+            "claudeSessionId": "x", "worktreePath": "/w", "title": null,
+            "lastMessage": null, "startedAt": 1, "lastActiveAt": 1,
+        }))
+        .unwrap();
+        assert_eq!(rec.backend, None);
+        let saved = serde_json::to_value(&rec).unwrap();
+        assert!(
+            saved.get("backend").is_none(),
+            "Claude records keep the old shape"
         );
     }
 }

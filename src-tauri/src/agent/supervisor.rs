@@ -215,7 +215,7 @@ impl AgentRegistry {
         if let Some(dir) = kiro_history::sessions_dir() {
             let kiro: Vec<_> = kiro_history::list_in(&dir, cwd)
                 .into_iter()
-                .filter(|k| !self.history.is_dismissed(&k.id))
+                .filter(|k| !self.history.is_dismissed(&k.id) && !self.history.contains(&k.id))
                 .collect();
             let live = self.live_kiro_sessions(cwd, &kiro);
             entries.extend(kiro.into_iter().map(|k| AgentHistoryEntry {
@@ -226,6 +226,7 @@ impl AgentRegistry {
                 last_message: k.last_message,
                 started_at: k.started_at,
                 last_active_at: k.last_active_at,
+                transports: vec![AgentTransport::Pty],
             }));
             entries.sort_by(|a, b| b.last_active_at.cmp(&a.last_active_at));
         }

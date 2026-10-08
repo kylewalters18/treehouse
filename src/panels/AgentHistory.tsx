@@ -3,8 +3,9 @@ import { useEffect, useRef } from "react";
 import type { AgentHistoryEntry } from "@/ipc/types";
 import { cn } from "@/lib/cn";
 import { formatWhen } from "@/lib/time";
+import { offersTerminal } from "@/lib/history-transport";
 
-/// Saved Claude / Kiro conversations for one worktree. Rendered as the header
+/// Saved conversations for one worktree (Claude, and Codex / Kiro sessions). Rendered as the header
 /// button's dropdown and, trimmed to a few rows, in the empty agent pane.
 export function AgentHistoryList({
   entries,
@@ -49,7 +50,7 @@ export function AgentHistoryList({
                   open
                 </span>
               )}
-              {onResumeInTerminal && !open && e.backend === "claudeCode" && (
+              {onResumeInTerminal && !open && offersTerminal(e) && (
                 <button
                   onClick={(ev) => {
                     ev.stopPropagation();
