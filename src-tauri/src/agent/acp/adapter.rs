@@ -6,7 +6,9 @@
 //! 2. A managed adapter: an npm package pinned here, installed once into
 //!    `<app_config>/acp-adapters/<package>@<version>/` on first use and run
 //!    from there directly (no `npx`, no registry lookup per launch).
-//! 3. A native ACP mode of the backend's own CLI (Kiro's `kiro-cli acp`).
+//! 3. A native ACP mode of the backend's own CLI (Kiro's `kiro-cli acp`,
+//!    on its v3 engine: standard `configOptions` and
+//!    `available_commands_update`, where v2 used `_kiro.dev/*` extensions).
 //!
 //! Bumping a pin installs the new version beside the old one on the next
 //! launch, then prunes the old one.
@@ -74,7 +76,7 @@ pub fn managed_for(backend: AgentBackendKind) -> Option<Managed> {
 /// Backends whose own CLI speaks ACP.
 fn native_command(backend: AgentBackendKind) -> Option<&'static str> {
     match backend {
-        AgentBackendKind::Kiro => Some("kiro-cli acp"),
+        AgentBackendKind::Kiro => Some("kiro-cli acp --agent-engine v3 --auth-method cli"),
         _ => None,
     }
 }
