@@ -74,6 +74,7 @@ export function AcpPromptBox({
   focusNonce,
   history,
   editRequest,
+  narrow = false,
 }: {
   worktreeId: WorktreeId;
   commands: AcpCommand[];
@@ -97,6 +98,9 @@ export function AcpPromptBox({
   history: string[];
   /// Load a sent prompt to edit and resend; a new nonce loads again.
   editRequest: { text: string; nonce: number } | null;
+  /// Narrow pane: icon-only pickers, shorter copy, no Interrupt button
+  /// (⌘⏎ still interrupts).
+  narrow?: boolean;
 }) {
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const [draft, setDraft] = useState("");
@@ -286,7 +290,12 @@ export function AcpPromptBox({
   const bypass = mode?.option.current === "bypassPermissions";
 
   return (
-    <div className="relative mx-auto w-full max-w-3xl shrink-0 px-3 pb-3 pt-1">
+    <div
+      className={cn(
+        "relative mx-auto w-full max-w-3xl shrink-0 pt-1",
+        narrow ? "px-2 pb-2" : "px-3 pb-3",
+      )}
+    >
       {open && suggestions.length > 0 && (
         <div
           role="listbox"
@@ -342,8 +351,9 @@ export function AcpPromptBox({
           <div className="flex items-center gap-1.5 border-b border-neutral-800 px-3 py-1.5 text-[11px] text-neutral-400">
             <Pencil size={11} className="shrink-0 text-blue-400" />
             <span className="min-w-0 truncate">
-              Editing a sent message — sends as a new message
-              {running ? ", interrupting the current turn" : ""}
+              {narrow
+                ? "Editing a sent message"
+                : `Editing a sent message — sends as a new message${running ? ", interrupting the current turn" : ""}`}
             </span>
             <button
               onClick={stopEditing}
@@ -464,14 +474,18 @@ export function AcpPromptBox({
             disabled
               ? "Agent exited"
               : running
-                ? "Queue a follow-up, or ⌘⏎ to interrupt and send"
-                : "Message the agent, tag @files, or use /commands"
+                ? narrow
+                  ? "Follow-up · ⌘⏎ interrupts"
+                  : "Queue a follow-up, or ⌘⏎ to interrupt and send"
+                : narrow
+                  ? "Message, @file, /command"
+                  : "Message the agent, tag @files, or use /commands"
           }
           spellCheck={false}
           className="block w-full resize-none bg-transparent px-3 pb-1 pt-2.5 text-[13px] leading-relaxed text-neutral-100 placeholder:text-neutral-600 focus:outline-none"
         />
 
-        <div className="flex items-center gap-0.5 px-1.5 pb-1.5">
+        <div className="flex min-w-0 items-center gap-0.5 px-1.5 pb-1.5">
           <ToolbarButton
             icon={Plus}
             title="Attach files or images"
@@ -479,10 +493,10 @@ export function AcpPromptBox({
             disabled={disabled}
           />
           {model && (
-            <Picker icon={Sparkles} title="Model" picker={model} disabled={settingsDisabled} onPick={onSetting} />
+            <Picker icon={Sparkles} title="Model" picker={model} disabled={settingsDisabled} onPick={onSetting} compact={narrow} />
           )}
           {effort && (
-            <Picker icon={Brain} title="Reasoning effort" picker={effort} disabled={settingsDisabled} onPick={onSetting} />
+            <Picker icon={Brain} title="Reasoning effort" picker={effort} disabled={settingsDisabled} onPick={onSetting} compact={narrow} />
           )}
           {mode && (
             <Picker
@@ -492,10 +506,11 @@ export function AcpPromptBox({
               disabled={settingsDisabled}
               onPick={onSetting}
               tone={bypass ? "warn" : undefined}
+              compact={narrow}
             />
           )}
           {extra.map((p) => (
-            <Picker key={p.option.id} title={p.option.name} picker={p} disabled={settingsDisabled} onPick={onSetting} />
+            <Picker key={p.option.id} title={p.option.name} picker={p} disabled={settingsDisabled} onPick={onSetting} compact={narrow} />
           ))}
           {fast && (
             <ToolbarButton
@@ -516,10 +531,14 @@ export function AcpPromptBox({
             />
           )}
 
-          <div className="ml-auto flex items-center gap-1.5 pl-1">
-            {notice && <span className="truncate text-[11px] text-amber-400">{notice}</span>}
+          <div className="ml-auto flex shrink-0 items-center gap-1.5 pl-1">
+            {notice && (
+              <span className="max-w-[12rem] truncate text-[11px] text-amber-400" title={notice}>
+                {notice}
+              </span>
+            )}
             {usage && <ContextRing usage={usage} />}
-            {running && !empty && !editing && (
+            {running && !empty && !editing && !narrow && (
               <button
                 onClick={() => void send(true)}
                 disabled={!canSend || disabled}
@@ -624,6 +643,7 @@ function Picker({
   disabled,
   onPick,
   tone,
+  compact = false,
 }: {
   icon?: LucideIcon;
   title: string;
@@ -631,6 +651,9 @@ function Picker({
   disabled: boolean;
   onPick: (picker: ComposerPicker, value: string) => void;
   tone?: "warn";
+  /// Icon only (the value moves to the tooltip); pickers without an icon
+  /// keep a short label.
+  compact?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -651,11 +674,13 @@ function Picker({
   }, [open]);
   const { option } = picker;
   return (
-    <div ref={ref} className="relative min-w-0">
+    // Compact: the list anchors to the composer (the nearest positioned
+    // ancestor) and spans it, so it can't overflow a narrow pane.
+    <div ref={ref} className={cn("min-w-0", !compact && "relative")}>
       <button
         onClick={() => setOpen((o) => !o)}
         disabled={disabled}
-        title={title}
+        title={compact ? `${title}: ${currentLabel(picker.option)}` : title}
         aria-haspopup="listbox"
         aria-expanded={open}
         className={cn(
@@ -665,14 +690,21 @@ function Picker({
         )}
       >
         {Icon && <Icon size={13} className="shrink-0" />}
-        <span className="max-w-[9rem] truncate">{currentLabel(option)}</span>
-        <ChevronDown size={11} className="shrink-0 opacity-60" />
+        {!(compact && Icon) && (
+          <span className={cn("truncate", compact ? "max-w-[5rem]" : "max-w-[9rem]")}>
+            {currentLabel(option)}
+          </span>
+        )}
+        {!compact && <ChevronDown size={11} className="shrink-0 opacity-60" />}
       </button>
       {open && (
         <div
           role="listbox"
           aria-label={title}
-          className="absolute bottom-full left-0 z-30 mb-1.5 w-64 overflow-hidden rounded-md border border-neutral-800 bg-neutral-900 py-1 shadow-xl shadow-black/40"
+          className={cn(
+            "absolute bottom-full z-30 mb-1.5 overflow-hidden rounded-md border border-neutral-800 bg-neutral-900 py-1 shadow-xl shadow-black/40",
+            compact ? "left-2 right-2" : "left-0 w-64",
+          )}
         >
           <div className="px-3 pb-1 pt-1 text-[10.5px] font-medium uppercase tracking-[0.08em] text-neutral-500">
             {title}

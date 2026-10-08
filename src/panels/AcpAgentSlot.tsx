@@ -78,6 +78,24 @@ import { composerControls, type ComposerPicker } from "@/lib/acp-composer";
 import { promptHistory } from "@/lib/acp-prompt";
 import type { AgentLeafMode } from "./agent-leaf-state";
 
+/// Below this pane width the layout compacts: icon-only toolbar pickers,
+/// tighter gutters, a dot-only status.
+const NARROW_PX = 520;
+
+/// The element's content width, live; 0 until measured (and in tests,
+/// which have no ResizeObserver — read as "wide").
+function useWidth(ref: React.RefObject<HTMLElement | null>): number {
+  const [width, setWidth] = useState(0);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(([entry]) => setWidth(Math.round(entry.contentRect.width)));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [ref]);
+  return width;
+}
+
 /// The worktree a transcript belongs to, for opening files it mentions.
 const WorktreeContext = createContext<{ worktreeId: WorktreeId; root: string } | null>(null);
 
@@ -128,6 +146,9 @@ export function AcpAgentSlot({
   });
 
   const scrollRef = useRef<HTMLDivElement>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const width = useWidth(rootRef);
+  const narrow = width > 0 && width < NARROW_PX;
   const stickToBottom = useRef(true);
   useLayoutEffect(() => {
     const el = scrollRef.current;
@@ -210,6 +231,7 @@ export function AcpAgentSlot({
   return (
     <WorktreeContext.Provider value={worktreeCtx}>
     <div
+      ref={rootRef}
       className="flex h-full w-full flex-col bg-neutral-950 text-[12.5px] text-neutral-300"
       // ⌃C anywhere in the pane interrupts, as in the agents' TUIs.
       onKeyDown={(e) => {
@@ -235,9 +257,12 @@ export function AcpAgentSlot({
         >
           {t.title ?? t.ready?.agentName ?? "Agent"}
         </span>
-        <span className="ml-auto flex shrink-0 items-center gap-1.5 text-neutral-500">
+        <span
+          className="ml-auto flex shrink-0 items-center gap-1.5 text-neutral-500"
+          title={narrow ? status.label : undefined}
+        >
           <span className={cn("h-1.5 w-1.5 rounded-full", STATUS_TONE[status.tone])} />
-          {status.label}
+          {!narrow && status.label}
         </span>
       </div>
 
@@ -249,7 +274,12 @@ export function AcpAgentSlot({
         }}
         className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden"
       >
-        <div className="mx-auto flex w-full min-w-0 max-w-3xl flex-col gap-3 px-4 py-4">
+        <div
+          className={cn(
+            "mx-auto flex w-full min-w-0 max-w-3xl flex-col gap-3",
+            narrow ? "px-2.5 py-3" : "px-4 py-4",
+          )}
+        >
           {state.error && <ErrorRow message={state.error} />}
           {t.items.length === 0 && !state.error && (
             <div className="py-10 text-center text-[11px] text-neutral-600">
@@ -288,7 +318,7 @@ export function AcpAgentSlot({
         </div>
       </div>
 
-      {t.plan.length > 0 && <PlanList entries={t.plan} />}
+      {t.plan.length > 0 && <PlanList entries={t.plan} narrow={narrow} />}
 
       <AcpPromptBox
         worktreeId={worktreeId}
@@ -305,6 +335,7 @@ export function AcpAgentSlot({
         focusNonce={focusNonce}
         history={history}
         editRequest={editRequest}
+        narrow={narrow}
       />
     </div>
     </WorktreeContext.Provider>
@@ -363,7 +394,7 @@ const Row = memo(function Row({
   switch (item.kind) {
     case "user":
       return (
-        <div className="group/user flex max-w-[85%] flex-col items-end gap-1 self-end">
+        <div className="group/user flex max-w-[90%] flex-col items-end gap-1 self-end">
           {item.text && (
             <div className="flex items-start gap-1">
               {onEdit && (
@@ -1033,12 +1064,12 @@ const PLAN_ICON: Record<string, { icon: LucideIcon; className: string }> = {
 
 /// The agent's plan, docked above the composer: a one-line summary that
 /// expands to the checklist.
-function PlanList({ entries }: { entries: AcpPlanEntry[] }) {
+function PlanList({ entries, narrow }: { entries: AcpPlanEntry[]; narrow: boolean }) {
   const [open, setOpen] = useState(true);
   const done = entries.filter((e) => e.status === "completed").length;
   const current = entries.find((e) => e.status === "in_progress");
   return (
-    <div className="mx-auto w-full max-w-3xl shrink-0 px-3 pb-1.5">
+    <div className={cn("mx-auto w-full max-w-3xl shrink-0 pb-1.5", narrow ? "px-2" : "px-3")}>
       <div className="rounded-md border border-neutral-800 bg-neutral-900/60">
         <button
           onClick={() => setOpen((o) => !o)}

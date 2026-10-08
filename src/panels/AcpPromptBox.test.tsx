@@ -36,7 +36,11 @@ const COMMANDS: AcpCommand[] = [
 const HISTORY = ["first prompt", "second prompt"];
 
 function setup(
-  overrides: Partial<{ running: boolean; editRequest: { text: string; nonce: number } | null }> = {},
+  overrides: Partial<{
+    running: boolean;
+    editRequest: { text: string; nonce: number } | null;
+    narrow: boolean;
+  }> = {},
 ) {
   const onSend = vi.fn(async () => true);
   const onSetting = vi.fn();
@@ -57,6 +61,7 @@ function setup(
       focusNonce={0}
       history={HISTORY}
       editRequest={o.editRequest ?? null}
+      narrow={o.narrow ?? false}
     />
   );
   const { rerender } = render(box(overrides));
@@ -189,5 +194,19 @@ describe("AcpPromptBox ⌃C", () => {
     await userEvent.type(input, "next");
     await userEvent.keyboard("{Control>}c{/Control}");
     expect(input.value).toBe("next");
+  });
+});
+
+describe("AcpPromptBox narrow", () => {
+  it("shows pickers as icons with the value in the tooltip, and drops Interrupt", async () => {
+    const { input, onSetting } = setup({ narrow: true, running: true });
+    const model = screen.getByTitle("Model: Opus 5.5");
+    expect(model.textContent).toBe("");
+    await userEvent.type(input, "next");
+    expect(screen.queryByRole("button", { name: /Interrupt/ })).toBeNull();
+    // The list still opens and picks.
+    await userEvent.click(model);
+    await userEvent.click(screen.getByRole("option", { name: /Haiku 4\.5/ }));
+    expect(onSetting).toHaveBeenCalledWith(expect.objectContaining({ via: "config" }), "haiku");
   });
 });
