@@ -80,7 +80,8 @@ pub fn build_prompt(
                         return Err(format!("{label} is too large to attach (5 MB max)."));
                     }
                     use base64::Engine;
-                    let bytes = std::fs::read(&abs).map_err(|e| format!("Couldn't read {label}: {e}"))?;
+                    let bytes =
+                        std::fs::read(&abs).map_err(|e| format!("Couldn't read {label}: {e}"))?;
                     let data = base64::engine::general_purpose::STANDARD.encode(bytes);
                     blocks.push(json!({ "type": "image", "mimeType": mime, "data": data, "uri": file_uri(&abs) }));
                     labels.push(format!("@{label}"));
@@ -145,21 +146,31 @@ mod tests {
         std::fs::write(dir.path().join("src/lib.rs"), "fn main() {}").unwrap();
         std::fs::write(dir.path().join("big.bin"), vec![0xffu8; 10]).unwrap();
         let atts = [
-            AcpAttachment::File { path: "src/lib.rs".into() },
-            AcpAttachment::File { path: "big.bin".into() },
+            AcpAttachment::File {
+                path: "src/lib.rs".into(),
+            },
+            AcpAttachment::File {
+                path: "big.bin".into(),
+            },
         ];
         let (blocks, labels) = build_prompt(" look ", &atts, dir.path(), ALL).unwrap();
         assert_eq!(blocks[0], json!({ "type": "text", "text": "look" }));
         assert_eq!(blocks[1]["type"], "resource");
         assert_eq!(blocks[1]["resource"]["text"], "fn main() {}");
-        assert!(blocks[1]["resource"]["uri"].as_str().unwrap().ends_with("/src/lib.rs"));
+        assert!(blocks[1]["resource"]["uri"]
+            .as_str()
+            .unwrap()
+            .ends_with("/src/lib.rs"));
         // Not UTF-8: linked, not embedded.
         assert_eq!(blocks[2]["type"], "resource_link");
         assert_eq!(blocks[2]["name"], "big.bin");
         assert_eq!(labels, ["@src/lib.rs", "@big.bin"]);
 
         // Without embedded-context support, everything is a link.
-        let caps = PromptCaps { embedded_context: false, ..ALL };
+        let caps = PromptCaps {
+            embedded_context: false,
+            ..ALL
+        };
         let (blocks, _) = build_prompt("x", &atts[..1], dir.path(), caps).unwrap();
         assert_eq!(blocks[1]["type"], "resource_link");
     }
@@ -168,32 +179,48 @@ mod tests {
     fn image_files_go_as_images_when_supported() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("shot.PNG"), [0x89, b'P', b'N', b'G']).unwrap();
-        let att = [AcpAttachment::File { path: "shot.PNG".into() }];
+        let att = [AcpAttachment::File {
+            path: "shot.PNG".into(),
+        }];
         let (blocks, labels) = build_prompt("", &att, dir.path(), ALL).unwrap();
         assert_eq!(blocks[0]["type"], "image");
         assert_eq!(blocks[0]["mimeType"], "image/png");
         assert_eq!(blocks[0]["data"], "iVBORw==");
         assert_eq!(labels, ["@shot.PNG"]);
         // An agent without image support gets a link instead.
-        let caps = PromptCaps { image: false, ..ALL };
+        let caps = PromptCaps {
+            image: false,
+            ..ALL
+        };
         let (blocks, _) = build_prompt("", &att, dir.path(), caps).unwrap();
         assert_eq!(blocks[0]["type"], "resource_link");
     }
 
     #[test]
     fn images_need_agent_support() {
-        let img = [AcpAttachment::Image { mime_type: "image/png".into(), data: "AAAA".into() }];
+        let img = [AcpAttachment::Image {
+            mime_type: "image/png".into(),
+            data: "AAAA".into(),
+        }];
         let (blocks, labels) = build_prompt("", &img, Path::new("/"), ALL).unwrap();
-        assert_eq!(blocks, vec![json!({ "type": "image", "mimeType": "image/png", "data": "AAAA" })]);
+        assert_eq!(
+            blocks,
+            vec![json!({ "type": "image", "mimeType": "image/png", "data": "AAAA" })]
+        );
         assert_eq!(labels, ["image"]);
-        let caps = PromptCaps { image: false, ..ALL };
+        let caps = PromptCaps {
+            image: false,
+            ..ALL
+        };
         assert!(build_prompt("x", &img, Path::new("/"), caps).is_err());
     }
 
     #[test]
     fn rejects_missing_files_and_empty_prompts() {
         let dir = tempfile::tempdir().unwrap();
-        let missing = [AcpAttachment::File { path: "nope.rs".into() }];
+        let missing = [AcpAttachment::File {
+            path: "nope.rs".into(),
+        }];
         assert_eq!(
             build_prompt("x", &missing, dir.path(), ALL).unwrap_err(),
             "No such file: nope.rs"

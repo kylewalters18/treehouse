@@ -10,8 +10,6 @@ import {
   lineOfSnippet,
   questionAnswer,
   stopReasonLabel,
-  turnChanges,
-  type AcpItem,
 } from "./acp-transcript";
 import type { AcpFormField } from "@/ipc/types";
 import { langForPath } from "@/components/CodeBlock";
@@ -246,48 +244,17 @@ describe("lineDiffStats", () => {
   });
 });
 
-describe("turnChanges", () => {
-  const tool = (id: string, over: Partial<AcpToolCall>): AcpItem => ({
-    kind: "tool",
-    tool: {
-      id,
-      title: id,
-      kind: "edit",
-      status: "completed",
-      name: null,
-      locations: [],
-      content: [],
-      rawInput: null,
-      ...over,
-    },
-  });
-  const diff = (path: string, oldText: string | null, newText: string) => ({
-    kind: "diff" as const,
-    path,
-    oldText,
-    newText,
-  });
-
-  it("sums a turn's edits per file and ignores earlier turns and failures", () => {
-    const items: AcpItem[] = [
-      tool("t0", { content: [diff("/r/old.rs", "a", "b")] }),
-      { kind: "turnEnd", stopReason: "end_turn" },
-      { kind: "user", text: "go", attachments: [] },
-      tool("t1", { content: [diff("/r/lib.rs", "a\nb\nc", "a\nB\nc")] }),
-      tool("t2", { content: [diff("/r/new.rs", null, "x\ny\nz")] }),
-      tool("t3", { content: [diff("/r/lib.rs", "c", "c\nd")] }),
-      tool("t4", { status: "failed", content: [diff("/r/nope.rs", "a", "b")] }),
-      tool("t5", { kind: "delete", locations: [{ path: "/r/gone.rs", line: null }] }),
-      { kind: "agent", text: "done" },
-      { kind: "turnEnd", stopReason: "end_turn" },
-    ];
-    expect(turnChanges(items, 9)).toEqual([
-      { path: "/r/lib.rs", status: "modified", added: 2, removed: 1 },
-      { path: "/r/new.rs", status: "added", added: 3, removed: 0 },
-      { path: "/r/gone.rs", status: "deleted", added: 0, removed: 0 },
-    ]);
-    expect(turnChanges(items, 1)).toEqual([
-      { path: "/r/old.rs", status: "modified", added: 1, removed: 1 },
-    ]);
+describe("turn changes", () => {
+  it("attaches a turn's changes to its end", () => {
+    const t = emptyTranscript();
+    const files = [{ path: "src/a.rs", status: "modified", added: 2, removed: 1, binary: false }];
+    applyAcpEvent(t, { kind: "userMessage", text: "go", attachments: [] });
+    applyAcpEvent(t, { kind: "turnChanges", files });
+    applyAcpEvent(t, { kind: "turnEnded", stopReason: "end_turn" });
+    applyAcpEvent(t, { kind: "userMessage", text: "again", attachments: [] });
+    applyAcpEvent(t, { kind: "turnEnded", stopReason: "end_turn" });
+    const ends = t.items.filter((i) => i.kind === "turnEnd");
+    expect(ends[0]).toEqual({ kind: "turnEnd", stopReason: "end_turn", changes: files });
+    expect(ends[1]).toEqual({ kind: "turnEnd", stopReason: "end_turn" });
   });
 });

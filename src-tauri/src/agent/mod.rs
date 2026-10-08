@@ -96,12 +96,20 @@ pub struct BackendAgent {
 #[ts(export)]
 pub enum AgentEvent {
     /// PTY output.
-    Data { bytes: Vec<u8> },
-    Status { status: AgentStatus },
+    Data {
+        bytes: Vec<u8>,
+    },
+    Status {
+        status: AgentStatus,
+    },
     /// One live ACP transcript event.
-    Acp { event: acp::AcpEvent },
+    Acp {
+        event: acp::AcpEvent,
+    },
     /// The ACP event log, replayed in one message on attach.
-    AcpBatch { events: Vec<acp::AcpEvent> },
+    AcpBatch {
+        events: Vec<acp::AcpEvent>,
+    },
 }
 
 /// Coarse activity classification: Claude Code hook events when present,

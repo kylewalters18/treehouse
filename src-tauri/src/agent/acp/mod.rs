@@ -19,6 +19,7 @@
 //! replays it into a fresh Channel before live events resume.
 
 pub mod adapter;
+pub mod changes;
 pub mod prompt;
 pub mod question;
 pub mod rpc;
@@ -49,8 +50,8 @@ use super::{
     AgentActivity, AgentBackendKind, AgentEvent, AgentOverview, AgentSession, AgentStatus,
     AgentTransport,
 };
-use rpc::{Incoming, RpcConn, AUTH_REQUIRED, INVALID_PARAMS, METHOD_NOT_FOUND};
 pub use prompt::AcpAttachment;
+use rpc::{Incoming, RpcConn, AUTH_REQUIRED, INVALID_PARAMS, METHOD_NOT_FOUND};
 pub use view::{AcpEvent, AcpView};
 
 /// Events kept for replay. Text chunks and tool updates coalesce (see
@@ -72,6 +73,8 @@ struct AcpShared {
     queued: Vec<Vec<Value>>,
     /// `session/prompt` requests awaiting their response.
     in_flight: u32,
+    /// What was already changed when the current turn started.
+    baseline: Option<changes::Baseline>,
     /// Prompts that interrupt the running turn: held until the cancelled
     /// turn settles (see `send_prompt`), so the cancel can't swallow them.
     redirects: Vec<Vec<Value>>,
@@ -143,7 +146,13 @@ impl AcpShared {
         if self.stderr_tail.is_empty() {
             return None;
         }
-        Some(self.stderr_tail.iter().cloned().collect::<Vec<_>>().join("\n"))
+        Some(
+            self.stderr_tail
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
     }
 
     /// Surface the next queued permission request, if the slot is free.
@@ -344,9 +353,9 @@ pub fn launch(
         // misfiling this agent's events under another session.
         .env_remove(super::hooks::SESSION_ENV)
         .envs(env.iter().map(|(k, v)| (k, v)));
-    let mut child = cmd.spawn().map_err(|e| {
-        AppError::Unknown(format!("spawn ACP adapter `{}`: {e}", argv.join(" ")))
-    })?;
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| AppError::Unknown(format!("spawn ACP adapter `{}`: {e}", argv.join(" "))))?;
     let pid = child.id();
     let (Some(stdin), Some(stdout), Some(stderr)) =
         (child.stdin.take(), child.stdout.take(), child.stderr.take())
@@ -375,6 +384,7 @@ pub fn launch(
         status: AgentStatus::Running,
         queued: Vec::new(),
         in_flight: 0,
+        baseline: None,
         redirects: Vec::new(),
         waiting: VecDeque::new(),
         stderr_tail: VecDeque::new(),
@@ -383,10 +393,15 @@ pub fn launch(
         exited_at: None,
     };
     shared.set_status(AgentStatus::Running);
-    if let Some(p) = prompt.map(|p| p.trim().to_string()).filter(|p| !p.is_empty()) {
+    if let Some(p) = prompt
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty())
+    {
         let ev = shared.view.prompt_started(&p, vec![], now);
         shared.emit(ev);
-        shared.queued.push(vec![json!({ "type": "text", "text": p })]);
+        shared
+            .queued
+            .push(vec![json!({ "type": "text", "text": p })]);
     }
     let shared = Arc::new(Mutex::new(shared));
     let ctx = Ctx {
@@ -424,7 +439,8 @@ pub fn launch(
         let mut sh = ctx.shared.lock();
         let never_ready = sh.view.session_id.is_none();
         if !sh.killed && never_ready && !matches!(sh.status, AgentStatus::Crashed { .. }) {
-            let mut message = format!("ACP adapter exited (code {code:?}) before the session started.");
+            let mut message =
+                format!("ACP adapter exited (code {code:?}) before the session started.");
             if let Some(tail) = sh.stderr_summary() {
                 message.push_str("\n\n");
                 message.push_str(&tail);
@@ -525,7 +541,10 @@ async fn try_handshake(ctx: &Ctx, mcp: Option<(String, String)>) -> Result<(), S
                 .conn
                 .request(
                     "session/new",
-                    with_meta(json!({ "cwd": ctx.cwd, "mcpServers": mcp_servers }), &ctx.session_meta),
+                    with_meta(
+                        json!({ "cwd": ctx.cwd, "mcpServers": mcp_servers }),
+                        &ctx.session_meta,
+                    ),
                 )
                 .await
                 .map_err(|e| {
@@ -633,7 +652,10 @@ async fn handle_incoming(ctx: Ctx, mut incoming: tokio::sync::mpsc::UnboundedRec
     while let Some(msg) = incoming.recv().await {
         match msg {
             Incoming::Notification { method, mut params } if method == "session/update" => {
-                let raw = params.get_mut("update").map(Value::take).unwrap_or(Value::Null);
+                let raw = params
+                    .get_mut("update")
+                    .map(Value::take)
+                    .unwrap_or(Value::Null);
                 match serde_json::from_value::<SessionUpdate>(raw) {
                     Ok(update) => {
                         let mut sh = ctx.shared.lock();
@@ -656,7 +678,10 @@ async fn handle_incoming(ctx: Ctx, mut incoming: tokio::sync::mpsc::UnboundedRec
                         sh.waiting.push_back((id, req));
                         sh.promote_waiting();
                     }
-                    Err(e) => ctx.conn.respond_error(id, INVALID_PARAMS, &format!("invalid params: {e}")),
+                    Err(e) => {
+                        ctx.conn
+                            .respond_error(id, INVALID_PARAMS, &format!("invalid params: {e}"))
+                    }
                 }
             }
             Incoming::Request { id, method, params } if method == "elicitation/create" => {
@@ -681,19 +706,60 @@ async fn handle_incoming(ctx: Ctx, mut incoming: tokio::sync::mpsc::UnboundedRec
 }
 
 fn spawn_prompt(ctx: Ctx, sid: String, blocks: Vec<Value>) {
-    ctx.shared.lock().in_flight += 1;
+    let first = {
+        let mut sh = ctx.shared.lock();
+        sh.in_flight += 1;
+        sh.in_flight == 1
+    };
     tauri::async_runtime::spawn(async move {
+        // A turn starting: note what's already changed, before the agent
+        // can touch anything (see `changes`).
+        if first {
+            let cwd = ctx.cwd.clone();
+            let base = tauri::async_runtime::spawn_blocking(move || changes::snapshot(&cwd))
+                .await
+                .ok()
+                .flatten();
+            ctx.shared.lock().baseline = base;
+        }
         let res = ctx
             .conn
-            .request("session/prompt", json!({ "sessionId": sid, "prompt": blocks }))
+            .request(
+                "session/prompt",
+                json!({ "sessionId": sid, "prompt": blocks }),
+            )
             .await;
+        // The last prompt in flight finishing ends the turn: diff the
+        // worktree against its start.
+        let base = {
+            let mut sh = ctx.shared.lock();
+            sh.in_flight = sh.in_flight.saturating_sub(1);
+            if sh.in_flight == 0 {
+                sh.baseline.take()
+            } else {
+                None
+            }
+        };
+        let files = match base {
+            Some(base) => {
+                tauri::async_runtime::spawn_blocking(move || changes::changes_since(&base))
+                    .await
+                    .unwrap_or_default()
+            }
+            None => Vec::new(),
+        };
         let (turn, redirects) = {
             let mut sh = ctx.shared.lock();
             let now = now_millis();
-            sh.in_flight = sh.in_flight.saturating_sub(1);
+            if !files.is_empty() {
+                sh.emit(AcpEvent::TurnChanges { files });
+            }
             match res {
                 Ok(v) => {
-                    let stop = v.get("stopReason").and_then(Value::as_str).unwrap_or("end_turn");
+                    let stop = v
+                        .get("stopReason")
+                        .and_then(Value::as_str)
+                        .unwrap_or("end_turn");
                     let ev = sh.view.turn_ended(stop, now);
                     sh.emit(ev);
                 }
@@ -799,8 +865,8 @@ pub fn send_prompt(
     if !sh.live() {
         return Err(AppError::Unknown("This agent has exited.".into()));
     }
-    let (blocks, labels) = prompt::build_prompt(text, attachments, &h.cwd, sh.view.caps)
-        .map_err(AppError::Unknown)?;
+    let (blocks, labels) =
+        prompt::build_prompt(text, attachments, &h.cwd, sh.view.caps).map_err(AppError::Unknown)?;
     let ev = sh.view.prompt_started(text.trim(), labels, now_millis());
     sh.emit(ev);
     match sh.view.session_id.clone() {
@@ -815,7 +881,10 @@ pub fn send_prompt(
                 tokio::time::sleep(REDIRECT_TIMEOUT).await;
                 let (late, sid) = {
                     let mut sh = ctx.shared.lock();
-                    (std::mem::take(&mut sh.redirects), sh.view.session_id.clone())
+                    (
+                        std::mem::take(&mut sh.redirects),
+                        sh.view.session_id.clone(),
+                    )
                 };
                 if let Some(sid) = sid {
                     for blocks in late {
@@ -900,14 +969,19 @@ pub fn set_mode(registry: &AgentRegistry, id: AgentSessionId, mode_id: &str) -> 
             .as_ref()
             .is_some_and(|m| m.available.iter().any(|x| x.id == mode_id));
         if !offered {
-            return Err(AppError::Unknown(format!("This agent has no mode `{mode_id}`.")));
+            return Err(AppError::Unknown(format!(
+                "This agent has no mode `{mode_id}`."
+            )));
         }
         (sid, h.conn.clone(), h.shared.clone())
     };
     let mode_id = mode_id.to_string();
     tauri::async_runtime::spawn(async move {
         let res = conn
-            .request("session/set_mode", json!({ "sessionId": sid, "modeId": mode_id }))
+            .request(
+                "session/set_mode",
+                json!({ "sessionId": sid, "modeId": mode_id }),
+            )
             .await;
         let mut sh = shared.lock();
         match res {
@@ -958,8 +1032,11 @@ pub fn set_config(
     let legacy_model = config_id == view::LEGACY_MODEL_ID;
     tauri::async_runtime::spawn(async move {
         let res = if legacy_model {
-            conn.request("session/set_model", json!({ "sessionId": sid, "modelId": value }))
-                .await
+            conn.request(
+                "session/set_model",
+                json!({ "sessionId": sid, "modelId": value }),
+            )
+            .await
         } else {
             conn.request(
                 "session/set_config_option",
@@ -982,7 +1059,11 @@ pub fn set_config(
             Err(e) => sh.emit(AcpEvent::Error {
                 message: format!(
                     "Couldn't change {}: {e}",
-                    if legacy_model { "model" } else { config_id.as_str() }
+                    if legacy_model {
+                        "model"
+                    } else {
+                        config_id.as_str()
+                    }
                 ),
             }),
         }
@@ -1000,13 +1081,19 @@ pub fn answer_question(
     content: Option<Value>,
 ) -> AppResult<()> {
     if !matches!(action, "accept" | "decline" | "cancel") {
-        return Err(AppError::Unknown(format!("unknown answer action `{action}`")));
+        return Err(AppError::Unknown(format!(
+            "unknown answer action `{action}`"
+        )));
     }
     let content = content.unwrap_or_else(|| json!({}));
-    let summary = (action == "accept").then(|| answer_summary(&content)).flatten();
+    let summary = (action == "accept")
+        .then(|| answer_summary(&content))
+        .flatten();
     let h = handle(registry, id)?;
     let mut sh = h.shared.lock();
-    let Some((rpc_id, ev)) = sh.view.resolve_question(request_id, action, summary, now_millis())
+    let Some((rpc_id, ev)) = sh
+        .view
+        .resolve_question(request_id, action, summary, now_millis())
     else {
         return Err(AppError::Unknown(
             "This agent is no longer waiting on that question.".into(),
@@ -1107,7 +1194,13 @@ mod tests {
     #[test]
     fn log_coalesces_chunks_and_tool_updates() {
         let mut log = Vec::new();
-        push_log(&mut log, AcpEvent::UserMessage { text: "hi".into(), attachments: vec![] });
+        push_log(
+            &mut log,
+            AcpEvent::UserMessage {
+                text: "hi".into(),
+                attachments: vec![],
+            },
+        );
         push_log(&mut log, AcpEvent::AgentText { text: "a".into() });
         push_log(&mut log, AcpEvent::AgentText { text: "b".into() });
         push_log(&mut log, tool("t1", "pending"));
@@ -1115,19 +1208,34 @@ mod tests {
         push_log(&mut log, tool("t1", "completed"));
         push_log(&mut log, AcpEvent::Thought { text: "x".into() });
         push_log(&mut log, AcpEvent::Thought { text: "y".into() });
-        push_log(&mut log, AcpEvent::UserText { text: "replayed ".into() });
-        push_log(&mut log, AcpEvent::UserText { text: "prompt".into() });
+        push_log(
+            &mut log,
+            AcpEvent::UserText {
+                text: "replayed ".into(),
+            },
+        );
+        push_log(
+            &mut log,
+            AcpEvent::UserText {
+                text: "prompt".into(),
+            },
+        );
         assert_eq!(
             log,
             vec![
-                AcpEvent::UserMessage { text: "hi".into(), attachments: vec![] },
+                AcpEvent::UserMessage {
+                    text: "hi".into(),
+                    attachments: vec![]
+                },
                 AcpEvent::AgentText { text: "ab".into() },
                 // Replaced in place: replay shows the final state where the
                 // call first appeared.
                 tool("t1", "completed"),
                 AcpEvent::AgentText { text: "c".into() },
                 AcpEvent::Thought { text: "xy".into() },
-                AcpEvent::UserText { text: "replayed prompt".into() },
+                AcpEvent::UserText {
+                    text: "replayed prompt".into()
+                },
             ]
         );
     }
@@ -1170,15 +1278,19 @@ mod tests {
             let cwd2 = cwd.clone();
             let id2 = id.clone();
             let load = tokio::spawn(async move {
-                c.request("session/load", json!({ "sessionId": id2, "cwd": cwd2, "mcpServers": [] }))
-                    .await
+                c.request(
+                    "session/load",
+                    json!({ "sessionId": id2, "cwd": cwd2, "mcpServers": [] }),
+                )
+                .await
             });
             loop {
                 if load.is_finished() {
                     break;
                 }
                 if let Ok(Some(Incoming::Notification { method, mut params })) =
-                    tokio::time::timeout(std::time::Duration::from_millis(200), incoming.recv()).await
+                    tokio::time::timeout(std::time::Duration::from_millis(200), incoming.recv())
+                        .await
                 {
                     if method == "session/update" {
                         let raw = params.get_mut("update").map(Value::take).unwrap();
@@ -1190,7 +1302,10 @@ mod tests {
                     }
                 }
             }
-            println!("load result: {:?}", load.await.unwrap().map(|v| v.get("modes").is_some()));
+            println!(
+                "load result: {:?}",
+                load.await.unwrap().map(|v| v.get("modes").is_some())
+            );
             view.replay_finished(2);
             println!("last_message after replay: {:?}", view.last_message);
             id
@@ -1255,10 +1370,15 @@ mod tests {
     #[test]
     fn answer_summaries_join_values() {
         assert_eq!(
-            answer_summary(&json!({ "question_0": "Redis", "question_0_custom": " ", "question_1": ["mac", "linux"] })),
+            answer_summary(
+                &json!({ "question_0": "Redis", "question_0_custom": " ", "question_1": ["mac", "linux"] })
+            ),
             Some("Redis, mac, linux".into())
         );
-        assert_eq!(answer_summary(&json!({ "ok": true, "n": 3 })), Some("Yes, 3".into()));
+        assert_eq!(
+            answer_summary(&json!({ "ok": true, "n": 3 })),
+            Some("Yes, 3".into())
+        );
         assert_eq!(answer_summary(&json!({})), None);
     }
 
@@ -1287,7 +1407,8 @@ mod tests {
             status: AgentStatus::Running,
             queued: Vec::new(),
             in_flight: 0,
-                redirects: Vec::new(),
+            baseline: None,
+            redirects: Vec::new(),
             waiting: VecDeque::new(),
             stderr_tail: VecDeque::new(),
             killed: false,
@@ -1326,10 +1447,17 @@ mod tests {
 
         // Nothing more until the first turn answers.
         let early = tokio::time::timeout(Duration::from_millis(150), read(&mut lines)).await;
-        assert!(early.is_err(), "interrupting prompt sent before the turn settled");
+        assert!(
+            early.is_err(),
+            "interrupting prompt sent before the turn settled"
+        );
 
-        let reply = json!({ "jsonrpc": "2.0", "id": first["id"], "result": { "stopReason": "cancelled" } });
-        agent_out.write_all(format!("{reply}\n").as_bytes()).await.unwrap();
+        let reply =
+            json!({ "jsonrpc": "2.0", "id": first["id"], "result": { "stopReason": "cancelled" } });
+        agent_out
+            .write_all(format!("{reply}\n").as_bytes())
+            .await
+            .unwrap();
         let second = read(&mut lines).await;
         assert_eq!(second["method"], "session/prompt");
         assert_eq!(second["params"]["prompt"][0]["text"], "second");
@@ -1339,9 +1467,19 @@ mod tests {
     fn log_is_bounded() {
         let mut log = Vec::new();
         for i in 0..LOG_MAX + 5 {
-            push_log(&mut log, AcpEvent::Title { title: i.to_string() });
+            push_log(
+                &mut log,
+                AcpEvent::Title {
+                    title: i.to_string(),
+                },
+            );
         }
         assert!(log.len() <= LOG_MAX);
-        assert_eq!(log.last(), Some(&AcpEvent::Title { title: (LOG_MAX + 4).to_string() }));
+        assert_eq!(
+            log.last(),
+            Some(&AcpEvent::Title {
+                title: (LOG_MAX + 4).to_string()
+            })
+        );
     }
 }

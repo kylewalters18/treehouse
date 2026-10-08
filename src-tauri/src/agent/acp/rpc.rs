@@ -175,15 +175,24 @@ fn closed() -> RpcError {
 }
 
 fn dispatch(mut msg: Value, pending: &Pending, incoming: &mpsc::UnboundedSender<Incoming>) {
-    let method = msg.get("method").and_then(Value::as_str).map(str::to_string);
+    let method = msg
+        .get("method")
+        .and_then(Value::as_str)
+        .map(str::to_string);
     let id = msg.get_mut("id").map(Value::take).filter(|v| !v.is_null());
     match (method, id) {
         (Some(method), Some(id)) => {
-            let params = msg.get_mut("params").map(Value::take).unwrap_or(Value::Null);
+            let params = msg
+                .get_mut("params")
+                .map(Value::take)
+                .unwrap_or(Value::Null);
             let _ = incoming.send(Incoming::Request { id, method, params });
         }
         (Some(method), None) => {
-            let params = msg.get_mut("params").map(Value::take).unwrap_or(Value::Null);
+            let params = msg
+                .get_mut("params")
+                .map(Value::take)
+                .unwrap_or(Value::Null);
             let _ = incoming.send(Incoming::Notification { method, params });
         }
         (None, Some(id)) => {
@@ -207,7 +216,10 @@ fn dispatch(mut msg: Value, pending: &Pending, incoming: &mpsc::UnboundedSender<
                         other => Some(other.to_string()),
                     }),
                 }),
-                _ => Ok(msg.get_mut("result").map(Value::take).unwrap_or(Value::Null)),
+                _ => Ok(msg
+                    .get_mut("result")
+                    .map(Value::take)
+                    .unwrap_or(Value::Null)),
             };
             let _ = tx.send(result);
         }

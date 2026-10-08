@@ -165,7 +165,8 @@ pub async fn open(
     let session = if transport == AgentTransport::Acp {
         let (argv, env) = crate::agent::acp::adapter::launch_spec(app, backend).await?;
         // Claude's adapter takes the same restrictions as session options.
-        let meta = (backend == AgentBackendKind::ClaudeCode).then(|| claude_planner_meta(&repo, &checkout));
+        let meta = (backend == AgentBackendKind::ClaudeCode)
+            .then(|| claude_planner_meta(&repo, &checkout));
         crate::agent::acp::launch(
             app,
             agents,
@@ -401,7 +402,11 @@ mod tests {
             meta.pointer("/claudeCode/options/disallowedTools").unwrap(),
             &serde_json::json!(DISALLOWED_TOOLS)
         );
-        let append = meta.pointer("/systemPrompt/append").unwrap().as_str().unwrap();
+        let append = meta
+            .pointer("/systemPrompt/append")
+            .unwrap()
+            .as_str()
+            .unwrap();
         assert!(append.contains("`treehouse`") && append.contains("origin/main at abc1234"));
         assert_eq!(append, planner_system_prompt("treehouse", &c));
     }

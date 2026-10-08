@@ -9,6 +9,7 @@ import type {
   AcpPlanEntry,
   AcpQuestion,
   AcpToolCall,
+  TurnFileChange,
 } from "@/ipc/types";
 
 /// One row of an ACP agent's transcript, as the pane renders it.
@@ -31,7 +32,8 @@ export type AcpItem =
       /// `undefined` while pending.
       resolved?: { action: string; summary: string | null };
     }
-  | { kind: "turnEnd"; stopReason: string }
+  /// `changes`: the files the turn changed (from git), when it changed any.
+  | { kind: "turnEnd"; stopReason: string; changes?: TurnFileChange[] }
   | { kind: "error"; message: string };
 
 export type AcpTranscript = {
@@ -58,6 +60,8 @@ export type AcpTranscript = {
   /// Slash commands for prompt autocomplete.
   commands: AcpCommand[];
   usage: AcpUsage | null;
+  /// A finished turn's changes, held for the `turnEnded` that follows.
+  pendingChanges: TurnFileChange[] | null;
   /// Session settings: model, effort, mode, fast, …
   config: AcpConfigOption[];
 };
@@ -74,6 +78,7 @@ export function emptyTranscript(): AcpTranscript {
     modes: null,
     commands: [],
     usage: null,
+    pendingChanges: null,
     config: [],
   };
 }
@@ -173,7 +178,15 @@ export function applyAcpEvent(t: AcpTranscript, ev: AcpEvent): void {
         t.pendingPermission = null;
         t.pendingQuestion = null;
       }
-      t.items.push({ kind: "turnEnd", stopReason: ev.stopReason });
+      t.items.push({
+        kind: "turnEnd",
+        stopReason: ev.stopReason,
+        ...(t.pendingChanges && { changes: t.pendingChanges }),
+      });
+      t.pendingChanges = null;
+      break;
+    case "turnChanges":
+      t.pendingChanges = ev.files;
       break;
     case "title":
       t.title = ev.title;
@@ -319,49 +332,4 @@ export function lineDiffStats(oldText: string, newText: string): { added: number
   }
   const common = prev[n];
   return { added: n - common, removed: m - common };
-}
-
-/// One file a turn changed, with line counts summed over its edits.
-export type TurnChange = {
-  /// As the agent reported it (usually absolute).
-  path: string;
-  status: "added" | "modified" | "deleted";
-  added: number;
-  removed: number;
-};
-
-/// The files edited in the turn that `end` (a `turnEnd` item's index)
-/// closes: its tool calls' diffs and deletes, back to the previous turn's
-/// end, in first-touched order. Failed calls don't count.
-export function turnChanges(items: AcpItem[], end: number): TurnChange[] {
-  let start = end - 1;
-  while (start >= 0 && items[start].kind !== "turnEnd") start--;
-  const byPath = new Map<string, TurnChange & { created: boolean }>();
-  const entry = (path: string) => {
-    let c = byPath.get(path);
-    if (!c) {
-      c = { path, status: "modified", added: 0, removed: 0, created: false };
-      byPath.set(path, c);
-    }
-    return c;
-  };
-  for (let i = start + 1; i < end; i++) {
-    const it = items[i];
-    if (it.kind !== "tool" || it.tool.status === "failed") continue;
-    const { tool } = it;
-    if (tool.kind === "delete") {
-      for (const l of tool.locations) entry(l.path).status = "deleted";
-      continue;
-    }
-    for (const c of tool.content) {
-      if (c.kind !== "diff") continue;
-      const e = entry(c.path);
-      if (!c.oldText && e.added === 0 && e.removed === 0) e.created = true;
-      const s = lineDiffStats(c.oldText ?? "", c.newText);
-      e.added += s.added;
-      e.removed += s.removed;
-      e.status = e.created ? "added" : "modified";
-    }
-  }
-  return [...byPath.values()].map(({ created: _created, ...c }) => c);
 }

@@ -54,6 +54,7 @@ import type {
   AcpQuestion,
   AcpToolCall,
   AgentSessionId,
+  TurnFileChange,
   WorktreeId,
 } from "@/ipc/types";
 import { ForgeMarkdown } from "@/components/ForgeMarkdown";
@@ -68,10 +69,8 @@ import {
   lineOfSnippet,
   questionAnswer,
   stopReasonLabel,
-  turnChanges,
   type AcpItem,
   type FormValue,
-  type TurnChange,
 } from "@/lib/acp-transcript";
 import { useDiffsStore } from "@/stores/diffs";
 import { useUiStore } from "@/stores/ui";
@@ -155,15 +154,7 @@ export function AcpAgentSlot({
     if (it.kind === "user" && it.text.trim()) lastUser = i;
     if (it.kind === "turnEnd") lastTurnEnd = i;
   });
-  /// Files each finished turn changed, by its `turnEnd` index.
-  const changesByEnd = useMemo(() => {
-    const out = new Map<number, TurnChange[]>();
-    t.items.forEach((it, i) => {
-      if (it.kind === "turnEnd") out.set(i, turnChanges(t.items, i));
-    });
-    return out;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state.version]);
+
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -332,7 +323,6 @@ export function AcpAgentSlot({
                 onAnswer={answer}
                 onAnswerQuestion={answerQuestion}
                 onEdit={group.start === lastUser && canEdit ? editLast : undefined}
-                changes={changesByEnd.get(group.start)}
                 latest={group.start === lastTurnEnd}
               />
             ),
@@ -402,13 +392,10 @@ const Row = memo(function Row({
   onAnswer,
   onAnswerQuestion,
   onEdit,
-  changes,
   latest = false,
 }: {
   item: AcpItem;
   pending: boolean;
-  /// For a `turnEnd`: the files its turn changed.
-  changes?: TurnChange[];
   /// This is the transcript's last finished turn (its summary opens).
   latest?: boolean;
   /// Offered on the last sent prompt: load it into the composer to edit.
@@ -468,6 +455,7 @@ const Row = memo(function Row({
       return <QuestionCard item={item} pending={pending} onAnswer={onAnswerQuestion} />;
     case "turnEnd": {
       const label = stopReasonLabel(item.stopReason);
+      const changes = item.changes;
       if (!label && !changes?.length) return null;
       return (
         <div className="flex min-w-0 flex-col gap-1.5">
@@ -1149,15 +1137,17 @@ function PlanList({ entries, narrow }: { entries: AcpPlanEntry[]; narrow: boolea
 /// Show this many files before "Show N more".
 const SUMMARY_FILES = 6;
 
-/// A finished turn's changed files with line counts. Each opens in the diff
-/// pane; the latest turn's starts open, earlier ones fold to one line.
-function TurnSummary({ changes, defaultOpen }: { changes: TurnChange[]; defaultOpen: boolean }) {
+/// A finished turn's changed files (measured from git, so shell edits
+/// count) with line counts. Each opens in the diff pane; the latest turn's
+/// starts open, earlier ones fold to one line.
+function TurnSummary({ changes, defaultOpen }: { changes: TurnFileChange[]; defaultOpen: boolean }) {
   const ctx = useContext(WorktreeContext);
   const [open, setOpen] = useState(defaultOpen);
   const [all, setAll] = useState(false);
   // A newer turn finishing folds this one away.
   useEffect(() => setOpen(defaultOpen), [defaultOpen]);
-  const rows = changes.map((c) => ({ ...c, rel: ctx ? relativeTo(ctx.root, c.path) : null }));
+  // Paths are repo-relative, and the worktree is the repo.
+  const rows = changes.map((c) => ({ ...c, rel: ctx?.root ? c.path : null }));
   const added = changes.reduce((n, c) => n + c.added, 0);
   const removed = changes.reduce((n, c) => n + c.removed, 0);
   const firstRel = rows.find((r) => r.rel !== null)?.rel ?? null;
@@ -1209,7 +1199,7 @@ function TurnSummary({ changes, defaultOpen }: { changes: TurnChange[]; defaultO
   );
 }
 
-const CHANGE_MARK: Record<TurnChange["status"], { mark: string; className: string; label: string }> = {
+const CHANGE_MARK: Record<string, { mark: string; className: string; label: string }> = {
   added: { mark: "A", className: "text-emerald-400/80", label: "Added" },
   modified: { mark: "M", className: "text-neutral-500", label: "Modified" },
   deleted: { mark: "D", className: "text-rose-400/80", label: "Deleted" },
@@ -1220,13 +1210,13 @@ function ChangeRow({
   rel,
   worktreeId,
 }: {
-  change: TurnChange;
+  change: TurnFileChange;
   rel: string | null;
   worktreeId: WorktreeId | null;
 }) {
   const shown = rel ?? change.path;
   const slash = shown.lastIndexOf("/");
-  const mark = CHANGE_MARK[change.status];
+  const mark = CHANGE_MARK[change.status] ?? CHANGE_MARK.modified;
   const body = (
     <>
       <span className={cn("w-3 shrink-0 font-mono text-[10.5px]", mark.className)} title={mark.label}>
@@ -1236,7 +1226,11 @@ function ChangeRow({
         {slash >= 0 && <span className="text-neutral-500">{shown.slice(0, slash + 1)}</span>}
         <span className={rel !== null ? "text-neutral-200" : "text-neutral-400"}>{shown.slice(slash + 1)}</span>
       </span>
-      {change.status !== "deleted" && <DiffCounts added={change.added} removed={change.removed} />}
+      {change.binary ? (
+        <span className="shrink-0 text-[10.5px] text-neutral-500">binary</span>
+      ) : (
+        <DiffCounts added={change.added} removed={change.removed} />
+      )}
     </>
   );
   if (rel === null || worktreeId === null) {

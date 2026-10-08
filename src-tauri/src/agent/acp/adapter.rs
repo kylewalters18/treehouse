@@ -167,7 +167,10 @@ pub async fn launch_env(app: &AppHandle, backend: AgentBackendKind) -> Vec<(Stri
     let mut env = Vec::new();
     if backend == AgentBackendKind::ClaudeCode {
         if let Some(exe) = claude_executable(app).await {
-            env.push((CLAUDE_EXECUTABLE_ENV.to_string(), exe.to_string_lossy().into_owned()));
+            env.push((
+                CLAUDE_EXECUTABLE_ENV.to_string(),
+                exe.to_string_lossy().into_owned(),
+            ));
         }
     }
     env
@@ -184,7 +187,9 @@ pub async fn claude_executable(app: &AppHandle) -> Option<PathBuf> {
         return None;
     }
     let settings = crate::storage::load_settings(app).await.unwrap_or_default();
-    let cmd = settings.agent_commands.for_backend(AgentBackendKind::ClaudeCode);
+    let cmd = settings
+        .agent_commands
+        .for_backend(AgentBackendKind::ClaudeCode);
     let program = crate::mcp::split_command(cmd)
         .into_iter()
         .next()
@@ -397,7 +402,10 @@ mod tests {
 
         // Already installed: no npm run at all (a failing npm proves it).
         let failing = fake_npm(tools.path(), false);
-        assert_eq!(ensure_installed(root.path(), FAKE, &failing).await.unwrap(), bin);
+        assert_eq!(
+            ensure_installed(root.path(), FAKE, &failing).await.unwrap(),
+            bin
+        );
     }
 
     #[tokio::test]

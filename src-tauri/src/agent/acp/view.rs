@@ -7,8 +7,8 @@
 use std::collections::HashMap;
 
 use agent_client_protocol_schema::v1::{
-    ContentBlock, PermissionOptionKind, RequestPermissionRequest, SessionModeState,
-    SessionUpdate, ToolCall, ToolCallContent, ToolCallStatus, ToolCallUpdate, ToolKind,
+    ContentBlock, PermissionOptionKind, RequestPermissionRequest, SessionModeState, SessionUpdate,
+    ToolCall, ToolCallContent, ToolCallStatus, ToolCallUpdate, ToolKind,
 };
 use agent_client_protocol_schema::MaybeUndefined;
 use serde::Serialize;
@@ -57,17 +57,29 @@ pub enum AcpEvent {
     /// A chunk of a past user message, replayed by `session/load`.
     /// Consecutive chunks form one message; unlike `UserMessage` it starts
     /// no turn.
-    UserText { text: String },
+    UserText {
+        text: String,
+    },
     /// A chunk of the agent's reply; consecutive chunks form one message.
-    AgentText { text: String },
+    AgentText {
+        text: String,
+    },
     /// A chunk of the agent's visible reasoning.
-    Thought { text: String },
+    Thought {
+        text: String,
+    },
     /// A tool call was created or changed. Always the full current state;
     /// the pane upserts by `tool.id`.
-    Tool { tool: AcpToolCall },
+    Tool {
+        tool: AcpToolCall,
+    },
     /// The agent's plan, replaced wholesale on every update.
-    Plan { entries: Vec<AcpPlanEntry> },
-    Permission { request: AcpPermissionRequest },
+    Plan {
+        entries: Vec<AcpPlanEntry>,
+    },
+    Permission {
+        request: AcpPermissionRequest,
+    },
     /// `optionId` is `None` when the request was cancelled.
     PermissionResolved {
         #[serde(rename = "requestId")]
@@ -75,12 +87,20 @@ pub enum AcpEvent {
         #[serde(rename = "optionId")]
         option_id: Option<String>,
     },
+    /// The files the turn changed in the worktree (from git; see
+    /// `acp::changes`). Sent just before the turn's last `TurnEnded`, and
+    /// only when something changed.
+    TurnChanges {
+        files: Vec<super::changes::TurnFileChange>,
+    },
     TurnEnded {
         #[serde(rename = "stopReason")]
         stop_reason: String,
     },
     /// The agent asked a question (a form elicitation) and is blocked on it.
-    Question { question: AcpQuestion },
+    Question {
+        question: AcpQuestion,
+    },
     /// `action` is `accept`, `decline` or `cancel`; `summary` is the
     /// accepted answer's values, for the transcript.
     QuestionResolved {
@@ -89,18 +109,30 @@ pub enum AcpEvent {
         action: String,
         summary: Option<String>,
     },
-    Title { title: String },
+    Title {
+        title: String,
+    },
     /// The session's permission modes and which is current. Sent after
     /// `session/new` and whenever the mode changes.
-    Modes { modes: AcpModes },
+    Modes {
+        modes: AcpModes,
+    },
     /// Slash commands the agent accepts (`/compact`, custom commands, …).
-    Commands { commands: Vec<AcpCommand> },
+    Commands {
+        commands: Vec<AcpCommand>,
+    },
     /// Context-window use, and cost when the agent reports it.
-    Usage { usage: AcpUsage },
+    Usage {
+        usage: AcpUsage,
+    },
     /// The agent's session settings (model, effort, mode, fast, …), all of
     /// them, whenever any changes.
-    Config { options: Vec<AcpConfigOption> },
-    Error { message: String },
+    Config {
+        options: Vec<AcpConfigOption>,
+    },
+    Error {
+        message: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, TS, PartialEq)]
@@ -162,10 +194,18 @@ pub fn parse_config_options(v: &Value) -> Vec<AcpConfigOption> {
         .filter(|o| o.get("type").and_then(Value::as_str).unwrap_or("select") == "select")
         .filter_map(|o| {
             values.clear();
-            for entry in o.get("options").and_then(Value::as_array).into_iter().flatten() {
+            for entry in o
+                .get("options")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
                 // Grouped lists nest `{ group, name, options: [...] }`.
                 let inner = entry.get("options").and_then(Value::as_array);
-                for x in inner.map(|a| a.iter().collect()).unwrap_or_else(|| vec![entry]) {
+                for x in inner
+                    .map(|a| a.iter().collect())
+                    .unwrap_or_else(|| vec![entry])
+                {
                     if let (Some(value), Some(name)) = (str_of(x, "value"), str_of(x, "name")) {
                         values.push(AcpConfigValue {
                             value,
@@ -180,9 +220,11 @@ pub fn parse_config_options(v: &Value) -> Vec<AcpConfigOption> {
                 name: str_of(o, "name")?,
                 description: str_of(o, "description"),
                 category: str_of(o, "category"),
-                current: o
-                    .get("currentValue")
-                    .map(|c| c.as_str().map(str::to_string).unwrap_or_else(|| c.to_string()))?,
+                current: o.get("currentValue").map(|c| {
+                    c.as_str()
+                        .map(str::to_string)
+                        .unwrap_or_else(|| c.to_string())
+                })?,
                 options: values.clone(),
             })
         })
@@ -425,7 +467,12 @@ impl AcpView {
     }
 
     /// The agent asked a question; it blocks until `resolve_question`.
-    pub fn question_asked(&mut self, rpc_id: Value, question: AcpQuestion, now_ms: u64) -> AcpEvent {
+    pub fn question_asked(
+        &mut self,
+        rpc_id: Value,
+        question: AcpQuestion,
+        now_ms: u64,
+    ) -> AcpEvent {
         self.question = Some((rpc_id, question.clone()));
         self.set_activity(AgentActivity::NeedsAttention, now_ms);
         AcpEvent::Question { question }
@@ -456,7 +503,12 @@ impl AcpView {
     }
 
     /// A prompt is about to be sent (or queued until the session is up).
-    pub fn prompt_started(&mut self, text: &str, attachments: Vec<String>, now_ms: u64) -> AcpEvent {
+    pub fn prompt_started(
+        &mut self,
+        text: &str,
+        attachments: Vec<String>,
+        now_ms: u64,
+    ) -> AcpEvent {
         self.turns += 1;
         self.task = first_line(text, TASK_MAX);
         if self.first_prompt.is_none() {
@@ -497,7 +549,9 @@ impl AcpView {
         }
         if let (Some(modes), Some(m)) = (
             self.modes.as_mut(),
-            parsed.iter().find(|o| o.category.as_deref() == Some("mode")),
+            parsed
+                .iter()
+                .find(|o| o.category.as_deref() == Some("mode")),
         ) {
             modes.current = m.current.clone();
         }
@@ -968,7 +1022,10 @@ mod tests {
         let ev = v.prompt_started("Fix the build\nmore detail", vec![], 1);
         assert_eq!(
             ev,
-            AcpEvent::UserMessage { text: "Fix the build\nmore detail".into(), attachments: vec![] }
+            AcpEvent::UserMessage {
+                text: "Fix the build\nmore detail".into(),
+                attachments: vec![]
+            }
         );
         assert_eq!(v.activity(), AgentActivity::Working);
         assert_eq!(v.changed_at, 1);
@@ -986,7 +1043,9 @@ mod tests {
             })),
             2,
         );
-        let Some(AcpEvent::Tool { tool }) = ev else { panic!("{ev:?}") };
+        let Some(AcpEvent::Tool { tool }) = ev else {
+            panic!("{ev:?}")
+        };
         assert_eq!(tool.name.as_deref(), Some("Bash"));
         assert_eq!(tool.kind, "execute");
         assert_eq!(v.current_tool.as_deref(), Some("Bash: `cargo test`"));
@@ -1001,10 +1060,15 @@ mod tests {
             })),
             3,
         );
-        let Some(AcpEvent::Tool { tool }) = ev else { panic!("{ev:?}") };
+        let Some(AcpEvent::Tool { tool }) = ev else {
+            panic!("{ev:?}")
+        };
         assert_eq!(tool.title, "`cargo test`");
         assert_eq!(tool.status, "completed");
-        assert_eq!(tool.content, vec![AcpToolContent::Text { text: "ok".into() }]);
+        assert_eq!(
+            tool.content,
+            vec![AcpToolContent::Text { text: "ok".into() }]
+        );
 
         // Locations keep their line numbers.
         let ev = v.apply_update(
@@ -1017,12 +1081,20 @@ mod tests {
             })),
             3,
         );
-        let Some(AcpEvent::Tool { tool }) = ev else { panic!("{ev:?}") };
+        let Some(AcpEvent::Tool { tool }) = ev else {
+            panic!("{ev:?}")
+        };
         assert_eq!(
             tool.locations,
             vec![
-                AcpLocation { path: "/r/src/lib.rs".into(), line: Some(40) },
-                AcpLocation { path: "/r/README.md".into(), line: None },
+                AcpLocation {
+                    path: "/r/src/lib.rs".into(),
+                    line: Some(40)
+                },
+                AcpLocation {
+                    path: "/r/README.md".into(),
+                    line: None
+                },
             ]
         );
 
@@ -1038,7 +1110,12 @@ mod tests {
         }
 
         let ev = v.turn_ended("end_turn", 5);
-        assert_eq!(ev, AcpEvent::TurnEnded { stop_reason: "end_turn".into() });
+        assert_eq!(
+            ev,
+            AcpEvent::TurnEnded {
+                stop_reason: "end_turn".into()
+            }
+        );
         assert_eq!(v.activity(), AgentActivity::Idle);
         assert_eq!(v.changed_at, 5);
         assert_eq!(v.current_tool, None);
@@ -1057,7 +1134,12 @@ mod tests {
             update(json!({ "sessionUpdate": "session_info_update", "title": "Fix CI\n" })),
             1,
         );
-        assert_eq!(ev, Some(AcpEvent::Title { title: "Fix CI".into() }));
+        assert_eq!(
+            ev,
+            Some(AcpEvent::Title {
+                title: "Fix CI".into()
+            })
+        );
         assert_eq!(v.title.as_deref(), Some("Fix CI"));
 
         let ev = v.apply_update(
@@ -1070,7 +1152,9 @@ mod tests {
             })),
             2,
         );
-        let Some(AcpEvent::Plan { entries }) = ev else { panic!("{ev:?}") };
+        let Some(AcpEvent::Plan { entries }) = ev else {
+            panic!("{ev:?}")
+        };
         assert_eq!(entries[1].status, "in_progress");
         assert_eq!(entries[0].priority, "high");
 
@@ -1087,7 +1171,9 @@ mod tests {
         let mut v = AcpView::new(0);
         v.prompt_started("clean up", vec![], 1);
         let ev = v.permission_requested(json!(7), bash_permission(), 2);
-        let AcpEvent::Permission { request } = ev else { panic!() };
+        let AcpEvent::Permission { request } = ev else {
+            panic!()
+        };
         assert_eq!(request.id, "7");
         assert_eq!(request.options.len(), 3);
         assert_eq!(request.tool.title, "`rm -rf build`");
@@ -1155,7 +1241,9 @@ mod tests {
             })),
             2,
         );
-        let AcpEvent::Permission { request } = ev else { panic!() };
+        let AcpEvent::Permission { request } = ev else {
+            panic!()
+        };
         assert_eq!(request.title, "Edit src/lib.rs");
         assert_eq!(
             request.tool.content,
@@ -1165,7 +1253,12 @@ mod tests {
                 new_text: "b".into(),
             }]
         );
-        assert!(request.tool.raw_input.as_deref().unwrap().contains("file_path"));
+        assert!(request
+            .tool
+            .raw_input
+            .as_deref()
+            .unwrap()
+            .contains("file_path"));
     }
 
     #[test]
@@ -1179,9 +1272,14 @@ mod tests {
             ],
         }))
         .unwrap();
-        let Some(AcpEvent::Modes { modes }) = v.set_modes(state) else { panic!() };
+        let Some(AcpEvent::Modes { modes }) = v.set_modes(state) else {
+            panic!()
+        };
         assert_eq!(modes.current, "default");
-        assert_eq!(modes.available[1].description.as_deref(), Some("Plan first"));
+        assert_eq!(
+            modes.available[1].description.as_deref(),
+            Some("Plan first")
+        );
 
         let ev = v.apply_update(
             update(json!({ "sessionUpdate": "current_mode_update", "currentModeId": "plan" })),
@@ -1189,7 +1287,9 @@ mod tests {
         );
         assert!(matches!(ev, Some(AcpEvent::Modes { modes }) if modes.current == "plan"));
         assert!(v.mode_changed("bogus").is_none());
-        assert!(matches!(v.mode_changed("default"), Some(AcpEvent::Modes { modes }) if modes.current == "default"));
+        assert!(
+            matches!(v.mode_changed("default"), Some(AcpEvent::Modes { modes }) if modes.current == "default")
+        );
     }
 
     #[test]
@@ -1205,7 +1305,9 @@ mod tests {
             Some(AcpEvent::UserText { text: "hi".into() })
         );
         let reply = |t: &str| {
-            update(json!({ "sessionUpdate": "agent_message_chunk", "content": { "type": "text", "text": t } }))
+            update(
+                json!({ "sessionUpdate": "agent_message_chunk", "content": { "type": "text", "text": t } }),
+            )
         };
         v.apply_update(reply("first answer"), 2);
         v.apply_update(
@@ -1238,7 +1340,9 @@ mod tests {
             })),
             1,
         );
-        let Some(AcpEvent::Commands { commands }) = ev else { panic!("{ev:?}") };
+        let Some(AcpEvent::Commands { commands }) = ev else {
+            panic!("{ev:?}")
+        };
         assert_eq!(commands[1].hint.as_deref(), Some("PR number"));
         assert_eq!(commands[0].hint, None);
 
@@ -1252,7 +1356,12 @@ mod tests {
         );
         assert_eq!(
             v.usage,
-            Some(AcpUsage { used: 50000, size: 200000, cost: Some(0.42), currency: Some("USD".into()) })
+            Some(AcpUsage {
+                used: 50000,
+                size: 200000,
+                cost: Some(0.42),
+                currency: Some("USD".into())
+            })
         );
         assert_eq!(v.state_events().len(), 2);
     }
@@ -1280,12 +1389,27 @@ mod tests {
               "options": [{ "value": "on", "name": "On" }, { "value": "off", "name": "Off" }] },
             { "id": "budget", "name": "Budget", "type": "number", "currentValue": 3 },
         ]);
-        let Some(AcpEvent::Config { options }) = v.set_config(&opts) else { panic!() };
-        assert_eq!(options.iter().map(|o| o.id.as_str()).collect::<Vec<_>>(), ["mode", "model", "fast"]);
+        let Some(AcpEvent::Config { options }) = v.set_config(&opts) else {
+            panic!()
+        };
+        assert_eq!(
+            options.iter().map(|o| o.id.as_str()).collect::<Vec<_>>(),
+            ["mode", "model", "fast"]
+        );
         assert_eq!(options[1].options.len(), 2, "grouped options flattened");
-        assert_eq!(options[1].options[0].description, None, "blank description dropped");
-        assert_eq!(options[0].options[1].description.as_deref(), Some("Plan first"));
-        assert_eq!(v.modes.as_ref().unwrap().current, "plan", "modes follow the mode option");
+        assert_eq!(
+            options[1].options[0].description, None,
+            "blank description dropped"
+        );
+        assert_eq!(
+            options[0].options[1].description.as_deref(),
+            Some("Plan first")
+        );
+        assert_eq!(
+            v.modes.as_ref().unwrap().current,
+            "plan",
+            "modes follow the mode option"
+        );
         assert!(matches!(&v.state_events()[0], AcpEvent::Config { .. }));
 
         // A config_option_update replaces them.
@@ -1297,7 +1421,9 @@ mod tests {
             })),
             1,
         );
-        assert!(matches!(ev, Some(AcpEvent::Config { options }) if options.len() == 1 && options[0].current == "on"));
+        assert!(
+            matches!(ev, Some(AcpEvent::Config { options }) if options.len() == 1 && options[0].current == "on")
+        );
         assert!(v.set_config(&json!([])).is_none());
     }
 
@@ -1323,18 +1449,25 @@ mod tests {
         assert_eq!(v.activity(), AgentActivity::NeedsAttention);
         assert_eq!(
             v.pending_prompt(),
-            Some(PendingPrompt::Input { message: Some("Which cache?".into()) })
+            Some(PendingPrompt::Input {
+                message: Some("Which cache?".into())
+            })
         );
 
         // A permission arriving too takes precedence on the board, and
         // answering it leaves the question still blocking.
         v.permission_requested(json!(5), bash_permission(), 3);
-        assert!(matches!(v.pending_prompt(), Some(PendingPrompt::Permission { .. })));
+        assert!(matches!(
+            v.pending_prompt(),
+            Some(PendingPrompt::Permission { .. })
+        ));
         v.resolve_permission("5", Some("allow"), 4).unwrap();
         assert_eq!(v.activity(), AgentActivity::NeedsAttention);
 
         assert!(v.resolve_question("nope", "accept", None, 5).is_none());
-        let (rpc_id, ev) = v.resolve_question("4", "accept", Some("Redis".into()), 6).unwrap();
+        let (rpc_id, ev) = v
+            .resolve_question("4", "accept", Some("Redis".into()), 6)
+            .unwrap();
         assert_eq!(rpc_id, json!(4));
         assert_eq!(
             ev,
@@ -1355,7 +1488,10 @@ mod tests {
         let (_, ev) = v.resolve_permission("p", None, 2).unwrap();
         assert_eq!(
             ev,
-            AcpEvent::PermissionResolved { request_id: "p".into(), option_id: None }
+            AcpEvent::PermissionResolved {
+                request_id: "p".into(),
+                option_id: None
+            }
         );
         assert_eq!(v.activity(), AgentActivity::Idle);
     }
@@ -1410,24 +1546,32 @@ mod tests {
                 ],
             }))
             .unwrap();
-        let AcpEvent::Config { options } = ev else { panic!() };
+        let AcpEvent::Config { options } = ev else {
+            panic!()
+        };
         assert_eq!(options.len(), 1);
         assert_eq!(options[0].id, LEGACY_MODEL_ID);
         assert_eq!(options[0].category.as_deref(), Some("model"));
         assert_eq!(options[0].current, "claude-sonnet");
-        assert_eq!(options[0].options[0].description.as_deref(), Some("Picks per task"));
+        assert_eq!(
+            options[0].options[0].description.as_deref(),
+            Some("Picks per task")
+        );
 
-        let AcpEvent::Config { options } = v.legacy_model_changed("auto").unwrap() else { panic!() };
+        let AcpEvent::Config { options } = v.legacy_model_changed("auto").unwrap() else {
+            panic!()
+        };
         assert_eq!(options[0].current, "auto");
         assert_eq!(v.state_events().len(), 1);
 
         // A real model config option wins.
-        v.set_config(&json!([{ "id": "model", "name": "Model", "category": "model", "type": "select",
-            "currentValue": "x", "options": [{ "value": "x", "name": "X" }] }]));
+        v.set_config(
+            &json!([{ "id": "model", "name": "Model", "category": "model", "type": "select",
+            "currentValue": "x", "options": [{ "value": "x", "name": "X" }] }]),
+        );
         let ids: Vec<_> = v.all_config().into_iter().map(|o| o.id).collect();
         assert_eq!(ids, ["model"]);
 
         assert!(parse_legacy_models(&json!({ "availableModels": [] })).is_none());
     }
-
 }

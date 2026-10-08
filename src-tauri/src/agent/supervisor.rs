@@ -13,9 +13,9 @@ use tauri::AppHandle;
 use crate::util::errors::{AppError, AppResult};
 use crate::util::ids::{AgentSessionId, WorktreeId};
 
+use super::acp;
 use super::history::{self, AgentHistory, AgentHistoryEntry};
 use super::hooks::{self, HookSession, HookSessionMap};
-use super::acp;
 use super::kiro_history;
 use super::{
     AgentActivity, AgentBackendKind, AgentEvent, AgentOverview, AgentSession, AgentStatus,

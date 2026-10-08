@@ -1118,7 +1118,13 @@ pub async fn acp_send_prompt(
     interrupt: Option<bool>,
     state: State<'_, AppState>,
 ) -> AppResult<()> {
-    agent::acp::send_prompt(&state.agents, agent_id, &text, &attachments, interrupt.unwrap_or(false))
+    agent::acp::send_prompt(
+        &state.agents,
+        agent_id,
+        &text,
+        &attachments,
+        interrupt.unwrap_or(false),
+    )
 }
 
 /// Cancel an ACP agent's running turn (`session/cancel`).
@@ -1174,7 +1180,9 @@ pub async fn acp_respond_permission(
 /// What an ACP launch runs per backend (override, managed install, or
 /// native), for the launch menu.
 #[tauri::command]
-pub async fn acp_adapters_get(app: AppHandle) -> AppResult<Vec<agent::acp::adapter::AcpAdapterInfo>> {
+pub async fn acp_adapters_get(
+    app: AppHandle,
+) -> AppResult<Vec<agent::acp::adapter::AcpAdapterInfo>> {
     agent::acp::adapter::info(&app).await
 }
 

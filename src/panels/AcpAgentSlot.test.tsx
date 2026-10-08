@@ -196,28 +196,21 @@ describe("⌃C", () => {
 });
 
 describe("files changed this turn", () => {
-  const edit = (id: string, path: string, oldText: string | null, newText: string): AcpEvent => ({
-    kind: "tool",
-    tool: {
-      id,
-      title: `Edit ${path}`,
-      kind: "edit",
-      status: "completed",
-      name: "Edit",
-      locations: [],
-      content: [{ kind: "diff", path, oldText, newText }],
-      rawInput: null,
-    },
-  });
-
   it("summarizes the turn's files and opens one in the diff", async () => {
     renderSlot([
       { kind: "userMessage", text: "refactor", attachments: [] },
-      edit("t1", "/repo/src/lib.rs", "a\nb\nc", "a\nB\nc"),
-      edit("t2", "/repo/src/new.rs", null, "x\ny"),
-      { kind: "turnEnded", stopReason: "end_turn" } as AcpEvent,
+      {
+        kind: "turnChanges",
+        files: [
+          { path: "src/lib.rs", status: "modified", added: 1, removed: 1, binary: false },
+          { path: "src/new.rs", status: "added", added: 2, removed: 0, binary: false },
+          { path: "logo.png", status: "added", added: 0, removed: 0, binary: true },
+        ],
+      },
+      { kind: "turnEnded", stopReason: "end_turn" },
     ]);
-    expect(screen.getByText("2 files changed")).toBeTruthy();
+    expect(screen.getByText("3 files changed")).toBeTruthy();
+    expect(screen.getByText("binary")).toBeTruthy();
     await userEvent.click(screen.getByTitle("Open src/new.rs in the diff"));
     const d = useDiffsStore.getState();
     expect(d.selectedFile["wt-1"]).toBe("src/new.rs");
@@ -225,11 +218,11 @@ describe("files changed this turn", () => {
     expect(d.view["wt-1"]).toBe("diff");
   });
 
-  it("shows nothing for a turn without edits", () => {
+  it("shows nothing for a turn without changes", () => {
     renderSlot([
       { kind: "userMessage", text: "hi", attachments: [] },
-      { kind: "agentText", text: "hello" } as AcpEvent,
-      { kind: "turnEnded", stopReason: "end_turn" } as AcpEvent,
+      { kind: "agentText", text: "hello" },
+      { kind: "turnEnded", stopReason: "end_turn" },
     ]);
     expect(screen.queryByText(/files? changed/)).toBeNull();
   });

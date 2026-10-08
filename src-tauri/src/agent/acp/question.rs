@@ -107,15 +107,24 @@ fn parse_input(prop: &Value) -> Option<AcpFormInput> {
         "string" => {
             let options = choices(prop);
             Some(if options.is_empty() {
-                let multiline = prop.get("maxLength").and_then(Value::as_u64).map_or(true, |n| n > 200);
+                let multiline = prop
+                    .get("maxLength")
+                    .and_then(Value::as_u64)
+                    .map_or(true, |n| n > 200);
                 AcpFormInput::Text { multiline }
             } else {
-                AcpFormInput::Choice { multi: false, options }
+                AcpFormInput::Choice {
+                    multi: false,
+                    options,
+                }
             })
         }
         "array" => {
             let options = choices(prop.get("items")?);
-            (!options.is_empty()).then_some(AcpFormInput::Choice { multi: true, options })
+            (!options.is_empty()).then_some(AcpFormInput::Choice {
+                multi: true,
+                options,
+            })
         }
         "boolean" => Some(AcpFormInput::Boolean),
         "number" => Some(AcpFormInput::Number { integer: false }),
@@ -140,7 +149,10 @@ fn choices(schema: &Value) -> Vec<AcpFormChoice> {
                     title: str_of(o, "title").unwrap_or_else(|| value.clone()),
                     description: str_of(o, "description"),
                     preview: o
-                        .pointer(&format!("/_meta/{}/preview", PREVIEW_META_KEY.replace('/', "~1")))
+                        .pointer(&format!(
+                            "/_meta/{}/preview",
+                            PREVIEW_META_KEY.replace('/', "~1")
+                        ))
                         .and_then(Value::as_str)
                         .map(str::to_string),
                     value,
@@ -219,16 +231,28 @@ mod tests {
         assert_eq!(q.id, "9");
         assert_eq!(q.tool_call_id.as_deref(), Some("toolu_1"));
         let keys: Vec<_> = q.fields.iter().map(|f| f.key.as_str()).collect();
-        assert_eq!(keys, ["question_0", "question_0_custom", "question_1", "question_1_custom"]);
+        assert_eq!(
+            keys,
+            [
+                "question_0",
+                "question_0_custom",
+                "question_1",
+                "question_1_custom"
+            ]
+        );
 
-        let AcpFormInput::Choice { multi, options } = &q.fields[0].input else { panic!() };
+        let AcpFormInput::Choice { multi, options } = &q.fields[0].input else {
+            panic!()
+        };
         assert!(!multi);
         assert_eq!(options[0].description.as_deref(), Some("In-memory"));
         assert_eq!(options[0].preview.as_deref(), Some("redis://…"));
         assert_eq!(options[1].description, None);
         assert_eq!(q.fields[1].input, AcpFormInput::Text { multiline: true });
 
-        let AcpFormInput::Choice { multi, options } = &q.fields[2].input else { panic!() };
+        let AcpFormInput::Choice { multi, options } = &q.fields[2].input else {
+            panic!()
+        };
         assert!(*multi);
         assert_eq!(options[1].title, "Linux");
         assert_eq!(options[1].value, "linux");
@@ -256,7 +280,9 @@ mod tests {
         .unwrap();
         assert_eq!(q.fields.len(), 4, "unsupported kinds are skipped");
         assert!(q.fields[0].required && !q.fields[1].required);
-        let AcpFormInput::Choice { options, .. } = &q.fields[0].input else { panic!() };
+        let AcpFormInput::Choice { options, .. } = &q.fields[0].input else {
+            panic!()
+        };
         assert_eq!(options[1].title, "Beta");
         assert_eq!(q.fields[1].input, AcpFormInput::Boolean);
         assert_eq!(q.fields[2].input, AcpFormInput::Number { integer: true });
@@ -265,7 +291,9 @@ mod tests {
 
     #[test]
     fn ignores_url_mode_and_empty_forms() {
-        assert!(parse_question("1".into(), &json!({ "mode": "url", "url": "https://x" })).is_none());
+        assert!(
+            parse_question("1".into(), &json!({ "mode": "url", "url": "https://x" })).is_none()
+        );
         assert!(parse_question(
             "1".into(),
             &json!({ "requestedSchema": { "type": "object", "properties": {} } })
