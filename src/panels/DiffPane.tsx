@@ -931,6 +931,7 @@ function DiffEditorView({
           smoothScrolling: true,
           renderWhitespace: "none",
           renderLineHighlight: "none",
+          rulers: [80],
           // Collapse long runs of unchanged lines to the standard +/-3
           // context window — matches the mental model from `git diff`.
           hideUnchangedRegions: {

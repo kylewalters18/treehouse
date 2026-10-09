@@ -472,6 +472,7 @@ function EditorWithComments({
           smoothScrolling: true,
           renderWhitespace: "none",
           renderLineHighlight: "line",
+          rulers: [80],
           tabSize: 2,
           padding: { top: 8, bottom: 8 },
           cursorBlinking: "smooth",
