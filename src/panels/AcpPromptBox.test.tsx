@@ -105,6 +105,17 @@ describe("AcpPromptBox", () => {
     expect(input.value).toBe("");
   });
 
+  it("Tab into a directory lists its entries", async () => {
+    const { input } = setup();
+    await userEvent.type(input, "@sr");
+    await waitFor(() => expect(screen.getByRole("option", { name: /^src\/$/ })).toBeTruthy());
+    await userEvent.keyboard("{Tab}");
+    expect(input.value).toBe("@src/");
+    expect(screen.getAllByRole("option").map((o) => o.textContent)).toEqual(["src/lib.rs", "src/main.rs"]);
+    await userEvent.type(input, "m{Tab}");
+    expect(input.value).toBe("@src/main.rs ");
+  });
+
   it("Esc dismisses suggestions without clearing the draft", async () => {
     const { input } = setup();
     await userEvent.type(input, "/co");

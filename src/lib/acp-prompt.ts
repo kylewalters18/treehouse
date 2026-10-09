@@ -2,6 +2,8 @@
 /// under the caret (for autocomplete), applying a completion, and the files
 /// a prompt mentions (sent as attachments).
 
+import { fuzzyFilter } from "@/lib/fuzzy";
+
 export type PromptToken = {
   kind: "file" | "command";
   /// Text after the `@` / `/`, up to the caret.
@@ -30,16 +32,78 @@ export function activeToken(text: string, caret: number): PromptToken | null {
 }
 
 /// Replace `token` with the chosen completion plus a trailing space, and
-/// return the new text and where the caret goes.
+/// return the new text and where the caret goes. A directory (`dir/`)
+/// gets no space, so completion carries on into it.
 export function applyCompletion(
   text: string,
   token: PromptToken,
   value: string,
 ): { text: string; caret: number } {
   const sigil = token.kind === "file" ? "@" : "/";
-  const insert = `${sigil}${value} `;
-  const after = text.slice(token.end).replace(/^ /, "");
+  const intoDir = token.kind === "file" && value.endsWith("/");
+  const insert = `${sigil}${value}${intoDir ? "" : " "}`;
+  const after = intoDir ? text.slice(token.end) : text.slice(token.end).replace(/^ /, "");
   return { text: text.slice(0, token.start) + insert + after, caret: token.start + insert.length };
+}
+
+/// One `@` completion: a file, or a directory (`path` ends in `/`).
+export type PathEntry = { path: string; dir: boolean };
+
+/// The worktree's files and the directories above them, for `@` completion.
+export type PathIndex = {
+  all: PathEntry[];
+  /// Directory (`""` = root, else `dir/`) → its direct children.
+  children: Map<string, PathEntry[]>;
+};
+
+export function buildPathIndex(files: readonly string[]): PathIndex {
+  const children = new Map<string, PathEntry[]>([["", []]]);
+  const all: PathEntry[] = [];
+  for (const file of files) {
+    let parent = "";
+    const parts = file.split("/");
+    for (let i = 0; i < parts.length - 1; i++) {
+      const dir = `${parent}${parts[i]}/`;
+      if (!children.has(dir)) {
+        children.set(dir, []);
+        const entry = { path: dir, dir: true };
+        children.get(parent)!.push(entry);
+        all.push(entry);
+      }
+      parent = dir;
+    }
+    const entry = { path: file, dir: false };
+    children.get(parent)!.push(entry);
+    all.push(entry);
+  }
+  const byName = (a: PathEntry, b: PathEntry) =>
+    Number(b.dir) - Number(a.dir) || a.path.localeCompare(b.path);
+  for (const list of children.values()) list.sort(byName);
+  return { all, children };
+}
+
+/// Suggestions for an `@` query, shell-style: under a known directory
+/// (`src/pa`) they're that directory's entries matching the rest, else a
+/// fuzzy match over every path. An empty rest lists the directory, folders
+/// first.
+export function pathSuggestions(
+  index: PathIndex,
+  query: string,
+  limit: number,
+): PathEntry[] {
+  const fuzzy = (items: PathEntry[], needle: string, name: (e: PathEntry) => string) =>
+    fuzzyFilter(items, needle, name, limit).map((r) => r.item);
+  const slash = query.lastIndexOf("/");
+  const dir = query.slice(0, slash + 1);
+  const rest = query.slice(slash + 1);
+  const listing = index.children.get(dir);
+  if (listing && (dir || !rest)) {
+    if (!rest) return listing.slice(0, limit);
+    // Match the entry's own name, not the directory both share.
+    const hits = fuzzy(listing, rest, (e) => e.path.slice(dir.length));
+    if (hits.length > 0) return hits;
+  }
+  return fuzzy(index.all, query, (e) => e.path);
 }
 
 /// Worktree files mentioned as `@path` in `text`, in order, deduplicated.

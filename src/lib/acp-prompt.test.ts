@@ -2,10 +2,12 @@ import { describe, expect, it } from "vitest";
 import {
   activeToken,
   applyCompletion,
+  buildPathIndex,
   caretOnEdgeLine,
   formatTokens,
   historyStep,
   mentionedFiles,
+  pathSuggestions,
   promptHistory,
 } from "./acp-prompt";
 
@@ -41,6 +43,15 @@ describe("applyCompletion", () => {
     });
     const cmd = activeToken("/co", 3)!;
     expect(applyCompletion("/co", cmd, "compact")).toEqual({ text: "/compact ", caret: 9 });
+  });
+
+  it("completes a directory without a space so completion continues into it", () => {
+    const text = "look at @sr please";
+    const token = activeToken(text, 11)!;
+    expect(applyCompletion(text, token, "src/")).toEqual({
+      text: "look at @src/ please",
+      caret: "look at @src/".length,
+    });
   });
 });
 
@@ -89,5 +100,30 @@ describe("prompt history", () => {
     expect(caretOnEdgeLine("one\ntwo", 5, "first")).toBe(false);
     expect(caretOnEdgeLine("one\ntwo", 5, "last")).toBe(true);
     expect(caretOnEdgeLine("one\ntwo", 2, "last")).toBe(false);
+  });
+});
+
+describe("pathSuggestions", () => {
+  const index = buildPathIndex(["src/lib.rs", "src/panels/Pane.tsx", "src/panels/pane.test.ts", "README.md"]);
+  const paths = (q: string) => pathSuggestions(index, q, 50).map((e) => e.path);
+
+  it("lists the root, folders first", () => {
+    expect(paths("")).toEqual(["src/", "README.md"]);
+  });
+
+  it("lists a directory's entries after its slash", () => {
+    expect(paths("src/")).toEqual(["src/panels/", "src/lib.rs"]);
+    expect(pathSuggestions(index, "src/", 50)[0].dir).toBe(true);
+  });
+
+  it("filters a directory's entries by their own name", () => {
+    expect(paths("src/pa")).toEqual(["src/panels/"]);
+    expect(paths("src/panels/te")).toEqual(["src/panels/pane.test.ts"]);
+  });
+
+  it("falls back to fuzzy over every path", () => {
+    expect(paths("lib")[0]).toBe("src/lib.rs");
+    expect(paths("src/xyzpanetsx")).toEqual([]);
+    expect(paths("srcpanetest")).toEqual(["src/panels/pane.test.ts"]);
   });
 });

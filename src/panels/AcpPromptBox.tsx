@@ -6,6 +6,7 @@ import {
   Check,
   ChevronDown,
   FileText,
+  Folder,
   ListChecks,
   Pencil,
   Plus,
@@ -24,10 +25,12 @@ import type { AcpAttachment, AcpCommand, AcpUsage, WorktreeId } from "@/ipc/type
 import {
   activeToken,
   applyCompletion,
+  buildPathIndex,
   caretOnEdgeLine,
   formatTokens,
   historyStep,
   mentionedFiles,
+  pathSuggestions,
 } from "@/lib/acp-prompt";
 import {
   currentLabel,
@@ -41,6 +44,8 @@ import { fuzzyFilter } from "@/lib/fuzzy";
 /// Pasted images over this size are refused (they ride the IPC as base64).
 const IMAGE_MAX_BYTES = 5 * 1024 * 1024;
 const SUGGESTION_LIMIT = 8;
+/// `@` suggestions can be a whole directory listing; the list scrolls.
+const PATH_SUGGESTION_LIMIT = 50;
 
 type PastedImage = { mimeType: string; data: string; url: string };
 
@@ -53,14 +58,15 @@ export function emptyComposerStash(): AcpComposerStash {
 }
 
 type Suggestion =
-  | { kind: "file"; value: string }
+  | { kind: "file"; value: string; dir: boolean }
   | { kind: "command"; value: string; command: AcpCommand };
 
 /// The ACP pane's composer: a roomy prompt field over a toolbar of the
 /// agent's session settings (model, effort, permission mode, fast, plan),
 /// an attach button, the context meter, and send / stop.
 ///
-/// In the field, `@` completes worktree files (sent as attachments), a
+/// In the field, `@` completes worktree files (sent as attachments) and,
+/// shell-style, directories (Tab into one lists its entries), a
 /// leading `/` completes the agent's commands, and pasted images become
 /// attachments. ⏎ sends (mid-turn: queues behind the turn), ⌘⏎ interrupts
 /// the running turn and sends, ⇧⏎ is a newline, ↑/↓ on the first/last line
@@ -184,6 +190,8 @@ export function AcpPromptBox({
     return loadingFiles.current;
   }
 
+  const pathIndex = useMemo(() => (files ? buildPathIndex(files) : null), [files]);
+
   const token = activeToken(draft, caret);
   const open = token !== null && token.start !== dismissedAt;
   useEffect(() => {
@@ -194,9 +202,11 @@ export function AcpPromptBox({
   const suggestions: Suggestion[] = useMemo(() => {
     if (!open || !token) return [];
     if (token.kind === "file") {
-      return fuzzyFilter(files ?? [], token.query, (f) => f, SUGGESTION_LIMIT).map((r) => ({
+      if (!pathIndex) return [];
+      return pathSuggestions(pathIndex, token.query, PATH_SUGGESTION_LIMIT).map((e) => ({
         kind: "file" as const,
-        value: r.item,
+        value: e.path,
+        dir: e.dir,
       }));
     }
     return fuzzyFilter(commands, token.query, (c) => c.name, SUGGESTION_LIMIT).map((r) => ({
@@ -204,8 +214,12 @@ export function AcpPromptBox({
       value: r.item.name,
       command: r.item,
     }));
-  }, [open, token?.kind, token?.query, files, commands]);
+  }, [open, token?.kind, token?.query, pathIndex, commands]);
   useEffect(() => setHighlight(0), [token?.kind, token?.query]);
+  const listRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    listRef.current?.children[highlight]?.scrollIntoView?.({ block: "nearest" });
+  }, [highlight]);
 
   function syncCaret() {
     const el = inputRef.current;
@@ -331,6 +345,7 @@ export function AcpPromptBox({
     >
       {open && suggestions.length > 0 && (
         <div
+          ref={listRef}
           role="listbox"
           className="absolute bottom-full left-3 right-3 z-20 mb-1 max-h-64 overflow-y-auto rounded-md border border-neutral-800 bg-neutral-900 py-1 text-[11.5px] shadow-xl shadow-black/40"
         >
@@ -351,7 +366,11 @@ export function AcpPromptBox({
             >
               {s.kind === "file" ? (
                 <>
-                  <FileText size={11} className="shrink-0 self-center text-neutral-500" />
+                  {s.dir ? (
+                    <Folder size={11} className="shrink-0 self-center text-neutral-500" />
+                  ) : (
+                    <FileText size={11} className="shrink-0 self-center text-neutral-500" />
+                  )}
                   <span className="truncate font-mono">{s.value}</span>
                 </>
               ) : (
