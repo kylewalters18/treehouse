@@ -45,6 +45,13 @@ vi.mock("@/ipc/client", () => ({
 }));
 
 import * as client from "@/ipc/client";
+// jsdom never lays anything out, so the pre-spawn size gate would wait
+// forever.
+vi.mock("./xterm-fit", async (orig) => ({
+  ...(await orig<typeof import("./xterm-fit")>()),
+  whenSized: () => Promise.resolve(),
+}));
+
 import { createLeafState, disposeLeafState } from "./TerminalPane";
 import { makeLeaf } from "./pane-tree";
 import type { WorktreeId } from "@/ipc/types";

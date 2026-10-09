@@ -993,7 +993,7 @@ export function AgentLeafSlot({
     setError(state.error);
     state.errorListeners.add(setError);
     try {
-      state.fit.fit();
+      fitAndPin(state.fit, state.term);
     } catch {}
     return () => {
       state.errorListeners.delete(setError);

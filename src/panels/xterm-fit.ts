@@ -6,13 +6,41 @@ import type { FitAddon } from "xterm-addon-fit";
 /// already pinned to the bottom and restore that after the reflow so
 /// active panes stay glued to the latest output without yanking users
 /// who have scrolled up to read history.
+///
+/// No-op while the terminal's host has no box (`display: none` panel,
+/// hidden bottom tab, collapsed split): fit() would clamp to 2×1 and push
+/// that to the PTY, and the shell or TUI redraws at width 2 — zsh's
+/// PROMPT_SP then reflows into stray `%` lines once the pane is back.
 export function fitAndPin(fit: FitAddon, term: Terminal) {
+  const host = term.element?.parentElement;
+  if (!host || host.clientWidth === 0 || host.clientHeight === 0) return;
   try {
     const buf = term.buffer.active;
     const wasAtBottom = buf.viewportY === buf.baseY;
     fit.fit();
     if (wasAtBottom) term.scrollToBottom();
   } catch {}
+}
+
+/// Resolves once `host` is in the DOM with a non-zero box and fonts have
+/// loaded. Spawning a shell before then sizes the PTY from a hidden or
+/// unlaid-out pane — fit() clamps to 2×1 — so zsh draws its first
+/// prompt (PROMPT_SP `%` + padding) at that width, and the resize to the
+/// real size reflows the junk into view as stray `%` lines.
+export function whenSized(host: HTMLElement): Promise<void> {
+  const sized = () =>
+    host.isConnected && host.clientWidth > 0 && host.clientHeight > 0;
+  const box = new Promise<void>((resolve) => {
+    if (sized()) return resolve();
+    const ro = new ResizeObserver(() => {
+      if (!sized()) return;
+      ro.disconnect();
+      resolve();
+    });
+    ro.observe(host);
+  });
+  const fonts = typeof document !== "undefined" ? document.fonts?.ready : undefined;
+  return Promise.all([box, fonts]).then(() => {});
 }
 
 /// xterm caches its cell size from the first measurement and only

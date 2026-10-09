@@ -36,7 +36,7 @@ import {
   useTerminalLayoutStore,
   type TerminalTab,
 } from "@/stores/terminal-layout";
-import { fitAndPin, watchFit } from "./xterm-fit";
+import { fitAndPin, watchFit, whenSized } from "./xterm-fit";
 import { registerTerminalLinks } from "./term-path-links";
 import { attachTerminalSearch } from "./term-search";
 
@@ -58,14 +58,6 @@ function TerminalTabs({ worktreeId }: { worktreeId: WorktreeId }) {
   );
   const updateLayout = useTerminalLayoutStore((s) => s.updateLayout);
   const [initLoading, setInitLoading] = useState(true);
-  // Sentinel for the adopt effect — StrictMode double-mounts in dev,
-  // and a second adopt run can race the freshly-seeded tab's openTerminal
-  // call: listTerminalsForWorktree picks up the new PTY before the leaf
-  // has flipped from `open` to `attach` mode in the store, so reconcile
-  // treats it as unknown and appends a phantom second tab pointing at
-  // the same session. Skipping the second run is safer than chasing the
-  // race with extra in-flight tracking.
-  const adoptedFor = useRef<WorktreeId | null>(null);
   /// LeafState pool lives in a module-level map keyed by worktreeId so
   /// the xterm Terminal + its host element survive `TerminalTabs`
   /// unmount/remount on worktree switch. If we tore them down at switch
@@ -76,65 +68,33 @@ function TerminalTabs({ worktreeId }: { worktreeId: WorktreeId }) {
   /// no SIGWINCH, no redraw.
   const leafStates = useMemo(() => getLeafStates(worktreeId), [worktreeId]);
 
+  // Adopt running PTYs into the layout, seeding a first terminal when
+  // there are none. At most one adopt per worktree is in flight: a
+  // second run (StrictMode's double mount, or a quick switch away and
+  // back) can race the freshly-seeded tab's openTerminal call —
+  // listTerminalsForWorktree picks up the new PTY before the leaf has
+  // flipped from `open` to `attach`, so reconcile appends a phantom
+  // second tab pointing at the same session. The adopt writes to the
+  // store, not component state, so it's applied even if the mount that
+  // started it is gone; it must never be dropped on cleanup, or under
+  // StrictMode the cancelled first run seeds nothing and the skipped
+  // second run leaves the pane empty.
   useEffect(() => {
-    if (adoptedFor.current === worktreeId) {
-      // StrictMode's second mount: mount 1 already adopted (or is in
-      // flight). Mount 1's finally skipped its setInitLoading because
-      // its closure was cancelled by cleanup, so clear it here instead
-      // — otherwise the pane sits on "Checking…" forever.
-      setInitLoading(false);
-      return;
+    let inFlight = adoptsInFlight.get(worktreeId);
+    if (!inFlight) {
+      inFlight = adopt(worktreeId, leafStates).finally(() =>
+        adoptsInFlight.delete(worktreeId),
+      );
+      adoptsInFlight.set(worktreeId, inFlight);
     }
-    adoptedFor.current = worktreeId;
-    let cancelled = false;
-    (async () => {
-      try {
-        const running = await listTerminalsForWorktree(worktreeId);
-        if (cancelled) return;
-        updateLayout(worktreeId, (prev) => {
-          let next = reconcileLayout(prev, running);
-          if (next.tabs.length === 0) {
-            const counter = next.counter + 1;
-            const leaf = makeLeaf({ kind: "open" });
-            next = {
-              tabs: [
-                {
-                  localId: crypto.randomUUID(),
-                  label: `zsh ${counter}`,
-                  tree: leaf,
-                  activeLeafId: leaf.localId,
-                },
-              ],
-              activeTabId: null,
-              counter,
-            };
-            next.activeTabId = next.tabs[0].localId;
-          }
-          // Drop any pooled leaf states whose leaves were pruned by
-          // reconcile (their PTY died while we were elsewhere). Without
-          // this the pool would slowly accumulate dead xterm Terminals.
-          const surviving = new Set<string>();
-          for (const tab of next.tabs) {
-            for (const l of leaves(tab.tree)) surviving.add(l.localId);
-          }
-          for (const [id, state] of leafStates) {
-            if (!surviving.has(id)) {
-              detachLeafState(state);
-              leafStates.delete(id);
-            }
-          }
-          return next;
-        });
-      } catch {
-        // ignore
-      } finally {
-        if (!cancelled) setInitLoading(false);
-      }
-    })();
+    let unmounted = false;
+    void inFlight.then(() => {
+      if (!unmounted) setInitLoading(false);
+    });
     return () => {
-      cancelled = true;
+      unmounted = true;
     };
-  }, [worktreeId, updateLayout]);
+  }, [worktreeId, leafStates]);
 
   const tabs = layout.tabs;
   const activeTabId = layout.activeTabId;
@@ -299,6 +259,54 @@ function TerminalTabs({ worktreeId }: { worktreeId: WorktreeId }) {
       </div>
     </div>
   );
+}
+
+const adoptsInFlight = new Map<WorktreeId, Promise<void>>();
+
+async function adopt(
+  worktreeId: WorktreeId,
+  leafStates: Map<string, LeafState>,
+): Promise<void> {
+  let running;
+  try {
+    running = await listTerminalsForWorktree(worktreeId);
+  } catch {
+    return;
+  }
+  useTerminalLayoutStore.getState().updateLayout(worktreeId, (prev) => {
+    let next = reconcileLayout(prev, running);
+    if (next.tabs.length === 0) {
+      const counter = next.counter + 1;
+      const leaf = makeLeaf({ kind: "open" });
+      next = {
+        tabs: [
+          {
+            localId: crypto.randomUUID(),
+            label: `zsh ${counter}`,
+            tree: leaf,
+            activeLeafId: leaf.localId,
+          },
+        ],
+        activeTabId: null,
+        counter,
+      };
+      next.activeTabId = next.tabs[0].localId;
+    }
+    // Drop any pooled leaf states whose leaves were pruned by
+    // reconcile (their PTY died while we were elsewhere). Without
+    // this the pool would slowly accumulate dead xterm Terminals.
+    const surviving = new Set<string>();
+    for (const tab of next.tabs) {
+      for (const l of leaves(tab.tree)) surviving.add(l.localId);
+    }
+    for (const [id, state] of leafStates) {
+      if (!surviving.has(id)) {
+        detachLeafState(state);
+        leafStates.delete(id);
+      }
+    }
+    return next;
+  });
 }
 
 /// Recursive renderer for a pane tree. Splits become resizable
@@ -604,9 +612,11 @@ export function createLeafState(
   (async () => {
     try {
       // The caller mounts `host` into its slot synchronously after we
-      // return; yield once so the spawn below sees the fitted size
-      // instead of xterm's 80x24 default.
-      await Promise.resolve();
+      // return. A new shell waits until that slot is actually laid out
+      // and visible (see whenSized) so it spawns at the fitted size;
+      // an attach just yields once — the shell already has its size.
+      if (leaf.mode.kind === "open") await whenSized(host);
+      else await Promise.resolve();
       if (state.killed) return;
       if (host.isConnected) fitAndPin(fit, term);
       let session;
@@ -727,7 +737,7 @@ function TerminalLeafSlot({
     }
     slot.appendChild(state.host);
     try {
-      state.fit.fit();
+      fitAndPin(state.fit, state.term);
     } catch {}
     return () => {
       if (state.host.parentNode === slot) {
