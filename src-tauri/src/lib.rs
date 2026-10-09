@@ -183,7 +183,6 @@ pub fn run() {
         ipc::commands::forge_set_issue_assignee,
         ipc::commands::forge_list_mrs,
         ipc::commands::forge_find_mr_for_branch,
-        ipc::commands::forge_branch_remote_state,
         ipc::commands::forge_push_branch,
         ipc::commands::forge_create_mr,
         ipc::commands::forge_issue_prompt,

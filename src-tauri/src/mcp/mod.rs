@@ -11,8 +11,8 @@
 //!   writes into the repo or the user's own config. The token is how a tool
 //!   call knows its caller's workspace and parent worktree; it stops working
 //!   once the agent exits.
-//! - Tools live in `tools`: `create_issue`, `create_worktree`, `push_branch`
-//!   and `create_pr` (worktree agents only), plus `list_repos` for the global scratch agent
+//! - Tools live in `tools`: `create_issue`, `create_worktree`, `create_pr`
+//!   (worktree agents only), plus `list_repos` for the global scratch agent
 //!   (`crate::scratch`), which isn't in any repo and so has to name one. A
 //!   repo planner (`crate::planner`) is scoped to its repo.
 //! - Gating is the agent's own permission prompt: we don't pre-approve the

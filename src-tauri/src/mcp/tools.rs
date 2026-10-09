@@ -33,7 +33,6 @@ pub fn list(scope: CallerScope) -> Value {
         CallerScope::Worktree(_) => json!([
             create_issue_schema(scope),
             create_worktree_schema(scope),
-            push_branch_schema(),
             create_pr_schema(),
             get_linked_issue_schema(),
             search_issues_schema(scope),
@@ -197,23 +196,14 @@ fn update_issue_schema(scope: CallerScope) -> Value {
     })
 }
 
-fn push_branch_schema() -> Value {
-    json!({
-        "name": "push_branch",
-        "description": "Push THIS worktree's branch to origin (setting its upstream). Commit first — \
-            treehouse never commits for you. Do this before create_pr, which never pushes.",
-        "inputSchema": { "type": "object", "properties": {} }
-    })
-}
-
 fn create_pr_schema() -> Value {
     json!({
         "name": "create_pr",
         "description": "Open a pull/merge request for THIS worktree's branch against the branch it \
-            was created from. Never pushes: commit, then push_branch first — this refuses unless \
-            origin has the branch at its latest commit, or when the branch has no commits ahead of \
-            its base. When this worktree is linked to an issue, the description gets a `Closes #n` \
-            line (unless close_issue is false).",
+            was created from. It never pushes: commit, then `git push -u origin <branch>` first — \
+            treehouse never commits for you, and this refuses when the branch has no commits ahead \
+            of its base. When this worktree is \
+            linked to an issue, the description gets a `Closes #n` line (unless close_issue is false).",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -415,7 +405,6 @@ pub async fn call(app: &AppHandle, caller: McpCaller, params: &Value) -> Value {
     let outcome = match name {
         "create_worktree" => create_worktree(app, caller, &args).await,
         "create_issue" => create_issue(app, caller, &args).await,
-        "push_branch" => push_branch(app, caller).await,
         "create_pr" => create_pr(app, caller, &args).await,
         "get_linked_issue" => get_linked_issue(app, caller).await,
         "search_issues" => search_issues(app, caller, &args).await,
@@ -617,25 +606,6 @@ async fn create_worktree(
         "agentError": agent_error,
         "warning": (!warnings.is_empty()).then(|| warnings.join("; ")),
     }))
-}
-
-/// Push the calling agent's own worktree branch to origin.
-async fn push_branch(app: &AppHandle, caller: McpCaller) -> Result<Value, String> {
-    let wt = own_worktree(app, caller, "push_branch")?;
-    if wt.is_main_clone {
-        return Err("push_branch only pushes a worktree's own branch, not the main clone's".into());
-    }
-    let root = app
-        .state::<AppState>()
-        .workspaces
-        .get(&wt.workspace_id)
-        .map(|e| e.value().root.clone())
-        .ok_or("the calling worktree's repo is no longer open")?;
-    git_ops::push_branch(&root, &wt.branch)
-        .await
-        .map_err(|e| e.to_string())?;
-    tracing::info!(branch = %wt.branch, "mcp: pushed branch");
-    Ok(json!({ "branch": wt.branch, "remote": "origin" }))
 }
 
 /// Open a PR/MR for the calling agent's own worktree.
@@ -1337,7 +1307,6 @@ mod tests {
             [
                 "create_issue",
                 "create_worktree",
-                "push_branch",
                 "create_pr",
                 "get_linked_issue",
                 "search_issues",

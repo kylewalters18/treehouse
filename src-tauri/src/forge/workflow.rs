@@ -14,7 +14,7 @@ use crate::state::AppState;
 use crate::storage;
 use crate::util::errors::{AppError, AppResult};
 use crate::util::ids::WorkspaceId;
-use crate::worktree::git_ops::{self, RemoteBranchState};
+use crate::worktree::git_ops;
 
 /// An issue as an agent's task: title, link, description, labels. The single
 /// formatter for both the create-from-issue seed and the issue chip's
@@ -113,11 +113,11 @@ pub fn with_closes_line(body: &str, n: u64, close: bool) -> String {
 }
 
 /// Open an MR/PR for a worktree's branch, targeting the branch it was forked
-/// from. Never pushes: pushing is its own step (`git_ops::push_branch`), so
-/// this refuses unless origin already has the branch at its latest commit.
-/// Also refuses when the branch has no commits beyond its base, naming
+/// from. Never pushes — push first; the forge refuses a branch it doesn't
+/// have. Refuses when the branch has no commits beyond its base, naming
 /// uncommitted changes if there are any: treehouse never commits on anyone's
-/// behalf. With `close_issue`, a linked worktree's PR gets a `Closes #n` line.
+/// behalf. With `close_issue`, a linked worktree's
+/// PR gets a `Closes #n` line.
 #[allow(clippy::too_many_arguments)]
 pub async fn create_pr(
     app: &AppHandle,
@@ -176,19 +176,6 @@ pub async fn create_pr(
         None => body.trim().to_string(),
     };
 
-    match git_ops::remote_branch_state(root, branch).await? {
-        RemoteBranchState::Matches => {}
-        RemoteBranchState::Missing => {
-            return Err(AppError::Forge(format!(
-                "{branch} isn't on origin yet — push it first"
-            )))
-        }
-        RemoteBranchState::Differs => {
-            return Err(AppError::Forge(format!(
-                "origin/{branch} isn't at the branch's latest commit — push it first"
-            )))
-        }
-    }
     let mr = forge
         .create_mr(branch, &target, title, &body, draft)
         .await?;

@@ -52,7 +52,6 @@ import type {
   PlannerActivity,
   PlannerOpened,
   ForgeMr,
-  RemoteBranchState,
   ForgePipeline,
   ForgeJob,
   ForgeJobLog,
@@ -904,16 +903,7 @@ export function forgeFindMrForBranch(
   });
 }
 
-/// Where `branch` stands on origin (asks the remote).
-export function forgeBranchRemoteState(
-  workspaceId: WorkspaceId,
-  branch: string,
-): Promise<RemoteBranchState> {
-  return invoke<RemoteBranchState>("forge_branch_remote_state", { workspaceId, branch });
-}
-
-/// Push `branch` to origin with upstream tracking. `forgeCreateMr` never
-/// pushes, so this comes first.
+/// Push `branch` to origin; `forgeCreateMr` never pushes.
 export function forgePushBranch(workspaceId: WorkspaceId, branch: string): Promise<void> {
   return invoke<void>("forge_push_branch", { workspaceId, branch });
 }
