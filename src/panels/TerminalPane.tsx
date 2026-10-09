@@ -7,6 +7,9 @@ import { FitAddon } from "xterm-addon-fit";
 import "xterm/css/xterm.css";
 
 import { useUiStore } from "@/stores/ui";
+import { useActivityStore } from "@/stores/activity";
+import { commandLabel, formatElapsed, isRunning, rowCommand } from "@/lib/terminal-command";
+import { CommandIcon, useNow } from "./WorktreeStatus";
 import {
   attachTerminal,
   closeTerminal,
@@ -15,7 +18,7 @@ import {
   ptyResize,
   ptyWrite,
 } from "@/ipc/client";
-import type { PtyEvent, TerminalId, WorktreeId } from "@/ipc/types";
+import type { PtyEvent, TerminalCommand, TerminalId, WorktreeId } from "@/ipc/types";
 import { cn } from "@/lib/cn";
 import {
   closeLeaf,
@@ -250,6 +253,7 @@ function TerminalTabs({ worktreeId }: { worktreeId: WorktreeId }) {
   return (
     <div className="flex h-full flex-col bg-neutral-950">
       <TabBar
+        worktreeId={worktreeId}
         tabs={tabs}
         activeId={activeTabId}
         onSelect={setActiveTabId}
@@ -389,7 +393,10 @@ function PaneLeafView({
   );
 }
 
+const NO_COMMANDS: TerminalCommand[] = [];
+
 function TabBar({
+  worktreeId,
   tabs,
   activeId,
   onSelect,
@@ -399,6 +406,7 @@ function TabBar({
   onSplitDown,
   canSplit,
 }: {
+  worktreeId: WorktreeId;
   tabs: TerminalTab[];
   activeId: string | null;
   onSelect: (id: string) => void;
@@ -408,28 +416,54 @@ function TabBar({
   onSplitDown: () => void;
   canSplit: boolean;
 }) {
+  // Tabs name the command running in them (shell integration), with a
+  // running / passed / failed icon, the same way the sidebar rows do.
+  const commands =
+    useActivityStore((s) => s.byWorktree[worktreeId]?.commands) ?? NO_COMMANDS;
+  const now = useNow(commands.some(isRunning));
   return (
     <div className={instanceStrip}>
-      {tabs.map((tab) => (
-        <div
-          key={tab.localId}
-          onClick={() => onSelect(tab.localId)}
-          className={instanceTab(tab.localId === activeId)}
-        >
-          <SquareTerminal size={12} className="shrink-0" />
-          <span className="font-mono">{tab.label}</span>
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              onClose(tab.localId);
-            }}
-            className={instanceTabClose(tab.localId === activeId)}
-            title="Close terminal"
+      {tabs.map((tab) => {
+        const ids = new Set(
+          leaves(tab.tree).flatMap((l) => (l.mode.kind === "attach" ? [l.mode.terminalId] : [])),
+        );
+        const shown = rowCommand(
+          commands.filter((c) => ids.has(c.terminalId)),
+          now,
+        )?.command;
+        return (
+          <div
+            key={tab.localId}
+            onClick={() => onSelect(tab.localId)}
+            className={instanceTab(tab.localId === activeId)}
+            title={shown?.command}
           >
-            <X size={11} />
-          </button>
-        </div>
-      ))}
+            {shown ? (
+              <CommandIcon command={shown} size={12} />
+            ) : (
+              <SquareTerminal size={12} className="shrink-0" />
+            )}
+            <span className="max-w-[16rem] truncate font-mono">
+              {shown ? commandLabel(shown.command) || tab.label : tab.label}
+            </span>
+            {shown && isRunning(shown) && (
+              <span className="shrink-0 font-mono text-neutral-500">
+                {formatElapsed(now - shown.startedAt)}
+              </span>
+            )}
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                onClose(tab.localId);
+              }}
+              className={instanceTabClose(tab.localId === activeId)}
+              title="Close terminal"
+            >
+              <X size={11} />
+            </button>
+          </div>
+        );
+      })}
       <div className="ml-auto flex shrink-0 items-center gap-0.5 px-1.5">
         <button
           onClick={onSplitRight}

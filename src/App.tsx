@@ -5,6 +5,7 @@ import { useCommentsStore } from "./stores/comments";
 import { Home } from "./routes/Home";
 import { Workspace } from "./routes/Workspace";
 import { Toaster } from "./components/Toaster";
+import { CommandAlerts } from "./components/CommandAlerts";
 import { onWorkspacesRestored } from "./ipc/client";
 
 export function App() {
@@ -43,6 +44,7 @@ export function App() {
         </>
       )}
       <Toaster />
+      <CommandAlerts />
     </div>
   );
 }

@@ -35,7 +35,7 @@ export function useNow(active: boolean): number {
   return active ? now : Date.now();
 }
 
-function CommandIcon({ command, size = 10 }: { command: TerminalCommand; size?: number }) {
+export function CommandIcon({ command, size = 10 }: { command: TerminalCommand; size?: number }) {
   if (isRunning(command)) {
     return <Loader2 size={size} className="shrink-0 animate-spin text-blue-400" />;
   }

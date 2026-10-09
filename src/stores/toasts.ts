@@ -9,6 +9,8 @@ export type Toast = {
   body?: string;
   /// One button next to the dismiss ✕. Running it dismisses the toast.
   action?: { label: string; run: () => void };
+  /// Auto-dismiss delay; `null` keeps it until dismissed. Default 6s.
+  durationMs?: number | null;
 };
 
 type ToastsState = {
@@ -22,7 +24,8 @@ export const useToastsStore = create<ToastsState>((set, get) => ({
   push(t) {
     const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     set({ toasts: [...get().toasts, { id, ...t }] });
-    setTimeout(() => get().dismiss(id), 6000);
+    const ms = t.durationMs === undefined ? 6000 : t.durationMs;
+    if (ms !== null) setTimeout(() => get().dismiss(id), ms);
   },
   dismiss(id) {
     set({ toasts: get().toasts.filter((t) => t.id !== id) });
