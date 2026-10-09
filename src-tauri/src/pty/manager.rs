@@ -11,7 +11,8 @@ use tauri::ipc::Channel;
 use crate::util::errors::{AppError, AppResult};
 use crate::util::ids::{TerminalId, WorktreeId};
 
-use super::{PtyEvent, TerminalSession};
+use super::shell_integration::{self, Mark, MarkScanner};
+use super::{PtyEvent, TerminalCommand, TerminalSession};
 
 /// Cap the per-terminal replay ring. Same reasoning as the agent ring —
 /// terminals scroll faster than agents stream text but the replay semantics
@@ -29,6 +30,49 @@ struct TerminalShared {
     /// + a fresh Exit event) so the user can scroll back through output of
     /// a dead terminal before deciding to close the tab.
     exited: Option<Option<i32>>,
+    /// Running or last-finished command, from shell-integration marks.
+    command: Option<TerminalCommand>,
+    /// Command line announced by the last `CommandLine` mark, waiting for
+    /// its `Started`.
+    pending_line: Option<String>,
+}
+
+impl TerminalShared {
+    /// Apply one shell-integration mark. Returns whether `command` changed.
+    fn apply(&mut self, id: TerminalId, mark: Mark) -> bool {
+        match mark {
+            Mark::CommandLine(line) => {
+                self.pending_line = Some(line);
+                false
+            }
+            Mark::Started => {
+                self.command = Some(TerminalCommand {
+                    terminal_id: id,
+                    command: self.pending_line.take().unwrap_or_default(),
+                    started_at: now_ms(),
+                    finished_at: None,
+                    exit_code: None,
+                });
+                true
+            }
+            Mark::Finished(code) => match self.command.as_mut() {
+                Some(c) if c.finished_at.is_none() => {
+                    c.finished_at = Some(now_ms());
+                    c.exit_code = code;
+                    true
+                }
+                _ => false,
+            },
+        }
+    }
+}
+
+fn now_ms() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 /// Per-terminal handle owned by the manager. Keeping it alive keeps the PTY
@@ -89,6 +133,7 @@ pub fn open(
     let mut cmd = CommandBuilder::new(&shell_path);
     cmd.cwd(&cwd);
     cmd.env("TERM", "xterm-256color");
+    shell_integration::inject(&mut cmd, &shell_path);
     // Inherit COLORTERM etc from parent if present.
     if let Ok(ct) = std::env::var("COLORTERM") {
         cmd.env("COLORTERM", ct);
@@ -115,6 +160,8 @@ pub fn open(
         ring: VecDeque::new(),
         channel: Some(channel),
         exited: None,
+        command: None,
+        pending_line: None,
     }));
 
     // Reader thread: pump bytes into the ring + whichever channel is
@@ -126,12 +173,21 @@ pub fn open(
         .name(format!("pty-reader-{terminal_id}"))
         .spawn(move || {
             let mut buf = [0u8; 4096];
+            let mut scanner = MarkScanner::default();
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
                         let chunk = &buf[..n];
+                        let marks = scanner.feed(chunk);
                         let mut sh = shared_for_reader.lock();
+                        let mut changed = false;
+                        for m in marks {
+                            changed |= sh.apply(terminal_id, m);
+                        }
+                        if changed {
+                            crate::agent::notify::activity_changed();
+                        }
                         sh.ring.extend(chunk.iter().copied());
                         let excess = sh.ring.len().saturating_sub(RING_MAX_BYTES);
                         if excess > 0 {
@@ -156,6 +212,11 @@ pub fn open(
             }
             let mut sh = shared_for_reader.lock();
             sh.exited = Some(None);
+            // The shell is gone; nothing is running in it any more.
+            if sh.command.as_ref().is_some_and(|c| c.finished_at.is_none()) {
+                sh.command = None;
+                crate::agent::notify::activity_changed();
+            }
             if let Some(ch) = sh.channel.as_ref() {
                 let _ = ch.send(PtyEvent::Exit { code: None });
             }
@@ -221,6 +282,9 @@ pub fn resize(registry: &TerminalRegistry, id: TerminalId, cols: u16, rows: u16)
 pub fn close(registry: &TerminalRegistry, id: TerminalId) {
     if let Some((_, handle)) = registry.inner.remove(&id) {
         let _ = handle.child.lock().kill();
+        if handle.shared.lock().command.is_some() {
+            crate::agent::notify::activity_changed();
+        }
         tracing::info!(%id, "closed terminal");
     }
 }
@@ -265,6 +329,34 @@ pub fn list_for_worktree(
         .iter()
         .filter(|e| e.value().session.worktree_id == worktree_id)
         .map(|e| e.value().session.clone())
+        .collect()
+}
+
+/// Each terminal's running or last command, oldest terminal first.
+pub fn commands_for_worktree(
+    registry: &TerminalRegistry,
+    worktree_id: WorktreeId,
+) -> Vec<TerminalCommand> {
+    let mut out: Vec<TerminalCommand> = registry
+        .inner
+        .iter()
+        .filter(|e| e.value().session.worktree_id == worktree_id)
+        .filter_map(|e| e.value().shared.lock().command.clone())
+        .collect();
+    out.sort_by_key(|c| c.terminal_id);
+    out
+}
+
+/// The shell pid of each live terminal in a worktree.
+pub fn shell_pids_for_worktree(
+    registry: &TerminalRegistry,
+    worktree_id: WorktreeId,
+) -> Vec<(TerminalId, u32)> {
+    registry
+        .inner
+        .iter()
+        .filter(|e| e.value().session.worktree_id == worktree_id)
+        .filter_map(|e| Some((*e.key(), e.value().child.lock().process_id()?)))
         .collect()
 }
 

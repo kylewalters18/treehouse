@@ -1,3 +1,4 @@
+pub mod details;
 pub mod git_ops;
 pub mod manager;
 pub mod setup;

@@ -417,6 +417,13 @@ pub async fn has_changes(repo_root: &Path) -> AppResult<bool> {
     Ok(!stdout.trim().is_empty())
 }
 
+/// Changed paths in the workdir, as `git status --porcelain` lists them
+/// (an untracked directory counts once).
+pub async fn changed_file_count(repo_root: &Path) -> AppResult<u32> {
+    let stdout = git(repo_root, ["status", "--porcelain"]).await?;
+    Ok(stdout.lines().filter(|l| !l.trim().is_empty()).count() as u32)
+}
+
 /// Count of commits on `branch` not on `base` (i.e. `git rev-list base..branch --count`).
 pub async fn commits_ahead(repo_root: &Path, base: &str, branch: &str) -> AppResult<u32> {
     let stdout = git(

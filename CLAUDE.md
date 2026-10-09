@@ -55,6 +55,8 @@ src-tauri/src/
     mod.rs
   workspace/              # Workspace type, repo discovery, default branch detection
   worktree/               # Worktree type, git_ops (shell-out), manager (CRUD + merge + sync)
+                          #   status.rs = cached ahead/behind/dirty; details.rs = on-demand hover-card
+                          #   data (ps / lsof for processes + ports, cached du)
   agent/                  # AgentSession, supervisor (PTY-based; tabbed — many sessions per worktree),
                           #   hooks.rs wires Claude Code status hooks → WorktreeActivity
                           #   notify.rs pushes `agents://activity-changed` (coalesced) on ACP activity,
@@ -66,6 +68,8 @@ src-tauri/src/
                           #   kill_all cover both transports. Adapters: `[agent.acp]` override, else
                           #   a pinned npm package installed once under <app_config>/acp-adapters/
   pty/                    # TerminalSession, manager (portable-pty; tabbed — many per worktree)
+                          #   shell_integration.rs = zsh ZDOTDIR wrapper emitting OSC 133/633 marks;
+                          #   the reader thread turns them into per-terminal TerminalCommand state
   lsp/                    # Per-worktree language servers, stdio transport, root detection,
                           #   registry + supervisor; opt-in via settings, Monaco-facing events
   diff/                   # DiffSet types + compute (git2 diff_tree_to_workdir)

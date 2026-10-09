@@ -20,6 +20,10 @@ behind: number,
  */
 dirty: boolean, 
 /**
+ * How many paths `git status --porcelain` lists.
+ */
+changedFiles: number, 
+/**
  * Branch's work is already represented on default (merge-tree equality).
  * Catches squash-merges that `ahead` alone can't see.
  */

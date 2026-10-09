@@ -138,6 +138,8 @@ pub fn run() {
         ipc::commands::list_backend_agents,
         ipc::commands::attach_agent,
         ipc::commands::list_agent_activity,
+        ipc::commands::get_worktree_details,
+        ipc::commands::get_worktree_disk_usage,
         ipc::commands::open_planner,
         ipc::commands::planner_activities,
         ipc::commands::list_planner_history,

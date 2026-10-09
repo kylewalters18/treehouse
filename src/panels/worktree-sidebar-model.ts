@@ -67,7 +67,8 @@ export function inboxWorktrees(
 /// Split a repo's (non-main-clone) worktrees into rows that stay
 /// visible and the collapsed "inactive" pile. Input order is preserved
 /// so rows don't reshuffle as agent status changes.
-///  - active: has a live agent, or unmerged work (ahead / dirty).
+///  - active: has a live agent, a terminal command running, or
+///    unmerged work (ahead / dirty).
 ///  - inactive: no agent, nothing pending. `merged` demotes a
 ///    squash-merged branch here even though it's still `ahead`.
 export function splitActive(
@@ -80,7 +81,8 @@ export function splitActive(
     const a = activity[w.id];
     const hasAgent = activityOf(activity, w.id) !== "inactive";
     const hasWork = !a?.merged && ((a?.ahead ?? 0) > 0 || (a?.dirty ?? false));
-    (hasAgent || hasWork ? active : inactive).push(w);
+    const hasCommand = (a?.commands ?? []).some((c) => c.finishedAt == null);
+    (hasAgent || hasWork || hasCommand ? active : inactive).push(w);
   }
   return { active, inactive };
 }

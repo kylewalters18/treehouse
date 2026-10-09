@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import type {
   AgentActivity,
+  TerminalId,
   Worktree,
   WorktreeActivity,
   WorktreeId,
@@ -39,6 +40,8 @@ function act(
       ahead: 0,
       behind: 0,
       dirty: false,
+      changedFiles: 0,
+      commands: [],
       merged: false,
       ...a,
     };
@@ -97,6 +100,21 @@ describe("splitActive", () => {
     const { active, inactive } = splitActive(ws, a);
     expect(active.map((w) => w.id)).toEqual(["a", "c", "e"]);
     expect(inactive.map((w) => w.id)).toEqual(["b", "d"]);
+  });
+  it("keeps a worktree with a running terminal command active", () => {
+    const run = (finishedAt: number | null) => ({
+      terminalId: "t" as TerminalId,
+      command: "docker build .",
+      startedAt: 0,
+      finishedAt,
+      exitCode: null,
+    });
+    const { active, inactive } = splitActive(
+      [wt("a"), wt("b")],
+      act({ a: { commands: [run(null)] }, b: { commands: [run(5)] } }),
+    );
+    expect(active.map((w) => w.id)).toEqual(["a"]);
+    expect(inactive.map((w) => w.id)).toEqual(["b"]);
   });
 });
 

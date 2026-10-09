@@ -30,6 +30,8 @@ pub struct WorktreeStatus {
     /// `git status --porcelain` returned anything — tracked or untracked
     /// changes exist in the workdir.
     pub dirty: bool,
+    /// How many paths `git status --porcelain` lists.
+    pub changed_files: u32,
     /// Branch's work is already represented on default (merge-tree equality).
     /// Catches squash-merges that `ahead` alone can't see.
     pub merged: bool,
@@ -41,6 +43,7 @@ impl Default for WorktreeStatus {
             ahead: 0,
             behind: 0,
             dirty: false,
+            changed_files: 0,
             merged: false,
         }
     }
@@ -82,11 +85,12 @@ pub async fn recompute(app: &AppHandle, worktree_id: WorktreeId) -> WorktreeStat
         // Main-clone entries show no ahead/behind/merged — they are the
         // reference point. `dirty` we still surface so the user can see if
         // they've got uncommitted edits in the main repo itself.
-        let dirty = git_ops::has_changes(&path).await.unwrap_or(false);
+        let changed_files = git_ops::changed_file_count(&path).await.unwrap_or(0);
         let status = WorktreeStatus {
             ahead: 0,
             behind: 0,
-            dirty,
+            dirty: changed_files > 0,
+            changed_files,
             merged: false,
         };
         store(&state, worktree_id, status);
@@ -105,7 +109,8 @@ pub async fn recompute(app: &AppHandle, worktree_id: WorktreeId) -> WorktreeStat
             (0, 0, false)
         }
     };
-    let dirty = git_ops::has_changes(&path).await.unwrap_or(false);
+    let changed_files = git_ops::changed_file_count(&path).await.unwrap_or(0);
+    let dirty = changed_files > 0;
 
     // `merged` is tree-equality via merge-tree — catches squash merges
     // that SHA-based `ahead` can't see. Short-circuit to `true` only when
@@ -151,6 +156,7 @@ pub async fn recompute(app: &AppHandle, worktree_id: WorktreeId) -> WorktreeStat
         ahead,
         behind,
         dirty,
+        changed_files,
         merged,
     };
     tracing::debug!(

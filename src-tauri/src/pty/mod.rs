@@ -1,4 +1,5 @@
 pub mod manager;
+pub mod shell_integration;
 pub mod text;
 
 use serde::{Deserialize, Serialize};
@@ -16,6 +17,25 @@ pub struct TerminalSession {
     pub cols: u16,
     pub rows: u16,
     pub alive: bool,
+}
+
+/// The command a terminal is running, or the last one it ran, as reported
+/// by shell integration (see [`shell_integration`]). Shells without it
+/// never produce one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct TerminalCommand {
+    pub terminal_id: TerminalId,
+    /// The command line as typed.
+    pub command: String,
+    /// Unix epoch ms.
+    #[ts(type = "number")]
+    pub started_at: u64,
+    /// `None` while it's still running.
+    #[ts(type = "number | null")]
+    pub finished_at: Option<u64>,
+    pub exit_code: Option<i32>,
 }
 
 #[derive(Debug, Clone, Serialize, TS)]

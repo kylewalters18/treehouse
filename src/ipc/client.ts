@@ -45,6 +45,8 @@ import type {
   WorkspaceId,
   Worktree,
   WorktreeActivity,
+  WorktreeDetails,
+  DiskUsage,
   WorktreeId,
   ForgeStatus,
   ForgeIssue,
@@ -556,6 +558,16 @@ export function listAgentActivity(
   workspaceId: WorkspaceId,
 ): Promise<WorktreeActivity[]> {
   return invoke<WorktreeActivity[]>("list_agent_activity", { workspaceId });
+}
+
+export function getWorktreeDetails(
+  worktreeId: WorktreeId,
+): Promise<WorktreeDetails> {
+  return invoke<WorktreeDetails>("get_worktree_details", { worktreeId });
+}
+
+export function getWorktreeDiskUsage(worktreeId: WorktreeId): Promise<DiskUsage> {
+  return invoke<DiskUsage>("get_worktree_disk_usage", { worktreeId });
 }
 
 export function listAgentOverview(

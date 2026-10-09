@@ -1235,25 +1235,45 @@ pub async fn list_agent_activity(
     for w in wts {
         // Read from the event-driven status cache. Miss → zeros, and kick
         // off a one-shot recompute so the next poll returns real numbers.
-        let (ahead, behind, dirty, merged) =
-            match state.worktree_status.get(&w.id).map(|e| *e.value()) {
-                Some(s) => (s.ahead, s.behind, s.dirty, s.merged),
-                None => {
-                    crate::worktree::status::spawn_recompute(&app, w.id);
-                    (0, 0, false, false)
-                }
-            };
+        let status = match state.worktree_status.get(&w.id).map(|e| *e.value()) {
+            Some(s) => s,
+            None => {
+                crate::worktree::status::spawn_recompute(&app, w.id);
+                Default::default()
+            }
+        };
         out.push(WorktreeActivity {
             worktree_id: w.id,
             activity: state.agents.activity_for_worktree(w.id),
             agent_count: state.agents.running_count_for_worktree(w.id),
-            ahead,
-            behind,
-            dirty,
-            merged,
+            ahead: status.ahead,
+            behind: status.behind,
+            dirty: status.dirty,
+            changed_files: status.changed_files,
+            commands: crate::pty::manager::commands_for_worktree(&state.terminals, w.id),
+            merged: status.merged,
         });
     }
     Ok(out)
+}
+
+/// Everything the sidebar's worktree hover card shows, gathered on open.
+#[tauri::command]
+pub async fn get_worktree_details(
+    worktree_id: WorktreeId,
+    state: State<'_, AppState>,
+) -> AppResult<crate::worktree::details::WorktreeDetails> {
+    crate::worktree::details::details(&state, worktree_id).await
+}
+
+/// Size of the worktree on disk and its largest top-level entries. Walks
+/// the whole tree, so it's separate from `get_worktree_details` and cached.
+#[tauri::command]
+pub async fn get_worktree_disk_usage(
+    worktree_id: WorktreeId,
+    state: State<'_, AppState>,
+) -> AppResult<crate::worktree::details::DiskUsage> {
+    crate::worktree::details::disk_usage(&state, worktree_id).await
 }
 
 /// Show a ⌘J planner: the repo's (`workspace_id`), or the global scratch

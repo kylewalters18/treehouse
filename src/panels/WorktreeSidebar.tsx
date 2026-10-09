@@ -57,6 +57,13 @@ import {
   type Acks,
   type StatusCounts,
 } from "./worktree-sidebar-model";
+import {
+  RowStatusLine,
+  useNow,
+  useWorktreeHover,
+  WorktreeHoverCard,
+} from "./WorktreeStatus";
+import { isRunning, rowCommand } from "@/lib/terminal-command";
 
 /// Fallback poll for the activity dots; changes are pushed.
 const ACTIVITY_FALLBACK_MS = 10_000;
@@ -103,7 +110,6 @@ export function WorktreeSidebar() {
   );
   const activity = useActivityStore((s) => s.byWorktree);
   const pinnedPaths = usePinsStore((s) => s.paths);
-  const issueLinks = useIssueLinksStore((s) => s.byPath);
   const loadPins = usePinsStore((s) => s.load);
   const setPinned = usePinsStore((s) => s.setPinned);
   const setActivity = useActivityStore((s) => s.setAll);
@@ -116,6 +122,11 @@ export function WorktreeSidebar() {
   const [openInactive, setOpenInactive] = useState<Set<string>>(new Set());
   // Idle agents the user has already looked at — see `nextAcks`.
   const [acks, setAcks] = useState<Acks>({});
+  const hover = useWorktreeHover();
+  // Ticks while any terminal command runs, for the rows' elapsed times.
+  const now = useNow(
+    Object.values(activity).some((a) => (a.commands ?? []).some(isRunning)),
+  );
 
   // Stable key so the per-workspace effect re-runs precisely when the
   // *set* of open workspaces changes (not on every store update).
@@ -565,22 +576,32 @@ export function WorktreeSidebar() {
 
   const renderRow = (w: Worktree, opts: { dim?: boolean; chip?: boolean }) => {
     const a = activity[w.id];
+    const command = rowCommand(a?.commands ?? [], now);
+    const changedFiles = a?.changedFiles ?? 0;
+    const statusLine = command != null || changedFiles > 0;
     return (
       <li
         key={w.id}
+        {...hover.bind(w)}
         className={cn(
           // Fixed height, not padding: the hover swap (badges → ⋯) trades
           // content of slightly different heights, which made the row jump.
           "group relative flex cursor-pointer items-center pl-3 pr-1 hover:bg-neutral-900/60",
           // Rows with a repo line ("Needs you" / Pinned, multi-repo) get
-          // a second line instead of a `repo /` prefix eating the branch.
-          opts.chip ? "h-10" : "h-7",
+          // a second line instead of a `repo /` prefix eating the branch;
+          // a terminal command or uncommitted work adds a status line.
+          opts.chip
+            ? statusLine
+              ? "h-[52px]"
+              : "h-10"
+            : statusLine
+              ? "h-10"
+              : "h-7",
           selectedId === w.id &&
             "bg-blue-400/[0.08] hover:bg-blue-400/[0.1] before:absolute before:inset-y-1 before:left-0 before:w-[2px] before:rounded-r before:bg-blue-400",
         )}
         onClick={() => selectWorktree(w.id)}
         aria-current={selectedId === w.id ? "true" : undefined}
-        title={w.path}
       >
         {/* Dim the row CONTENT but not the row itself, so the hover
             controls (pin, ⋯) stay full-strength. */}
@@ -606,6 +627,9 @@ export function WorktreeSidebar() {
                 <span className="truncate">{repoName(w)}</span>
               </span>
             )}
+            {statusLine && (
+              <RowStatusLine row={command} changedFiles={changedFiles} now={now} />
+            )}
           </span>
           {/* Badges give way to the ⋯ menu on hover (and while it's
               open) so the one-line row never has to fit both. */}
@@ -616,14 +640,6 @@ export function WorktreeSidebar() {
                 "group-hover:hidden group-has-[[data-open]]:hidden",
             )}
           >
-            {issueLinks[w.path] != null && (
-              <span
-                className="shrink-0 rounded bg-blue-950/50 px-1 font-mono text-[10px] text-blue-300"
-                title={`Linked to issue #${issueLinks[w.path]}`}
-              >
-                #{issueLinks[w.path]}
-              </span>
-            )}
             {(a?.agentCount ?? 0) > 1 && (
               <span
                 className="shrink-0 font-mono text-[10px] text-neutral-500"
@@ -875,6 +891,12 @@ export function WorktreeSidebar() {
             setSyncTarget(null);
             await onSync(target, strategy);
           }}
+        />
+      )}
+      {hover.target && (
+        <WorktreeHoverCard
+          target={hover.target}
+          activity={activity[hover.target.worktree.id]}
         />
       )}
     </div>
