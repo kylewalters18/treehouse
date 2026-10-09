@@ -47,9 +47,10 @@ pub async fn remote_url(repo_root: &Path) -> AppResult<Option<String>> {
     }
 }
 
-/// Push a branch to `origin` with upstream tracking. Used before opening an
-/// MR/PR — `gh pr create` / `glab mr create` need the branch to already exist
-/// on the remote. Honors the user's credential helper via the git CLI.
+/// Push a branch to `origin` with upstream tracking — a step of its own, never
+/// a side effect of opening an MR/PR (which needs the branch already on the
+/// remote; see `remote_branch_state`). Honors the user's credential helper via
+/// the git CLI.
 ///
 /// Bounded by a timeout so a stalled remote (or a credential setup that, despite
 /// `GIT_TERMINAL_PROMPT=0`, still blocks) can't hang the caller forever. Auth
@@ -70,6 +71,43 @@ pub async fn push_branch(repo_root: &Path, branch: &str) -> AppResult<()> {
              credential setup."
         ))),
     }
+}
+
+/// Where `branch` stands on `origin`, asked of the remote itself
+/// (`ls-remote`) rather than a remote-tracking ref that may be stale.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub enum RemoteBranchState {
+    /// No such branch on origin.
+    Missing,
+    /// On origin, but at a different commit than the local branch.
+    Differs,
+    /// On origin at the local branch's commit.
+    Matches,
+}
+
+pub async fn remote_branch_state(repo_root: &Path, branch: &str) -> AppResult<RemoteBranchState> {
+    let local = git(repo_root, ["rev-parse".to_string(), format!("refs/heads/{branch}")]).await?;
+    let fut = git(
+        repo_root,
+        ["ls-remote".to_string(), "origin".to_string(), format!("refs/heads/{branch}")],
+    );
+    let remote = match tokio::time::timeout(std::time::Duration::from_secs(30), fut).await {
+        Ok(r) => r.map_err(|e| {
+            AppError::GitError(format!("couldn't reach origin to check '{branch}': {e}"))
+        })?,
+        Err(_) => {
+            return Err(AppError::GitError(format!(
+                "checking '{branch}' on origin timed out after 30s"
+            )))
+        }
+    };
+    Ok(match remote.split_whitespace().next() {
+        None => RemoteBranchState::Missing,
+        Some(sha) if sha == local.trim() => RemoteBranchState::Matches,
+        Some(_) => RemoteBranchState::Differs,
+    })
 }
 
 /// One parsed row from `git worktree list --porcelain`.
@@ -783,6 +821,25 @@ mod tests {
         assert!(refs[0].local && refs[0].remote && refs[0].updated == 300);
         assert!(!refs[1].local && refs[1].remote);
         assert!(refs[2].local && !refs[2].remote);
+    }
+
+    #[tokio::test]
+    async fn remote_branch_state_tracks_pushes() {
+        let r = TempRepo::new();
+        let origin = r.root.with_file_name("origin.git");
+        git(&r.root, ["init".as_ref(), "--bare".as_ref(), "-q".as_ref(), origin.as_os_str()])
+            .await
+            .unwrap();
+        git(&r.root, ["remote".as_ref(), "add".as_ref(), "origin".as_ref(), origin.as_os_str()])
+            .await
+            .unwrap();
+
+        let state = || remote_branch_state(&r.root, "main");
+        assert_eq!(state().await.unwrap(), RemoteBranchState::Missing);
+        push_branch(&r.root, "main").await.unwrap();
+        assert_eq!(state().await.unwrap(), RemoteBranchState::Matches);
+        r.commit_file("a.txt", "a\n", "add a");
+        assert_eq!(state().await.unwrap(), RemoteBranchState::Differs);
     }
 
     #[tokio::test]

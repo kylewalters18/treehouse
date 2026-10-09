@@ -97,6 +97,7 @@ export type { PlannerCheckout } from "./bindings/PlannerCheckout";
 export type { PlannerOpened } from "./bindings/PlannerOpened";
 export type { IssueStartResult } from "./bindings/IssueStartResult";
 export type { ForgeMr } from "./bindings/ForgeMr";
+export type { RemoteBranchState } from "./bindings/RemoteBranchState";
 export type { ForgePipeline } from "./bindings/ForgePipeline";
 export type { ForgeJob } from "./bindings/ForgeJob";
 export type { ForgeJobLog } from "./bindings/ForgeJobLog";

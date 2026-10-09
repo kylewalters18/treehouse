@@ -25,9 +25,10 @@ them appear in treehouse's sidebar and reviews/merges them there.
 
 For issue work: search_issues finds existing issues (filter by labels / assignee; call \
 get_issue for the full text, update_issue to edit one) — check it before filing a duplicate; create_issue files an issue \
-on the repo's GitLab/GitHub project; create_worktree with `issue` starts a worktree + agent on an existing one; create_pr opens a \
-pull/merge request for your own worktree once your work is committed. To get PRs for \
-worktrees you start, tell their agents in `prompt` to commit and call create_pr when done.
+on the repo's GitLab/GitHub project; create_worktree with `issue` starts a worktree + agent on an existing one; push_branch pushes \
+your own worktree's branch, and create_pr then opens a pull/merge request for it (it never \
+pushes). To get PRs for worktrees you start, tell their agents in `prompt` to commit, call \
+push_branch, then create_pr when done.
 Once your PR is open, get_pr_threads reads reviewer feedback and get_ci_status / get_ci_log \
 show why CI failed; after pushing, wait_for_ci waits for the run to finish (retry_ci_job \
 re-runs a flaky job); get_linked_issue re-reads the issue you're working on. When the user \

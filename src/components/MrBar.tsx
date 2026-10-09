@@ -1,12 +1,19 @@
 import { useEffect, useState } from "react";
 import { ask } from "@tauri-apps/plugin-dialog";
-import type { WorkspaceId } from "@/ipc/types";
-import { forgeGetIssue, onMrChanged, openExternalUrl } from "@/ipc/client";
+import type { RemoteBranchState, WorkspaceId } from "@/ipc/types";
+import {
+  forgeBranchRemoteState,
+  forgeGetIssue,
+  forgePushBranch,
+  onMrChanged,
+  openExternalUrl,
+} from "@/ipc/client";
 import { useIssueLinksStore } from "@/stores/issueLinks";
 import { useWorktreesStore } from "@/stores/worktrees";
 import { useForgeStore, forgeBranchKey, useForgeTerms } from "@/stores/forge";
 import { IssueChip } from "@/components/IssueChip";
-import { toastInfo, toastSuccess } from "@/stores/toasts";
+import { toastError, toastInfo, toastSuccess } from "@/stores/toasts";
+import { asMessage } from "@/lib/errors";
 import { cn } from "@/lib/cn";
 import type { WorktreeId } from "@/ipc/types";
 
@@ -14,7 +21,8 @@ import type { WorktreeId } from "@/ipc/types";
 /// pill + open-in-browser, Create when none, and Approve / Merge when one
 /// exists. MR comments (general + inline) live in the Review tab. Creating
 /// opens a small form below the strip; a worktree with a linked issue gets
-/// its title and a `Closes #n` line by default.
+/// its title and a `Closes #n` line by default. Creating never pushes: the
+/// form checks origin and offers Push until the branch is there, up to date.
 export function MrBar({
   workspaceId,
   worktreeId,
@@ -46,6 +54,10 @@ export function MrBar({
   const [body, setBody] = useState("");
   const [draft, setDraft] = useState(false);
   const [busy, setBusy] = useState(false);
+  /// The branch on origin while the form is open; null = checking, "unknown"
+  /// = the check failed (Create stays enabled and the backend decides).
+  const [remote, setRemote] = useState<RemoteBranchState | "unknown" | null>(null);
+  const [pushing, setPushing] = useState(false);
   const closesLine = linkedIssue != null ? `Closes #${linkedIssue}` : null;
   const closes = closesLine != null && hasLine(body, closesLine);
 
@@ -68,7 +80,31 @@ export function MrBar({
     if (mr) void loadApproval(workspaceId, mr.number);
   }, [mr, workspaceId, loadApproval]);
 
+  function checkRemote() {
+    setRemote(null);
+    forgeBranchRemoteState(workspaceId, branch)
+      .then(setRemote)
+      .catch(() => setRemote("unknown"));
+  }
+
+  async function push() {
+    setPushing(true);
+    try {
+      await forgePushBranch(workspaceId, branch);
+      setRemote("matches");
+    } catch (e) {
+      toastError("Couldn't push", asMessage(e));
+      checkRemote();
+    } finally {
+      setPushing(false);
+    }
+  }
+
+  const needsPush = remote === "missing" || remote === "differs";
+  const canCreate = !busy && !pushing && remote !== null && !needsPush;
+
   function startCreate() {
+    checkRemote();
     setTitle(titleFromBranch(branch));
     setBody(closesLine ?? "");
     setDraft(false);
@@ -89,6 +125,7 @@ export function MrBar({
   }
 
   async function confirmCreate() {
+    if (!canCreate) return;
     setBusy(true);
     const result = await createMr(
       workspaceId,
@@ -283,6 +320,25 @@ export function MrBar({
               Draft
             </label>
             <span className="flex-1" />
+            {remote === null ? (
+              <span className="text-neutral-500">Checking origin…</span>
+            ) : needsPush ? (
+              <>
+                <span className="text-amber-300">
+                  {remote === "missing" ? "Not on origin yet" : "Origin is behind this branch"}
+                </span>
+                <button
+                  disabled={pushing}
+                  onClick={() => void push()}
+                  title={`git push -u origin ${branch}`}
+                  className="rounded border border-amber-700 bg-amber-950/40 px-2 py-0.5 font-medium text-amber-200 hover:bg-amber-950/60 disabled:opacity-50"
+                >
+                  {pushing ? "Pushing…" : "Push"}
+                </button>
+              </>
+            ) : remote === "matches" ? (
+              <span className="text-neutral-500">Pushed</span>
+            ) : null}
             <button
               onClick={() => setCreating(false)}
               className="rounded border border-neutral-700 px-2 py-0.5 text-neutral-400 hover:bg-neutral-800"
@@ -290,7 +346,8 @@ export function MrBar({
               Cancel
             </button>
             <button
-              disabled={busy}
+              disabled={!canCreate}
+              title={needsPush ? "Push the branch first" : undefined}
               onClick={() => void confirmCreate()}
               className="rounded border border-blue-700 bg-blue-950/40 px-2 py-0.5 font-medium text-blue-200 hover:bg-blue-950/60 disabled:opacity-50"
             >

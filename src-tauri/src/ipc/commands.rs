@@ -716,7 +716,31 @@ pub async fn forge_find_mr_for_branch(
     f.find_mr_for_branch(&branch).await
 }
 
-/// Push the branch to origin, then open an MR/PR (see
+/// Where the branch stands on origin: the create-MR form offers a push
+/// first unless it `matches`.
+#[tauri::command]
+pub async fn forge_branch_remote_state(
+    workspace_id: WorkspaceId,
+    branch: String,
+    state: State<'_, AppState>,
+) -> AppResult<crate::worktree::git_ops::RemoteBranchState> {
+    let (_, root) = resolve_forge(workspace_id, &state).await?;
+    crate::worktree::git_ops::remote_branch_state(&root, &branch).await
+}
+
+/// Push the branch to origin with upstream tracking — the step before
+/// `forge_create_mr`, which never pushes.
+#[tauri::command]
+pub async fn forge_push_branch(
+    workspace_id: WorkspaceId,
+    branch: String,
+    state: State<'_, AppState>,
+) -> AppResult<()> {
+    let (_, root) = resolve_forge(workspace_id, &state).await?;
+    crate::worktree::git_ops::push_branch(&root, &branch).await
+}
+
+/// Open an MR/PR for an already-pushed branch (see
 /// `forge::workflow::create_pr`). `close_issue` keeps a linked worktree's
 /// `Closes #n` line in the body — or takes it out when false.
 #[tauri::command]
