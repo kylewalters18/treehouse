@@ -44,6 +44,14 @@ const SUGGESTION_LIMIT = 8;
 
 type PastedImage = { mimeType: string; data: string; url: string };
 
+/// The unsent composer contents, held by the caller so they outlive a
+/// remount (switching worktrees unmounts the pane).
+export type AcpComposerStash = { draft: string; images: PastedImage[]; attached: string[] };
+
+export function emptyComposerStash(): AcpComposerStash {
+  return { draft: "", images: [], attached: [] };
+}
+
 type Suggestion =
   | { kind: "file"; value: string }
   | { kind: "command"; value: string; command: AcpCommand };
@@ -76,6 +84,7 @@ export function AcpPromptBox({
   editRequest,
   insertRequest = null,
   narrow = false,
+  stash,
 }: {
   worktreeId: WorktreeId;
   commands: AcpCommand[];
@@ -105,13 +114,21 @@ export function AcpPromptBox({
   /// Narrow pane: icon-only pickers, shorter copy, no Interrupt button
   /// (⌘⏎ still interrupts).
   narrow?: boolean;
+  /// Where the unsent draft is kept across remounts; read on mount.
+  stash?: AcpComposerStash;
 }) {
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  const [draft, setDraft] = useState("");
-  const [caret, setCaret] = useState(0);
-  const [images, setImages] = useState<PastedImage[]>([]);
+  const [draft, setDraft] = useState(() => stash?.draft ?? "");
+  const [caret, setCaret] = useState(() => stash?.draft.length ?? 0);
+  const [images, setImages] = useState<PastedImage[]>(() => stash?.images ?? []);
   /// Files attached with `+` (absolute paths), beside `@` mentions.
-  const [attached, setAttached] = useState<string[]>([]);
+  const [attached, setAttached] = useState<string[]>(() => stash?.attached ?? []);
+  useEffect(() => {
+    if (!stash) return;
+    stash.draft = draft;
+    stash.images = images;
+    stash.attached = attached;
+  }, [stash, draft, images, attached]);
   const [files, setFiles] = useState<string[] | null>(null);
   const loadingFiles = useRef<Promise<string[]> | null>(null);
   const [highlight, setHighlight] = useState(0);

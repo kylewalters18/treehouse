@@ -2,6 +2,7 @@ import { attachAgent, killAgent, launchAgent, openPlanner } from "@/ipc/client";
 import type { AgentEvent, AgentSessionId, WorktreeId } from "@/ipc/types";
 import { applyAcpEvent, emptyTranscript, type AcpTranscript } from "@/lib/acp-transcript";
 import type { AgentLeafMode } from "./agent-leaf-state";
+import { emptyComposerStash, type AcpComposerStash } from "./AcpPromptBox";
 
 /// One ACP agent tab's client state: the transcript folded from the
 /// session's event stream. The ACP counterpart of `AgentLeafState` (which
@@ -16,6 +17,8 @@ export type AcpLeafState = {
   exited: boolean;
   error: string | null;
   killed: boolean;
+  /// The composer's unsent draft, so a worktree switch doesn't drop it.
+  composer: AcpComposerStash;
 };
 
 const poolByWorktree = new Map<WorktreeId, Map<string, AcpLeafState>>();
@@ -78,6 +81,7 @@ export function createAcpLeafState(
     exited: false,
     error: null,
     killed: false,
+    composer: emptyComposerStash(),
   };
 
   const onEvent = (ev: AgentEvent) => {

@@ -26,6 +26,7 @@ import * as client from "@/ipc/client";
 import { openWorktreeFile } from "./term-path-links";
 import { AcpAgentSlot } from "./AcpAgentSlot";
 import type { AcpLeafState } from "./acp-leaf-state";
+import { emptyComposerStash } from "./AcpPromptBox";
 import { applyAcpEvent, emptyTranscript } from "@/lib/acp-transcript";
 import type { AcpEvent, AcpToolCall } from "@/ipc/types";
 import { useWorktreesStore } from "@/stores/worktrees";
@@ -42,6 +43,7 @@ function renderSlot(events: AcpEvent[]) {
     exited: false,
     error: null,
     killed: false,
+    composer: emptyComposerStash(),
   };
   render(
     <AcpAgentSlot

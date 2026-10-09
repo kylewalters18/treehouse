@@ -349,6 +349,7 @@ export function AcpAgentSlot({
         editRequest={editRequest}
         insertRequest={insertRequest}
         narrow={narrow}
+        stash={state.composer}
       />
     </div>
     </WorktreeContext.Provider>

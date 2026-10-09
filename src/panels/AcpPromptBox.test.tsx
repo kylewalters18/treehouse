@@ -9,7 +9,7 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
   open: vi.fn(async () => ["/abs/notes.md"]),
 }));
 
-import { AcpPromptBox } from "./AcpPromptBox";
+import { AcpPromptBox, emptyComposerStash, type AcpComposerStash } from "./AcpPromptBox";
 import type { AcpCommand, AcpConfigOption } from "@/ipc/types";
 import { composerControls } from "@/lib/acp-composer";
 
@@ -41,6 +41,7 @@ function setup(
     editRequest: { text: string; nonce: number } | null;
     insertRequest: { text: string; nonce: number } | null;
     narrow: boolean;
+    stash: AcpComposerStash;
   }> = {},
 ) {
   const onSend = vi.fn(async () => true);
@@ -64,11 +65,19 @@ function setup(
       editRequest={o.editRequest ?? null}
       narrow={o.narrow ?? false}
       insertRequest={o.insertRequest ?? null}
+      stash={o.stash}
     />
   );
-  const { rerender } = render(box(overrides));
+  const { rerender, unmount } = render(box(overrides));
   const input = screen.getByRole("textbox") as HTMLTextAreaElement;
-  return { input, onSend, onSetting, onCancel, rerender: (o: typeof overrides) => rerender(box(o)) };
+  return {
+    input,
+    onSend,
+    onSetting,
+    onCancel,
+    unmount,
+    rerender: (o: typeof overrides) => rerender(box(o)),
+  };
 }
 
 describe("AcpPromptBox", () => {
@@ -220,5 +229,19 @@ describe("AcpPromptBox inserts", () => {
     await userEvent.type(input, "look at");
     rerender({ insertRequest: { text: "#42 Fix login ", nonce: 2 } });
     expect(input.value).toBe("look at #42 Fix login ");
+  });
+});
+
+describe("AcpPromptBox stash", () => {
+  it("keeps the unsent draft across a remount, and clears it once sent", async () => {
+    const stash = emptyComposerStash();
+    const first = setup({ stash });
+    await userEvent.type(first.input, "half a thought");
+    first.unmount();
+    const second = setup({ stash });
+    expect(second.input.value).toBe("half a thought");
+    await userEvent.type(second.input, "{Enter}");
+    expect(second.onSend).toHaveBeenCalled();
+    expect(stash.draft).toBe("");
   });
 });
