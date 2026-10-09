@@ -93,6 +93,19 @@ pub enum Forge {
 /// price of static dispatch over a closed provider set — worth it to keep a
 /// concrete value across the Tauri command boundary.
 impl Forge {
+    /// `owner/repo` (GitLab owners may include nested groups).
+    pub fn project(&self) -> &str {
+        match self {
+            Forge::Gitlab(g) => &g.project,
+            Forge::Github(g) => &g.project,
+        }
+    }
+    pub fn host(&self) -> &str {
+        match self {
+            Forge::Gitlab(g) => &g.host,
+            Forge::Github(g) => &g.host,
+        }
+    }
     pub async fn status(&self) -> AppResult<ForgeStatus> {
         match self {
             Forge::Gitlab(g) => g.status().await,

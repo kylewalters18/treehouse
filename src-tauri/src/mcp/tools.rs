@@ -31,6 +31,7 @@ const HEADLESS_ROWS: u16 = 40;
 pub fn list(scope: CallerScope) -> Value {
     match scope {
         CallerScope::Worktree(_) => json!([
+            list_repos_schema(scope),
             create_issue_schema(scope),
             create_worktree_schema(scope),
             create_pr_schema(),
@@ -48,6 +49,7 @@ pub fn list(scope: CallerScope) -> Value {
         // A planner has a repo but no worktree, so nothing to open a PR from.
         CallerScope::Planner(_) => {
             json!([
+                list_repos_schema(scope),
                 create_issue_schema(scope),
                 create_worktree_schema(scope),
                 search_issues_schema(scope),
@@ -56,13 +58,7 @@ pub fn list(scope: CallerScope) -> Value {
             ])
         }
         CallerScope::Scratch => json!([
-            {
-                "name": "list_repos",
-                "description": "List the git repos currently open in treehouse — the only repos \
-                    create_worktree and create_issue can target. Call this first to get a valid \
-                    `repo`; the set changes as the user opens and closes repos.",
-                "inputSchema": { "type": "object", "properties": {} }
-            },
+            list_repos_schema(scope),
             create_issue_schema(scope),
             create_worktree_schema(scope),
             search_issues_schema(scope),
@@ -72,11 +68,39 @@ pub fn list(scope: CallerScope) -> Value {
     }
 }
 
-fn repo_property() -> Value {
+fn list_repos_schema(scope: CallerScope) -> Value {
+    let description = if scope == CallerScope::Scratch {
+        "List the git repos currently open in treehouse — the only repos create_worktree and \
+        create_issue can target. Call this first to get a valid `repo`; the set changes as the \
+        user opens and closes repos."
+    } else {
+        "List the git repos currently open in treehouse. Only needed when work belongs in a \
+        different repo than this one: pass one as `repo` to create_issue, create_worktree, or \
+        the issue tools."
+    };
     json!({
-        "type": "string",
-        "description": "Which open repo: a `name` or `path` from list_repos."
+        "name": "list_repos",
+        "description": description,
+        "inputSchema": { "type": "object", "properties": {} }
     })
+}
+
+/// Scratch has no repo of its own, so `repo` is required there; everyone
+/// else defaults to their own repo and may name another open one.
+fn add_repo_property(scope: CallerScope, properties: &mut Value, required: &mut Vec<&str>) {
+    if scope == CallerScope::Scratch {
+        properties["repo"] = json!({
+            "type": "string",
+            "description": "Which open repo: a `name` or `path` from list_repos."
+        });
+        required.insert(0, "repo");
+    } else {
+        properties["repo"] = json!({
+            "type": "string",
+            "description": "A different open repo to act on (a `name` or `path` from list_repos). \
+                Omit to use this repo — only pass it when the work belongs elsewhere."
+        });
+    }
 }
 
 fn create_issue_schema(scope: CallerScope) -> Value {
@@ -89,10 +113,7 @@ fn create_issue_schema(scope: CallerScope) -> Value {
         }
     });
     let mut required = vec!["title", "body"];
-    if scope == CallerScope::Scratch {
-        properties["repo"] = repo_property();
-        required.insert(0, "repo");
-    }
+    add_repo_property(scope, &mut properties, &mut required);
     json!({
         "name": "create_issue",
         "description": "File a new issue on this repo's GitLab/GitHub project (it is visible to the \
@@ -136,10 +157,7 @@ fn search_issues_schema(scope: CallerScope) -> Value {
         }
     });
     let mut required: Vec<&str> = vec![];
-    if scope == CallerScope::Scratch {
-        properties["repo"] = repo_property();
-        required.push("repo");
-    }
+    add_repo_property(scope, &mut properties, &mut required);
     json!({
         "name": "search_issues",
         "description": "Search this repo's GitLab/GitHub issues. Returns compact rows (number, title, \
@@ -155,10 +173,7 @@ fn get_issue_schema(scope: CallerScope) -> Value {
         "number": { "type": "integer", "description": "Issue number (GitLab iid)." }
     });
     let mut required = vec!["number"];
-    if scope == CallerScope::Scratch {
-        properties["repo"] = repo_property();
-        required.insert(0, "repo");
-    }
+    add_repo_property(scope, &mut properties, &mut required);
     json!({
         "name": "get_issue",
         "description": "Read one of this repo's issues in full: title, state, description, labels, \
@@ -183,10 +198,7 @@ fn update_issue_schema(scope: CallerScope) -> Value {
         }
     });
     let mut required = vec!["number"];
-    if scope == CallerScope::Scratch {
-        properties["repo"] = repo_property();
-        required.insert(0, "repo");
-    }
+    add_repo_property(scope, &mut properties, &mut required);
     json!({
         "name": "update_issue",
         "description": "Edit one of this repo's issues: its title and/or description (visible to \
@@ -337,7 +349,6 @@ fn get_terminal_output_schema() -> Value {
 }
 
 fn create_worktree_schema(scope: CallerScope) -> Value {
-    let scratch = scope == CallerScope::Scratch;
     let (what, base_hint) = match scope {
         CallerScope::Scratch => (
             "Create a new git worktree (and branch) in one of the repos open in treehouse \
@@ -353,7 +364,8 @@ fn create_worktree_schema(scope: CallerScope) -> Value {
             "Create a new git worktree (and branch) as a sibling of the current one, \
             shown in treehouse's sidebar like one the user created.",
             "Ref to branch from. Defaults to origin/<default branch>. Pass the current branch \
-            name to build on this worktree's committed work (uncommitted changes are not carried over).",
+            name to build on this worktree's committed work (uncommitted changes are not carried \
+            over); with `repo`, a ref in that repo.",
         ),
     };
     let mut properties = json!({
@@ -374,10 +386,7 @@ fn create_worktree_schema(scope: CallerScope) -> Value {
         }
     });
     let mut required = vec![];
-    if scratch {
-        properties["repo"] = repo_property();
-        required.push("repo");
-    }
+    add_repo_property(scope, &mut properties, &mut required);
     json!({
         "name": "create_worktree",
         "description": format!("{what} Pass `name`, `issue`, or both. If `prompt` or `issue` is \
@@ -416,7 +425,7 @@ pub async fn call(app: &AppHandle, caller: McpCaller, params: &Value) -> Value {
         "wait_for_ci" => wait_for_ci(app, caller, &args).await,
         "retry_ci_job" => retry_ci_job(app, caller, &args).await,
         "get_terminal_output" => get_terminal_output(app, caller, &args).await,
-        "list_repos" if caller.scope == CallerScope::Scratch => Ok(list_repos(app)),
+        "list_repos" => Ok(list_repos(app)),
         other => Err(format!("unknown tool: {other}")),
     };
     match outcome {
@@ -439,14 +448,12 @@ fn str_arg(args: &Value, k: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-/// The workspace a call targets, and a label naming the caller for logs: the
-/// caller's own repo for a worktree agent, the `repo` argument for the
-/// scratch agent.
-fn target_workspace(
+/// The caller's own repo, and a label naming the caller for logs. `None` for
+/// the scratch agent, which has no repo.
+fn own_workspace(
     app: &AppHandle,
     caller: McpCaller,
-    args: &Value,
-) -> Result<(WorkspaceId, String), String> {
+) -> Result<Option<(WorkspaceId, String)>, String> {
     let state = app.state::<AppState>();
     match caller.scope {
         CallerScope::Worktree(id) => {
@@ -455,27 +462,97 @@ fn target_workspace(
                 .get(&id)
                 .map(|e| e.value().clone())
                 .ok_or("the calling worktree no longer exists")?;
-            Ok((parent.workspace_id, parent.branch))
+            Ok(Some((parent.workspace_id, parent.branch)))
         }
-        CallerScope::Planner(ws) => Ok((ws, "planner".to_string())),
-        CallerScope::Scratch => {
-            let repo = str_arg(args, "repo")
-                .ok_or("`repo` is required — call list_repos for the options")?;
+        CallerScope::Planner(ws) => Ok(Some((ws, "planner".to_string()))),
+        CallerScope::Scratch => Ok(None),
+    }
+}
+
+/// The workspace a call targets, and a label naming the caller for logs: the
+/// `repo` argument when given (required for the scratch agent), else the
+/// caller's own repo.
+fn target_workspace(
+    app: &AppHandle,
+    caller: McpCaller,
+    args: &Value,
+) -> Result<(WorkspaceId, String), String> {
+    let own = own_workspace(app, caller)?;
+    let label = own
+        .as_ref()
+        .map_or("scratch".to_string(), |(_, l)| l.clone());
+    match (str_arg(args, "repo"), own) {
+        (Some(repo), _) => {
             let repos = open_repos(app);
             let i = resolve_repo(&repos, &repo)?;
-            Ok((repos[i].id, "scratch".to_string()))
+            Ok((repos[i].id, label))
         }
+        (None, Some(own)) => Ok(own),
+        (None, None) => Err("`repo` is required — call list_repos for the options".into()),
     }
+}
+
+/// A line for an issue filed into another repo, pointing back at where it was
+/// found: the caller's linked issue if any, else its branch. `{project}#{n}` is
+/// a cross-project reference on both GitLab and GitHub; across hosts it can't
+/// link, so the host is spelled out.
+fn origin_note(
+    host: Option<&str>,
+    project: &str,
+    issue: Option<u64>,
+    branch: Option<&str>,
+) -> String {
+    let project = match host {
+        Some(h) => format!("{h}/{project}"),
+        None => project.to_string(),
+    };
+    match (issue, branch) {
+        (Some(n), _) => format!("Found while working on {project}#{n}."),
+        (None, Some(b)) => format!("Found while working on `{b}` in {project}."),
+        (None, None) => format!("Found while working in {project}."),
+    }
+}
+
+/// `origin_note` for a caller filing into `target`, or `None` when it isn't
+/// cross-repo (or the caller's repo has no forge to name). Best-effort.
+async fn cross_repo_note(app: &AppHandle, caller: McpCaller, target: &Forge) -> Option<String> {
+    let (own_ws, _) = own_workspace(app, caller).ok()??;
+    let state = app.state::<AppState>();
+    let (own_forge, _) = resolve_forge(own_ws, &state).await.ok()?;
+    if own_forge.project() == target.project() && own_forge.host() == target.host() {
+        return None;
+    }
+    let (issue, branch) = match caller.scope {
+        CallerScope::Worktree(id) => {
+            let wt = state.worktrees.get(&id).map(|e| e.value().clone())?;
+            (workflow::linked_issue(app, &wt.path).await, Some(wt.branch))
+        }
+        _ => (None, None),
+    };
+    let host = (own_forge.host() != target.host()).then(|| own_forge.host());
+    Some(origin_note(
+        host,
+        own_forge.project(),
+        issue,
+        branch.as_deref(),
+    ))
 }
 
 async fn create_issue(app: &AppHandle, caller: McpCaller, args: &Value) -> Result<Value, String> {
     let title = str_arg(args, "title").ok_or("`title` is required")?;
-    let body = str_arg(args, "body").unwrap_or_default();
+    let mut body = str_arg(args, "body").unwrap_or_default();
     let (workspace_id, _) = target_workspace(app, caller, args)?;
     let state = app.state::<AppState>();
     let (forge, _) = resolve_forge(workspace_id, &state)
         .await
         .map_err(|e| e.to_string())?;
+    if let Some(note) = cross_repo_note(app, caller, &forge).await {
+        body = if body.is_empty() {
+            note
+        } else {
+            format!("{body}\n\n{note}")
+        };
+    }
     let issue = forge
         .create_issue(&title, &body)
         .await
@@ -1275,12 +1352,39 @@ mod tests {
         );
     }
 
+    /// Every tool that targets a repo takes an optional `repo`; the rest
+    /// (this worktree's PR / CI / terminals) take none.
+    fn assert_optional_repo(tools: &Value) {
+        let targets = [
+            "create_issue",
+            "create_worktree",
+            "search_issues",
+            "get_issue",
+            "update_issue",
+        ];
+        for t in tools.as_array().unwrap() {
+            let name = t["name"].as_str().unwrap();
+            let schema = &t["inputSchema"];
+            assert_eq!(
+                schema["properties"].get("repo").is_some(),
+                targets.contains(&name),
+                "{name}"
+            );
+            let required = schema.get("required").cloned().unwrap_or(json!([]));
+            assert!(
+                !required.as_array().unwrap().contains(&json!("repo")),
+                "{name}"
+            );
+        }
+    }
+
     #[test]
     fn planners_act_on_their_repo_without_create_pr() {
         let tools = list(CallerScope::Planner(WorkspaceId::new()));
         assert_eq!(
             names(&tools),
             [
+                "list_repos",
                 "create_issue",
                 "create_worktree",
                 "search_issues",
@@ -1288,23 +1392,18 @@ mod tests {
                 "update_issue"
             ]
         );
-        for t in tools.as_array().unwrap() {
-            assert!(
-                t["inputSchema"]["properties"].get("repo").is_none(),
-                "{}",
-                t["name"]
-            );
-        }
-        let desc = tools[1]["description"].as_str().unwrap();
+        assert_optional_repo(&tools);
+        let desc = tools[2]["description"].as_str().unwrap();
         assert!(desc.contains("in this repo"), "{desc}");
     }
 
     #[test]
-    fn worktree_agents_get_create_pr_and_no_repo_arg() {
+    fn worktree_agents_get_create_pr_and_optional_repo() {
         let tools = list(CallerScope::Worktree(crate::util::ids::WorktreeId::new()));
         assert_eq!(
             names(&tools),
             [
+                "list_repos",
                 "create_issue",
                 "create_worktree",
                 "create_pr",
@@ -1320,14 +1419,24 @@ mod tests {
                 "get_terminal_output",
             ]
         );
-        for t in tools.as_array().unwrap() {
-            assert!(
-                t["inputSchema"]["properties"].get("repo").is_none(),
-                "{}",
-                t["name"]
-            );
-        }
-        assert!(tools[1]["inputSchema"]["properties"].get("issue").is_some());
+        assert_optional_repo(&tools);
+        assert!(tools[2]["inputSchema"]["properties"].get("issue").is_some());
+    }
+
+    #[test]
+    fn origin_note_prefers_issue_then_branch() {
+        assert_eq!(
+            origin_note(None, "acme/api", Some(12), Some("fix-x")),
+            "Found while working on acme/api#12."
+        );
+        assert_eq!(
+            origin_note(None, "acme/api", None, Some("fix-x")),
+            "Found while working on `fix-x` in acme/api."
+        );
+        assert_eq!(
+            origin_note(Some("gitlab.com"), "acme/api", None, None),
+            "Found while working in gitlab.com/acme/api."
+        );
     }
 
     #[test]

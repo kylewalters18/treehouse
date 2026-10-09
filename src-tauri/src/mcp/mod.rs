@@ -12,9 +12,10 @@
 //!   call knows its caller's workspace and parent worktree; it stops working
 //!   once the agent exits.
 //! - Tools live in `tools`: `create_issue`, `create_worktree`, `create_pr`
-//!   (worktree agents only), plus `list_repos` for the global scratch agent
-//!   (`crate::scratch`), which isn't in any repo and so has to name one. A
-//!   repo planner (`crate::planner`) is scoped to its repo.
+//!   (worktree agents only), and `list_repos`. Worktree agents and repo
+//!   planners (`crate::planner`) default to their own repo and may pass
+//!   `repo` to file or start work in another open one; the global scratch
+//!   agent (`crate::scratch`) isn't in any repo and so always names one.
 //! - Gating is the agent's own permission prompt: we don't pre-approve the
 //!   tool, so each call asks the user in the parent agent's pane (which also
 //!   flips that worktree to needs-attention in the sidebar).
@@ -50,11 +51,13 @@ pub struct McpCaller {
 /// `create_worktree` puts things.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CallerScope {
-    /// An agent inside a worktree: new worktrees go in the same repo.
+    /// An agent inside a worktree: acts on its own repo unless a call names
+    /// another open one.
     Worktree(WorktreeId),
     /// The global scratch agent: no repo of its own, names one per call.
     Scratch,
-    /// A repo's ⌘J planner (`crate::planner`): acts on that repo, but has no
+    /// A repo's ⌘J planner (`crate::planner`): acts on that repo (or a named
+    /// one), but has no
     /// worktree of its own (so no `create_pr`).
     Planner(WorkspaceId),
 }

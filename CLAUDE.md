@@ -73,7 +73,8 @@ src-tauri/src/
   forge/                  # GitLab (REST + ~/.netrc) / GitHub (gh) issues, MR/PR threads, CI;
                           #   workflow.rs = issue → worktree → PR steps shared by UI commands + MCP
   mcp/                    # Local MCP server exposed to launched Claude / Kiro sessions
-                          #   (create_worktree [+issue], create_issue, create_pr, list_repos)
+                          #   (create_worktree [+issue], create_issue, create_pr, list_repos);
+                          #   defaults to the caller's repo, optional `repo` targets another open one
   util/
     ids.rs                # ULID-backed typed ID newtypes (WorktreeId, AgentSessionId, LspServerId, ...)
     errors.rs             # AppError → serde { kind, message }

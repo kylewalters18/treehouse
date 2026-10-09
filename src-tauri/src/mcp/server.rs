@@ -25,7 +25,9 @@ them appear in treehouse's sidebar and reviews/merges them there.
 
 For issue work: search_issues finds existing issues (filter by labels / assignee; call \
 get_issue for the full text, update_issue to edit one) — check it before filing a duplicate; create_issue files an issue \
-on the repo's GitLab/GitHub project; create_worktree with `issue` starts a worktree + agent on an existing one; create_pr opens a \
+on the repo's GitLab/GitHub project; create_worktree with `issue` starts a worktree + agent on an existing one. \
+These act on your own repo; when the work belongs in another repo open in treehouse, pass its \
+`repo` (see list_repos) — an issue filed that way links back to where you found it. create_pr opens a \
 pull/merge request for your own worktree once your work is committed and pushed. To get PRs for \
 worktrees you start, tell their agents in `prompt` to commit, push, and call create_pr when done.
 Once your PR is open, get_pr_threads reads reviewer feedback and get_ci_status / get_ci_log \
