@@ -54,6 +54,7 @@ import type {
   AcpQuestion,
   AcpToolCall,
   AgentSessionId,
+  CommitSummary,
   TurnFileChange,
   WorktreeId,
 } from "@/ipc/types";
@@ -72,6 +73,7 @@ import {
   type AcpItem,
   type FormValue,
 } from "@/lib/acp-transcript";
+import { useActivityStore } from "@/stores/activity";
 import { useDiffsStore } from "@/stores/diffs";
 import { useUiStore } from "@/stores/ui";
 import { useWorktreesStore } from "@/stores/worktrees";
@@ -143,6 +145,13 @@ export function AcpAgentSlot({
     () => state.version,
   );
   const root = useWorktreesStore((s) => s.worktrees.find((w) => w.id === worktreeId)?.path ?? "");
+  // The branch's commits, for linking hashes in replies (see `AgentText`);
+  // refetched when the branch moves, as the History tab does.
+  const ahead = useActivityStore((s) => s.byWorktree[worktreeId]?.ahead);
+  const branchComputedAt = useDiffsStore((s) => s.byWorktree[worktreeId]?.computedAt);
+  useEffect(() => {
+    if (visible) void useDiffsStore.getState().fetchCommits(worktreeId).catch(() => {});
+  }, [visible, worktreeId, ahead, branchComputedAt]);
   const worktreeCtx = useMemo(() => ({ worktreeId, root }), [worktreeId, root]);
   const t = state.transcript;
   const running = t.turns > 0 && !state.exited;
@@ -445,7 +454,7 @@ const Row = memo(function Row({
         </div>
       );
     case "agent":
-      return <ForgeMarkdown source={item.text} className="!text-[13px]" codeBlocks />;
+      return <AgentText text={item.text} />;
     case "thought":
       return <Thought text={item.text} />;
     case "tool":
@@ -469,6 +478,23 @@ const Row = memo(function Row({
       return <ErrorRow message={item.message} />;
   }
 });
+
+/// An agent reply. Hashes of commits the History tab lists link there.
+function AgentText({ text }: { text: string }) {
+  const ctx = useContext(WorktreeContext);
+  const worktreeId = ctx?.worktreeId;
+  const commits = useDiffsStore((s) =>
+    worktreeId ? s.commitsByWorktree[worktreeId]?.commits : undefined,
+  );
+  const commitRefs = useMemo(
+    () =>
+      worktreeId && commits
+        ? { commits, onOpen: (c: CommitSummary) => void openInHistory(worktreeId, c.sha) }
+        : undefined,
+    [worktreeId, commits],
+  );
+  return <ForgeMarkdown source={text} className="!text-[13px]" codeBlocks commitRefs={commitRefs} />;
+}
 
 function ErrorRow({ message }: { message: string }) {
   return (
@@ -1259,6 +1285,16 @@ function DiffCounts({ added, removed }: { added: number; removed: number }) {
       <span className="text-rose-400/80">−{removed}</span>
     </span>
   );
+}
+
+/// Open commit `sha` in the History tab, its diff in the main pane.
+async function openInHistory(worktreeId: WorktreeId, sha: string) {
+  const ui = useUiStore.getState();
+  ui.setDiffSidebarTab("history");
+  if (ui.bottomPaneMaximized) useUiStore.setState({ bottomPaneMaximized: false });
+  const diffs = useDiffsStore.getState();
+  await diffs.selectCommit(worktreeId, sha);
+  if (useDiffsStore.getState().selectedCommit[worktreeId] === sha) diffs.setView(worktreeId, "diff");
 }
 
 /// Show `rel` in the diff pane: the branch's changes (what merge-back

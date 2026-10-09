@@ -143,6 +143,11 @@ function CommitRow({
   const Glyph = commit.merge ? GitMerge : GitCommitHorizontal;
   const rowRef = useRef<HTMLButtonElement>(null);
   const hover = useHoverCard();
+  // Selection can come from outside the list (a hash linked in an agent
+  // reply); bring the row into view.
+  useEffect(() => {
+    if (selected) rowRef.current?.scrollIntoView?.({ block: "nearest" });
+  }, [selected]);
   return (
     <li>
       <button

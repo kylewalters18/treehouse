@@ -1,9 +1,12 @@
+import { useMemo } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import rehypeRaw from "rehype-raw";
 import rehypeSanitize from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
 import { openExternalUrl } from "@/ipc/client";
+import type { CommitSummary } from "@/ipc/types";
 import { cn } from "@/lib/cn";
+import { rehypeCommitRefs, resolveCommitRef } from "@/lib/commit-refs";
 import { CodeBlock } from "./CodeBlock";
 
 // Same pipeline as MarkdownPreview minus worktree-relative resolution:
@@ -75,17 +78,51 @@ export function ForgeMarkdown({
   source,
   className,
   codeBlocks = false,
+  commitRefs,
 }: {
   source: string;
   className?: string;
   codeBlocks?: boolean;
+  /// Link hashes naming one of `commits` (see `rehypeCommitRefs`).
+  commitRefs?: { commits: CommitSummary[]; onOpen: (commit: CommitSummary) => void };
 }) {
+  const base = codeBlocks ? CODE_BLOCK_COMPONENTS : COMPONENTS;
+  const commits = commitRefs?.commits;
+  const onOpen = commitRefs?.onOpen;
+  const rehypePlugins = useMemo(
+    () =>
+      commits?.length
+        ? [...REHYPE_PLUGINS, [rehypeCommitRefs, (t: string) => resolveCommitRef(t, commits)]]
+        : REHYPE_PLUGINS,
+    [commits],
+  );
+  const components = useMemo(() => {
+    if (!commits?.length || !onOpen) return base;
+    const bySha = new Map(commits.map((c) => [c.sha, c]));
+    return {
+      ...base,
+      "commit-ref"({ node, children }: { node?: { properties?: { sha?: unknown } }; children?: React.ReactNode }) {
+        const commit = bySha.get(String(node?.properties?.sha ?? ""));
+        if (!commit) return <>{children}</>;
+        return (
+          <button
+            type="button"
+            className="commit-ref"
+            title={`${commit.shortSha} ${commit.summary}\nOpen in History`}
+            onClick={() => onOpen(commit)}
+          >
+            {children}
+          </button>
+        );
+      },
+    } as Components;
+  }, [base, commits, onOpen]);
   return (
     <div className={cn("markdown-body markdown-compact", className)}>
       <ReactMarkdown
         remarkPlugins={REMARK_PLUGINS}
-        rehypePlugins={REHYPE_PLUGINS}
-        components={codeBlocks ? CODE_BLOCK_COMPONENTS : COMPONENTS}
+        rehypePlugins={rehypePlugins as typeof REHYPE_PLUGINS}
+        components={components}
       >
         {source}
       </ReactMarkdown>

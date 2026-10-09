@@ -193,6 +193,15 @@ body {
   color: #D0D4D9;
 }
 .markdown-body a > code { color: inherit; }
+/* A commit hash linked to the History tab (see `rehypeCommitRefs`). */
+.markdown-body .commit-ref {
+  font: inherit;
+  font-family: "Geist Mono Variable", ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: #6AA1FF;
+  cursor: pointer;
+}
+.markdown-body :not(code) > .commit-ref { font-size: 0.86em; }
+.markdown-body .commit-ref:hover { text-decoration: underline; text-underline-offset: 2px; }
 .markdown-body kbd {
   padding: 0.1em 0.4em;
   border: 1px solid #2C3137;
