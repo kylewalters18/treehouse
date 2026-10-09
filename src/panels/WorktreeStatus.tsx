@@ -100,10 +100,11 @@ export function RowStatusLine({
 
 const HOVER_DELAY_MS = 500;
 
-type HoverTarget = { worktree: Worktree; rect: DOMRect };
+type HoverTarget = { worktree: Worktree; row: HTMLElement; rect: DOMRect };
 
 /// Hover-intent for sidebar rows: `bind(w)` goes on the row, `target` is
-/// the row whose card should show. Any click, scroll or `close()` hides it.
+/// the row whose card should show. A click, scrolling the row's list, or
+/// `close()` hides it.
 export function useWorktreeHover() {
   const [target, setTarget] = useState<HoverTarget | null>(null);
   const timer = useRef<number | null>(null);
@@ -116,11 +117,16 @@ export function useWorktreeHover() {
 
   useEffect(() => {
     if (!target) return;
-    window.addEventListener("scroll", close, true);
+    // Only a scroll that moves the row: a terminal streaming output scrolls
+    // its own viewport constantly and must not dismiss the card.
+    const onScroll = (e: Event) => {
+      if (e.target instanceof Node && e.target.contains(target.row)) close();
+    };
+    window.addEventListener("scroll", onScroll, true);
     window.addEventListener("mousedown", close, true);
     window.addEventListener("resize", close);
     return () => {
-      window.removeEventListener("scroll", close, true);
+      window.removeEventListener("scroll", onScroll, true);
       window.removeEventListener("mousedown", close, true);
       window.removeEventListener("resize", close);
     };
@@ -135,7 +141,7 @@ export function useWorktreeHover() {
       timer.current = window.setTimeout(() => {
         // Not while the row's ⋯ menu is open.
         if (el.querySelector("[data-open]")) return;
-        setTarget({ worktree, rect: el.getBoundingClientRect() });
+        setTarget({ worktree, row: el, rect: el.getBoundingClientRect() });
       }, HOVER_DELAY_MS);
     },
     onMouseLeave: close,
