@@ -36,8 +36,6 @@ pub struct WorktreeDetails {
     pub changed_total: u32,
     /// Every live terminal, oldest first.
     pub terminals: Vec<TerminalDetail>,
-    /// Language ids of the worktree's running language servers.
-    pub lsp_servers: Vec<String>,
     /// TCP ports listened on by any process in the worktree.
     pub ports: Vec<u16>,
     /// `None` when the process table couldn't be read.
@@ -104,12 +102,6 @@ pub async fn details(state: &AppState, worktree_id: WorktreeId) -> AppResult<Wor
             .collect();
     let mut shells = crate::pty::manager::shell_pids_for_worktree(&state.terminals, worktree_id);
     shells.sort_by_key(|(id, _)| *id);
-    let lsp_servers = state
-        .lsp
-        .list_for_worktree(worktree_id)
-        .into_iter()
-        .map(|s| s.language_id)
-        .collect();
 
     let (changed, procs, cwds, listening) = tokio::join!(
         git_ops::git(&path, ["status", "--porcelain"]),
@@ -186,7 +178,6 @@ pub async fn details(state: &AppState, worktree_id: WorktreeId) -> AppResult<Wor
         changed_total: changed.len() as u32,
         changed_files: changed.into_iter().take(MAX_CHANGED_FILES).collect(),
         terminals,
-        lsp_servers,
         ports,
         processes,
     })

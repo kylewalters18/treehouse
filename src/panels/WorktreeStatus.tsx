@@ -165,9 +165,9 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
   );
 }
 
-/// Detail card beside a hovered row: terminals and their ports, agents and
-/// language servers, uncommitted files, disk and process usage. Fetched
-/// when it opens and refreshed while it stays open.
+/// Detail card beside a hovered row: terminals and their ports, agents,
+/// uncommitted files, disk and process usage. Fetched when it opens and
+/// refreshed while it stays open.
 export function WorktreeHoverCard({
   target,
   activity,
@@ -284,16 +284,11 @@ export function WorktreeHoverCard({
       </div>
 
       <div className="border-b border-neutral-800 px-3 py-2">
-        <SectionTitle>Agents · Language servers</SectionTitle>
-        <div className="flex items-center gap-2">
-          <span className="flex-1 text-neutral-300">
-            {agentCount === 0
-              ? "No agents"
-              : `${agentCount} ${agentCount === 1 ? "agent" : "agents"} · ${ACTIVITY_LABEL[activity?.activity ?? "inactive"]}`}
-          </span>
-          <span className="truncate text-neutral-500">
-            {details?.lspServers.length ? details.lspServers.join(", ") : "no LSP"}
-          </span>
+        <SectionTitle>Agents</SectionTitle>
+        <div className="text-neutral-300">
+          {agentCount === 0
+            ? "No agents"
+            : `${agentCount} ${agentCount === 1 ? "agent" : "agents"} · ${ACTIVITY_LABEL[activity?.activity ?? "inactive"]}`}
         </div>
       </div>
 

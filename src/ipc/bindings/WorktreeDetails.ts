@@ -13,10 +13,6 @@ changedFiles: Array<ChangedFile>, changedTotal: number,
  */
 terminals: Array<TerminalDetail>, 
 /**
- * Language ids of the worktree's running language servers.
- */
-lspServers: Array<string>, 
-/**
  * TCP ports listened on by any process in the worktree.
  */
 ports: Array<number>, 
