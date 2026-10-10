@@ -577,8 +577,7 @@ export function WorktreeSidebar() {
   const renderRow = (w: Worktree, opts: { dim?: boolean; chip?: boolean }) => {
     const a = activity[w.id];
     const command = rowCommand(a?.commands ?? [], now);
-    const changedFiles = a?.changedFiles ?? 0;
-    const statusLine = command != null || changedFiles > 0;
+    const statusLine = command != null;
     return (
       <li
         key={w.id}
@@ -589,7 +588,7 @@ export function WorktreeSidebar() {
           "group relative flex cursor-pointer items-center pl-3 pr-1 hover:bg-neutral-900/60",
           // Rows with a repo line ("Needs you" / Pinned, multi-repo) get
           // a second line instead of a `repo /` prefix eating the branch;
-          // a terminal command or uncommitted work adds a status line.
+          // a terminal command adds a status line.
           opts.chip
             ? statusLine
               ? "h-[52px]"
@@ -628,7 +627,7 @@ export function WorktreeSidebar() {
               </span>
             )}
             {statusLine && (
-              <RowStatusLine row={command} changedFiles={changedFiles} now={now} />
+              <RowStatusLine row={command} now={now} />
             )}
           </span>
           {/* Badges give way to the ⋯ menu on hover (and while it's
@@ -649,7 +648,11 @@ export function WorktreeSidebar() {
               </span>
             )}
             <span className="shrink-0">
-              <AheadBehind ahead={a?.ahead ?? 0} behind={a?.behind ?? 0} />
+              <AheadBehind
+                ahead={a?.ahead ?? 0}
+                behind={a?.behind ?? 0}
+                changedFiles={a?.changedFiles ?? 0}
+              />
             </span>
             {/* The main clone has no ⋯ menu (merge / sync / remove don't
                 apply), so its badges stay put and the right slot carries
@@ -1512,13 +1515,30 @@ function Spinner() {
   );
 }
 
-function AheadBehind({ ahead, behind }: { ahead: number; behind: number }) {
-  if (ahead === 0 && behind === 0) return null;
+/// Git state badge, shell-prompt style: commits ahead / behind the default
+/// branch, then a dot when the workdir has uncommitted changes.
+function AheadBehind({
+  ahead,
+  behind,
+  changedFiles,
+}: {
+  ahead: number;
+  behind: number;
+  changedFiles: number;
+}) {
+  if (ahead === 0 && behind === 0 && changedFiles === 0) return null;
   const fmt = (n: number) => (n > 99 ? "99+" : String(n));
+  const title = [
+    (ahead > 0 || behind > 0) && `${ahead} ahead of / ${behind} behind default branch`,
+    changedFiles > 0 &&
+      `${changedFiles} uncommitted file${changedFiles === 1 ? "" : "s"}`,
+  ]
+    .filter(Boolean)
+    .join("\n");
   return (
     <span
-      className="shrink-0 font-mono text-[11px] text-neutral-500"
-      title={`${ahead} ahead of / ${behind} behind default branch`}
+      className="flex shrink-0 items-center font-mono text-[11px] text-neutral-500"
+      title={title}
     >
       {ahead > 0 && (
         <span className="text-emerald-400">↑{fmt(ahead)}</span>
@@ -1526,6 +1546,16 @@ function AheadBehind({ ahead, behind }: { ahead: number; behind: number }) {
       {ahead > 0 && behind > 0 && <span className="mx-0.5 text-neutral-700">·</span>}
       {behind > 0 && (
         <span className="text-amber-400">↓{fmt(behind)}</span>
+      )}
+      {changedFiles > 0 && (
+        <span
+          className={cn(
+            "text-[9px] leading-none text-neutral-300",
+            (ahead > 0 || behind > 0) && "ml-1",
+          )}
+        >
+          ●
+        </span>
       )}
     </span>
   );

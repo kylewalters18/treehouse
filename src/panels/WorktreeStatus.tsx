@@ -1,5 +1,5 @@
 /// Per-worktree status beyond the agent dot: the terminal-command line
-/// under a sidebar row, the uncommitted-files badge, and the hover card
+/// under a sidebar row and the hover card
 /// with everything running in the worktree.
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
@@ -52,16 +52,13 @@ function commandTiming(c: TerminalCommand, now: number): string {
   return c.exitCode != null && c.exitCode !== 0 ? `exit ${c.exitCode} · ${ago}` : ago;
 }
 
-/// Second line of a worktree row: the terminal command, then the count of
-/// uncommitted changes. Only the command label truncates; timing and
-/// counts keep their place.
+/// Second line of a worktree row: the terminal command. Only the command
+/// label truncates; timing and counts keep their place.
 export function RowStatusLine({
   row,
-  changedFiles,
   now,
 }: {
   row: RowCommand | null;
-  changedFiles: number;
   now: number;
 }) {
   const c = row?.command;
@@ -87,12 +84,6 @@ export function RowStatusLine({
             </span>
           )}
         </>
-      )}
-      {c && changedFiles > 0 && <span className="shrink-0 text-neutral-700">·</span>}
-      {changedFiles > 0 && (
-        <span className="shrink-0 text-neutral-400">
-          {changedFiles > 99 ? "99+" : changedFiles} uncommitted
-        </span>
       )}
     </span>
   );
