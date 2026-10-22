@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 vi.mock("@/ipc/client", () => ({
@@ -32,7 +32,7 @@ import type { AcpEvent, AcpToolCall } from "@/ipc/types";
 import { useWorktreesStore } from "@/stores/worktrees";
 import { useDiffsStore } from "@/stores/diffs";
 
-function renderSlot(events: AcpEvent[]) {
+function renderSlot(events: AcpEvent[], extra: Partial<AcpLeafState> = {}) {
   const transcript = emptyTranscript();
   for (const e of events) applyAcpEvent(transcript, e);
   const state: AcpLeafState = {
@@ -44,6 +44,9 @@ function renderSlot(events: AcpEvent[]) {
     error: null,
     killed: false,
     composer: emptyComposerStash(),
+    turnStartedAt: null,
+    lastEventAt: Date.now(),
+    ...extra,
   };
   render(
     <AcpAgentSlot
@@ -227,5 +230,178 @@ describe("files changed this turn", () => {
       { kind: "turnEnded", stopReason: "end_turn" },
     ]);
     expect(screen.queryByText(/files? changed/)).toBeNull();
+  });
+});
+
+const READY: AcpEvent = {
+  kind: "ready",
+  sessionId: "s",
+  agentName: "Claude",
+  mcpAttached: true,
+  cli: null,
+  acceptsImages: true,
+};
+
+function toolCall(id: string, kind: string, status: string, title: string, path?: string): AcpToolCall {
+  return {
+    id,
+    title,
+    kind,
+    status,
+    name: null,
+    locations: path ? [{ path, line: null }] : [],
+    content: [],
+    rawInput: null,
+  };
+}
+
+describe("permission shortcuts", () => {
+  const permission: AcpEvent = {
+    kind: "permission",
+    request: {
+      id: "p1",
+      toolCallId: "t1",
+      title: "rm -rf build",
+      options: [
+        { id: "once", name: "Allow", kind: "allow_once" },
+        { id: "always", name: "Always allow", kind: "allow_always" },
+        { id: "no", name: "Reject", kind: "reject_once" },
+      ],
+      tool: toolCall("t1", "execute", "pending", "rm -rf build"),
+    },
+  };
+
+  it("answers with a digit typed into the empty composer", async () => {
+    renderSlot([READY, { kind: "userMessage", text: "clean", attachments: [] }, permission]);
+    await userEvent.click(screen.getByRole("textbox"));
+    await userEvent.keyboard("3");
+    expect(client.acpRespondPermission).toHaveBeenCalledWith("agent-1", "p1", "no");
+    expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("");
+  });
+
+  it("leaves digits alone while there's a draft", async () => {
+    renderSlot([READY, { kind: "userMessage", text: "clean", attachments: [] }, permission]);
+    await userEvent.click(screen.getByRole("textbox"));
+    await userEvent.keyboard("x1");
+    expect(client.acpRespondPermission).not.toHaveBeenCalled();
+    expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("x1");
+  });
+});
+
+describe("working status", () => {
+  it("shows elapsed time and the running tool in the header", () => {
+    renderSlot(
+      [
+        READY,
+        { kind: "userMessage", text: "test it", attachments: [] },
+        { kind: "tool", tool: toolCall("t1", "execute", "in_progress", "`npm test`") },
+      ],
+      { turnStartedAt: Date.now() - 65_000 },
+    );
+    expect(screen.getByTitle("Working · 1m 05s · npm test")).toBeTruthy();
+  });
+
+  it("says it's thinking when nothing has arrived for a while", () => {
+    renderSlot([READY, { kind: "userMessage", text: "go", attachments: [] }], {
+      lastEventAt: Date.now() - 5_000,
+    });
+    expect(screen.getByRole("status").textContent).toContain("Thinking…");
+  });
+
+  it("stays quiet while a tool runs", () => {
+    renderSlot(
+      [
+        READY,
+        { kind: "userMessage", text: "go", attachments: [] },
+        { kind: "tool", tool: toolCall("t1", "read", "in_progress", "Read a.rs") },
+      ],
+      { lastEventAt: Date.now() - 5_000 },
+    );
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+});
+
+describe("folding tool runs", () => {
+  const run: AcpEvent[] = [
+    { kind: "tool", tool: toolCall("t1", "read", "completed", "Read a.rs", "/repo/a.rs") },
+    { kind: "thought", text: "hmm" },
+    { kind: "tool", tool: toolCall("t2", "read", "completed", "Read b.rs", "/repo/b.rs") },
+    { kind: "tool", tool: toolCall("t3", "execute", "failed", "cargo test") },
+  ];
+
+  it("folds a finished turn's run to a summary that expands", async () => {
+    renderSlot([
+      READY,
+      { kind: "userMessage", text: "look", attachments: [] },
+      ...run,
+      { kind: "agentText", text: "done" },
+      { kind: "turnEnded", stopReason: "end_turn" },
+    ]);
+    expect(screen.queryByText("Read a.rs")).toBeNull();
+    await userEvent.click(screen.getByText("Read 2 files, ran 1 command"));
+    expect(screen.getByText("Read a.rs")).toBeTruthy();
+    expect(screen.getByText("1 failed")).toBeTruthy();
+  });
+
+  it("keeps the running turn's run expanded", () => {
+    renderSlot([READY, { kind: "userMessage", text: "look", attachments: [] }, ...run]);
+    expect(screen.getByText("Read a.rs")).toBeTruthy();
+    expect(screen.queryByText("Read 2 files, ran 1 command")).toBeNull();
+  });
+});
+
+describe("pinned prompt header", () => {
+  const events: AcpEvent[] = [
+    READY,
+    { kind: "userMessage", text: "first ask", attachments: [] },
+    { kind: "agentText", text: "one" },
+    { kind: "turnEnded", stopReason: "end_turn" },
+    { kind: "userMessage", text: "\n  second ask\nmore", attachments: [] },
+    { kind: "agentText", text: "two" },
+    { kind: "turnEnded", stopReason: "end_turn" },
+    { kind: "userMessage", text: "", attachments: ["src/shot.png"] },
+    { kind: "agentText", text: "three" },
+    { kind: "turnEnded", stopReason: "end_turn" },
+  ];
+
+  /// Lay prompts out at fixed spots in a transcript whose top is at 100:
+  /// the first two scrolled past the top, the third below it.
+  function layout() {
+    const tops: Record<string, number> = { "0": -400, "3": 20, "6": 600 };
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+      this: HTMLElement,
+    ) {
+      const p = this.dataset.prompt;
+      const top = p !== undefined ? tops[p] : 100;
+      return { top, bottom: top + 30, left: 0, right: 0, width: 0, height: 30, x: 0, y: top } as DOMRect;
+    });
+    const scroller = document.querySelector("[data-prompt]")!.parentElement!.parentElement!;
+    // Tall enough not to count as stuck to the bottom.
+    Object.defineProperty(scroller, "scrollHeight", { value: 2000, configurable: true });
+    Object.defineProperty(scroller, "clientHeight", { value: 500, configurable: true });
+    scroller.scrollTop = 300;
+    fireEvent.scroll(scroller);
+    return scroller;
+  }
+
+  it("pins the prompt scrolled past, and none at the top", () => {
+    renderSlot(events);
+    expect(screen.queryByTitle("Jump to a prompt")).toBeNull();
+    layout();
+    const header = screen.getByTitle("Jump to a prompt");
+    expect(header.textContent).toContain("second ask");
+    expect(header.textContent).toContain("2/3");
+  });
+
+  it("lists prompts newest first, filters them, and jumps to one", async () => {
+    renderSlot(events);
+    const scroller = layout();
+    await userEvent.click(screen.getByTitle("Jump to a prompt"));
+    const options = screen.getAllByRole("option").map((o) => o.textContent);
+    expect(options).toEqual(["3shot.png", "2second askhere", "1first ask"]);
+    await userEvent.keyboard("first{Enter}");
+    // Prompt 1 sits 500px above the transcript's top; 8px of headroom.
+    expect(scroller.scrollTop).toBe(300 - 500 - 8);
+    expect(screen.queryByRole("listbox")).toBeNull();
   });
 });

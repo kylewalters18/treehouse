@@ -19,6 +19,11 @@ export type AcpLeafState = {
   killed: boolean;
   /// The composer's unsent draft, so a worktree switch doesn't drop it.
   composer: AcpComposerStash;
+  /// When the running turn started (ms epoch), seen live; null when idle
+  /// or when the turn was already running at attach (start unknown).
+  turnStartedAt: number | null;
+  /// When the last event arrived, to tell a quiet agent from a busy one.
+  lastEventAt: number;
 };
 
 const poolByWorktree = new Map<WorktreeId, Map<string, AcpLeafState>>();
@@ -82,6 +87,8 @@ export function createAcpLeafState(
     error: null,
     killed: false,
     composer: emptyComposerStash(),
+    turnStartedAt: null,
+    lastEventAt: Date.now(),
   };
 
   const onEvent = (ev: AgentEvent) => {
@@ -91,10 +98,18 @@ export function createAcpLeafState(
         // A (re)attach replays the whole log; start from scratch.
         state.transcript = emptyTranscript();
         for (const e of ev.events) applyAcpEvent(state.transcript, e);
+        if (state.transcript.turns === 0) state.turnStartedAt = null;
+        state.lastEventAt = Date.now();
         break;
-      case "acp":
+      case "acp": {
+        const before = state.transcript.turns;
         applyAcpEvent(state.transcript, ev.event);
+        const after = state.transcript.turns;
+        if (after === 0) state.turnStartedAt = null;
+        else if (before === 0) state.turnStartedAt = Date.now();
+        state.lastEventAt = Date.now();
         break;
+      }
       case "status":
         state.exited = ev.status.kind === "exited" || ev.status.kind === "crashed";
         break;

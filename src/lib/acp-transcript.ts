@@ -333,3 +333,62 @@ export function lineDiffStats(oldText: string, newText: string): { added: number
   const common = prev[n];
   return { added: n - common, removed: m - common };
 }
+
+/// A running turn's elapsed time: `42s`, `3m 05s`, `1h 02m`.
+export function formatElapsed(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  const pad = (n: number) => String(n).padStart(2, "0");
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.floor(s / 60)}m ${pad(s % 60)}s`;
+  return `${Math.floor(s / 3600)}h ${pad(Math.floor((s % 3600) / 60))}m`;
+}
+
+export function isToolRunning(tool: AcpToolCall): boolean {
+  return tool.status === "pending" || tool.status === "in_progress";
+}
+
+/// The current turn's latest still-running tool call, if any: what the
+/// agent is doing right now.
+export function runningTool(items: AcpItem[]): AcpToolCall | null {
+  for (let i = items.length - 1; i >= 0; i--) {
+    const it = items[i];
+    if (it.kind === "user") return null;
+    if (it.kind === "tool" && isToolRunning(it.tool)) return it.tool;
+  }
+  return null;
+}
+
+/// How a run of tool calls reads once folded, in this order. File kinds
+/// count distinct files; the rest count calls.
+const ACTIVITY_PHRASES: [kind: string, verb: string, one: string, many: string, files: boolean][] = [
+  ["read", "read", "file", "files", true],
+  ["edit", "edited", "file", "files", true],
+  ["delete", "deleted", "file", "files", true],
+  ["move", "moved", "file", "files", true],
+  ["search", "ran", "search", "searches", false],
+  ["execute", "ran", "command", "commands", false],
+  ["fetch", "fetched", "page", "pages", false],
+];
+
+/// One line for a folded run of tool calls: "Read 9 files, ran 2 commands".
+export function activitySummary(tools: AcpToolCall[]): string {
+  const known = new Set(ACTIVITY_PHRASES.map(([k]) => k));
+  const parts: string[] = [];
+  for (const [kind, verb, one, many, files] of ACTIVITY_PHRASES) {
+    const calls = tools.filter((t) => t.kind === kind);
+    if (calls.length === 0) continue;
+    const n = files
+      ? new Set(
+          calls.map((t) => {
+            const diff = t.content.find((c) => c.kind === "diff");
+            return t.locations[0]?.path ?? (diff?.kind === "diff" ? diff.path : t.id);
+          }),
+        ).size
+      : calls.length;
+    parts.push(`${verb} ${n} ${n === 1 ? one : many}`);
+  }
+  const other = tools.filter((t) => !known.has(t.kind)).length;
+  if (other > 0) parts.push(`used ${other} ${other === 1 ? "tool" : "tools"}`);
+  const line = parts.join(", ");
+  return line.charAt(0).toUpperCase() + line.slice(1);
+}

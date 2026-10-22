@@ -448,6 +448,9 @@ export function AcpPromptBox({
 
         <textarea
           ref={inputRef}
+          // The slot reads digits typed here as permission answers while
+          // the draft is empty.
+          data-acp-composer
           value={draft}
           onChange={(e) => {
             setHistoryIndex(null);

@@ -21,6 +21,7 @@ import {
   CircleDot,
   FileText,
   Globe,
+  Layers,
   ListChecks,
   Loader2,
   MessageCircleQuestion,
@@ -63,12 +64,16 @@ import { CodeBlock, langForPath } from "@/components/CodeBlock";
 import { cn } from "@/lib/cn";
 import { asMessage } from "@/lib/errors";
 import {
+  activitySummary,
   canSubmitAnswer,
   commandOf,
   diffText,
+  formatElapsed,
+  isToolRunning,
   lineDiffStats,
   lineOfSnippet,
   questionAnswer,
+  runningTool,
   stopReasonLabel,
   type AcpItem,
   type FormValue,
@@ -81,6 +86,7 @@ import { openWorktreeFile } from "./term-path-links";
 import { useToastsStore } from "@/stores/toasts";
 import { createAcpLeafState, type AcpLeafState } from "./acp-leaf-state";
 import { AcpPromptBox, isInterruptKey } from "./AcpPromptBox";
+import { AcpPromptJumper, promptLabel, type PromptEntry } from "./AcpPromptJumper";
 import { composerControls, type ComposerPicker } from "@/lib/acp-composer";
 import { promptHistory } from "@/lib/acp-prompt";
 import type { AgentLeafMode } from "./agent-leaf-state";
@@ -101,6 +107,41 @@ function useWidth(ref: React.RefObject<HTMLElement | null>): number {
     return () => ro.disconnect();
   }, [ref]);
   return width;
+}
+
+/// After this long without an event mid-turn, the transcript says the
+/// agent is still thinking rather than sitting still.
+const QUIET_MS = 1500;
+
+/// A prompt scrolled above this line (px below the transcript's top, the
+/// pinned header's height) pins as the header.
+const PIN_PX = 28;
+
+/// `Date.now()`, re-read every second while `active`.
+function useNow(active: boolean): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!active) return;
+    setNow(Date.now());
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [active]);
+  return now;
+}
+
+/// Whether a keydown is a plain digit typed where it wouldn't be text:
+/// outside any field, or into the composer while its draft is empty.
+function digitShortcut(e: React.KeyboardEvent): number | null {
+  if (e.metaKey || e.ctrlKey || e.altKey || !/^[1-9]$/.test(e.key)) return null;
+  const el = e.target as HTMLElement;
+  const editable =
+    el.isContentEditable ||
+    el instanceof HTMLInputElement ||
+    el instanceof HTMLSelectElement ||
+    el instanceof HTMLTextAreaElement;
+  const emptyComposer =
+    el instanceof HTMLTextAreaElement && el.dataset.acpComposer !== undefined && el.value === "";
+  return editable && !emptyComposer ? null : Number(e.key);
 }
 
 /// The worktree a transcript belongs to, for opening files it mentions.
@@ -158,22 +199,62 @@ export function AcpAgentSlot({
   const userTexts = t.items.flatMap((it) => (it.kind === "user" ? [it.text] : []));
   const history = useMemo(() => promptHistory(userTexts), [userTexts.join("\u0000")]);
   let lastUser = -1;
+  let lastPrompt = -1;
   let lastTurnEnd = -1;
   t.items.forEach((it, i) => {
+    if (it.kind === "user") lastPrompt = i;
     if (it.kind === "user" && it.text.trim()) lastUser = i;
     if (it.kind === "turnEnd") lastTurnEnd = i;
   });
+  const now = useNow(running && visible);
+  const activeTool = running ? runningTool(t.items) : null;
+  const waitingOnUser = !!t.pendingPermission || !!t.pendingQuestion;
+  const quiet = running && !waitingOnUser && !activeTool && now - state.lastEventAt > QUIET_MS;
+  const pendingRequest = t.items.find(
+    (it): it is Extract<AcpItem, { kind: "permission" }> =>
+      it.kind === "permission" && it.request.id === t.pendingPermission && !it.resolved,
+  )?.request;
 
+  // Items mutate in place (see `applyAcpEvent`), so this isn't memoized.
+  const prompts = t.items.flatMap((it, index): PromptEntry[] =>
+    it.kind === "user" ? [{ index, label: promptLabel(it.text, it.attachments) }] : [],
+  );
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const width = useWidth(rootRef);
   const narrow = width > 0 && width < NARROW_PX;
   const stickToBottom = useRef(true);
+  // The prompt pinned over the transcript: the latest one scrolled fully
+  // past the top. None while a prompt is (partly) on screen at the top.
+  const [pinnedPrompt, setPinnedPrompt] = useState<number | null>(null);
+  function measurePinned() {
+    const el = scrollRef.current;
+    if (!el) return;
+    let pinned: number | null = null;
+    if (el.scrollTop > 0) {
+      const top = el.getBoundingClientRect().top;
+      for (const p of el.querySelectorAll<HTMLElement>("[data-prompt]")) {
+        const r = p.getBoundingClientRect();
+        if (r.top - top > PIN_PX) break;
+        pinned = r.bottom - top <= PIN_PX ? Number(p.dataset.prompt) : null;
+      }
+    }
+    setPinnedPrompt(pinned);
+  }
   useLayoutEffect(() => {
     const el = scrollRef.current;
     if (el && stickToBottom.current) el.scrollTop = el.scrollHeight;
+    measurePinned();
   });
+  function jumpToPrompt(index: number) {
+    const el = scrollRef.current;
+    const p = el?.querySelector<HTMLElement>(`[data-prompt="${index}"]`);
+    if (!el || !p) return;
+    el.scrollTop += p.getBoundingClientRect().top - el.getBoundingClientRect().top - 8;
+    stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+    measurePinned();
+  }
 
   const [focusNonce, setFocusNonce] = useState(0);
   const [editRequest, setEditRequest] = useState<{ text: string; nonce: number } | null>(null);
@@ -247,17 +328,33 @@ export function AcpAgentSlot({
               ? { label: "Working", tone: "busy" }
               : { label: "Ready", tone: "ready" };
   const canEdit = !!state.sessionId && !state.exited && !state.error;
+  // While working: how long, and what it's doing right now.
+  const elapsed =
+    running && !waitingOnUser && state.turnStartedAt !== null
+      ? formatElapsed(now - state.turnStartedAt)
+      : null;
+  const activity = running && !waitingOnUser && activeTool ? toolTitle(activeTool) : null;
 
   return (
     <WorktreeContext.Provider value={worktreeCtx}>
     <div
       ref={rootRef}
-      className="flex h-full w-full flex-col bg-neutral-950 text-[12.5px] text-neutral-300"
-      // ⌃C anywhere in the pane interrupts, as in the agents' TUIs.
+      // Focusable, so a click in the transcript keeps keys in the pane.
+      tabIndex={-1}
+      className="flex h-full w-full flex-col bg-neutral-950 text-[12.5px] text-neutral-300 outline-none"
       onKeyDown={(e) => {
+        // ⌃C anywhere in the pane interrupts, as in the agents' TUIs.
         if (running && isInterruptKey(e)) {
           e.preventDefault();
           void cancel();
+          return;
+        }
+        // 1–9 pick a pending permission's options, in order.
+        const digit = pendingRequest ? digitShortcut(e) : null;
+        const option = digit !== null ? pendingRequest?.options[digit - 1] : undefined;
+        if (pendingRequest && option) {
+          e.preventDefault();
+          void answer(pendingRequest, option.id);
         }
       }}
     >
@@ -278,21 +375,35 @@ export function AcpAgentSlot({
           {t.title ?? t.ready?.agentName ?? "Agent"}
         </span>
         <span
-          className="ml-auto flex shrink-0 items-center gap-1.5 text-neutral-500"
-          title={narrow ? status.label : undefined}
+          className="ml-auto flex min-w-0 max-w-[65%] items-center gap-1.5 text-neutral-500"
+          title={[status.label, elapsed, activity].filter(Boolean).join(" · ")}
         >
-          <span className={cn("h-1.5 w-1.5 rounded-full", STATUS_TONE[status.tone])} />
-          {!narrow && status.label}
+          <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", STATUS_TONE[status.tone])} />
+          {!narrow && <span className="shrink-0">{status.label}</span>}
+          {elapsed && (
+            <span className="shrink-0 tabular-nums">
+              {!narrow && "· "}
+              {elapsed}
+            </span>
+          )}
+          {activity && !narrow && (
+            <span className="min-w-0 truncate font-mono text-neutral-400">· {activity}</span>
+          )}
         </span>
       </div>
 
+      <div className="relative min-h-0 flex-1">
+      {pinnedPrompt !== null && (
+        <AcpPromptJumper prompts={prompts} current={pinnedPrompt} onJump={jumpToPrompt} />
+      )}
       <div
         ref={scrollRef}
         onScroll={(e) => {
           const el = e.currentTarget;
           stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+          measurePinned();
         }}
-        className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden"
+        className="h-full overflow-y-auto overflow-x-hidden"
       >
         <div
           className={cn(
@@ -311,18 +422,23 @@ export function AcpAgentSlot({
             </div>
           )}
           {groupItems(t.items).map((group) =>
-            group.tools ? (
-              // Consecutive tool calls read as one list, not a stack of cards.
-              <div key={group.start} className="flex min-w-0 flex-col">
-                {group.items.map((item, j) => (
-                  <Row
-                    key={group.start + j}
-                    item={item}
-                    pending={false}
-                    onAnswer={answer}
-                    onAnswerQuestion={answerQuestion}
-                  />
-                ))}
+            group.activity ? (
+              <ActivityGroup
+                key={group.start}
+                items={group.items}
+                // Runs before the latest prompt (or all, once idle) fold.
+                settled={!running || group.start < lastPrompt}
+              />
+            ) : group.items[0].kind === "user" ? (
+              // Prompts are anchors for the pinned header and its jumps.
+              <div key={group.start} data-prompt={group.start} className="flex min-w-0 flex-col">
+                <Row
+                  item={group.items[0]}
+                  pending={false}
+                  onAnswer={answer}
+                  onAnswerQuestion={answerQuestion}
+                  onEdit={group.start === lastUser && canEdit ? editLast : undefined}
+                />
               </div>
             ) : (
               <Row
@@ -331,12 +447,13 @@ export function AcpAgentSlot({
                 pending={isPending(group.items[0], t.pendingPermission, t.pendingQuestion)}
                 onAnswer={answer}
                 onAnswerQuestion={answerQuestion}
-                onEdit={group.start === lastUser && canEdit ? editLast : undefined}
                 latest={group.start === lastTurnEnd}
               />
             ),
           )}
+          {quiet && <ThinkingRow />}
         </div>
+      </div>
       </div>
 
       {t.plan.length > 0 && <PlanList entries={t.plan} narrow={narrow} />}
@@ -381,19 +498,106 @@ function isPending(item: AcpItem, permission: string | null, question: string | 
   );
 }
 
-type ItemGroup = { start: number; tools: boolean; items: AcpItem[] };
+type ItemGroup = { start: number; activity: boolean; items: AcpItem[] };
 
-/// Runs of tool calls group together; everything else stands alone.
-/// `start` is the first item's index, a stable key as items append.
+/// Tool calls and the thoughts between them, which fold together. Leaving
+/// plan mode carries the plan, so it stays out (always visible).
+function isActivity(item: AcpItem): boolean {
+  return item.kind === "thought" || (item.kind === "tool" && item.tool.kind !== "switch_mode");
+}
+
+/// Runs of activity group together; everything else stands alone. A run
+/// with no tool call (a lone thought) stands alone too. `start` is the
+/// first item's index, a stable key as items append.
 function groupItems(items: AcpItem[]): ItemGroup[] {
   const groups: ItemGroup[] = [];
   items.forEach((item, i) => {
     const last = groups[groups.length - 1];
-    const tool = item.kind === "tool";
-    if (tool && last?.tools) last.items.push(item);
-    else groups.push({ start: i, tools: tool, items: [item] });
+    const activity = isActivity(item);
+    if (activity && last?.activity) last.items.push(item);
+    else groups.push({ start: i, activity, items: [item] });
   });
-  return groups;
+  return groups.flatMap((g) =>
+    g.activity && !g.items.some((it) => it.kind === "tool")
+      ? g.items.map((item, j) => ({ start: g.start + j, activity: false, items: [item] }))
+      : [g],
+  );
+}
+
+/// Fold a settled run once it has this many tool calls.
+const FOLD_MIN_TOOLS = 2;
+
+/// A run of tool calls (and thoughts) as one quiet list. While the turn
+/// works on it the rows show; once settled, it folds to a one-line summary
+/// ("Read 9 files, ran 2 commands") that expands back.
+function ActivityGroup({ items, settled }: { items: AcpItem[]; settled: boolean }) {
+  const [open, setOpen] = useState(false);
+  const tools = items.flatMap((it) => (it.kind === "tool" ? [it.tool] : []));
+  const rows = (
+    <div className="flex min-w-0 flex-col">
+      {items.map((item, j) =>
+        item.kind === "tool" ? (
+          <ToolRow key={j} tool={item.tool} />
+        ) : item.kind === "thought" ? (
+          <div key={j} className="py-[3px]">
+            <Thought text={item.text} />
+          </div>
+        ) : null,
+      )}
+    </div>
+  );
+  if (!settled || tools.length < FOLD_MIN_TOOLS) return rows;
+  let added = 0;
+  let removed = 0;
+  let edits = false;
+  for (const tool of tools) {
+    const s = diffStats(tool);
+    if (!s) continue;
+    edits = true;
+    added += s.added;
+    removed += s.removed;
+  }
+  const failed = tools.filter((t) => t.status === "failed").length;
+  return (
+    <div className="min-w-0">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        className="group/fold -mx-1.5 flex w-[calc(100%+0.75rem)] items-center gap-2 rounded-md px-1.5 py-[3px] text-left text-[11.5px] hover:bg-neutral-900"
+      >
+        <Layers size={12} className="shrink-0 text-neutral-500" />
+        <span className="min-w-0 truncate text-neutral-400">{activitySummary(tools)}</span>
+        {edits && <DiffCounts added={added} removed={removed} />}
+        {failed > 0 && <span className="shrink-0 text-[10.5px] text-rose-400">{failed} failed</span>}
+        <ChevronRight
+          size={11}
+          className={cn(
+            "ml-auto shrink-0 text-neutral-500 transition",
+            open ? "rotate-90" : "opacity-0 group-hover/fold:opacity-100",
+          )}
+        />
+      </button>
+      {open && <div className="mb-1 ml-[5px] mt-0.5 border-l border-neutral-800 pl-3.5">{rows}</div>}
+    </div>
+  );
+}
+
+/// Mid-turn, with nothing streaming or running: the agent is thinking.
+function ThinkingRow() {
+  return (
+    <div className="flex items-center gap-2 text-[11px] text-neutral-500" role="status">
+      <span className="flex gap-[3px]">
+        {[0, 150, 300].map((delay) => (
+          <span
+            key={delay}
+            className="h-1 w-1 animate-pulse rounded-full bg-neutral-500"
+            style={{ animationDelay: `${delay}ms` }}
+          />
+        ))}
+      </span>
+      Thinking…
+    </div>
+  );
 }
 
 const Row = memo(function Row({
@@ -560,7 +764,7 @@ function ToolRow({ tool }: { tool: AcpToolCall }) {
   const hasBody = toolHasBody(tool);
   const target = primaryTarget(tool);
   const stats = diffStats(tool);
-  const running = tool.status === "pending" || tool.status === "in_progress";
+  const running = isToolRunning(tool);
   const failed = tool.status === "failed";
   const Icon = running ? Loader2 : (KIND_ICON[tool.kind] ?? Wrench);
   return (
@@ -902,18 +1106,25 @@ function PermissionCard({
       <div className="mb-2 break-words font-mono text-[11.5px] text-neutral-300">{request.title}</div>
       {hasBody && <ToolBody tool={request.tool} />}
       <PendingActions>
-        {request.options.map((o) => (
+        {request.options.map((o, i) => (
           <button
             key={o.id}
             onClick={() => onAnswer(request, o.id)}
-            className={
+            title={i < 9 ? `${o.name} (${i + 1})` : undefined}
+            className={cn(
+              "gap-1.5",
               o.kind === "allow_once"
                 ? primaryButton
                 : o.kind.startsWith("allow")
                   ? secondaryButton
-                  : ghostButton
-            }
+                  : ghostButton,
+            )}
           >
+            {i < 9 && (
+              <kbd className="font-mono text-[10px] opacity-60" aria-hidden>
+                {i + 1}
+              </kbd>
+            )}
             {o.name}
           </button>
         ))}
