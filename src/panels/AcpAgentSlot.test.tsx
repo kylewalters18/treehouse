@@ -4,7 +4,8 @@ import userEvent from "@testing-library/user-event";
 
 vi.mock("@/ipc/client", () => ({
   acpAnswerQuestion: vi.fn(async () => {}),
-  acpCancel: vi.fn(async () => {}),
+  acpCancel: vi.fn(async () => []),
+  acpRemoveFollowup: vi.fn(async () => null),
   acpRespondPermission: vi.fn(async () => {}),
   acpSendPrompt: vi.fn(async () => {}),
   acpSetConfig: vi.fn(async () => {}),
@@ -403,5 +404,119 @@ describe("pinned prompt header", () => {
     // Prompt 1 sits 500px above the transcript's top; 8px of headroom.
     expect(scroller.scrollTop).toBe(300 - 500 - 8);
     expect(screen.queryByRole("listbox")).toBeNull();
+  });
+});
+
+describe("queued follow-ups", () => {
+  const queued: AcpEvent[] = [
+    READY,
+    { kind: "userMessage", text: "first", attachments: [] },
+    {
+      kind: "followups",
+      items: [
+        { id: "1", text: "then run the tests", attachments: [] },
+        { id: "2", text: "and lint", attachments: [{ kind: "file", path: "src/lib.rs" }] },
+      ],
+    },
+  ];
+  const composer = () => screen.getByRole("textbox") as HTMLTextAreaElement;
+
+  it("lists them above the composer, next first", () => {
+    renderSlot(queued);
+    const list = screen.getByLabelText("Queued prompts");
+    expect(list.textContent).toContain("Nextthen run the tests");
+    expect(list.textContent).toContain("Queuedand lint");
+  });
+
+  it("removes one, and takes one back into the composer to edit", async () => {
+    renderSlot(queued);
+    await userEvent.click(screen.getAllByRole("button", { name: "Remove queued prompt" })[0]);
+    expect(client.acpRemoveFollowup).toHaveBeenCalledWith("agent-1", "1");
+    expect(composer().value).toBe("");
+
+    vi.mocked(client.acpRemoveFollowup).mockResolvedValueOnce({
+      id: "2",
+      text: "and lint",
+      attachments: [{ kind: "file", path: "src/lib.rs" }],
+    });
+    await userEvent.click(screen.getAllByRole("button", { name: "Edit queued prompt" })[1]);
+    await waitFor(() => expect(composer().value).toBe("and lint"));
+    expect(screen.getByTitle("src/lib.rs")).toBeTruthy();
+    expect(screen.getByText(/Editing a queued prompt/)).toBeTruthy();
+    // Sent back to its place (second), not the end.
+    await userEvent.type(composer(), " too{Enter}");
+    expect(client.acpSendPrompt).toHaveBeenCalledWith(
+      "agent-1",
+      "and lint too",
+      [{ kind: "file", path: "src/lib.rs" }],
+      false,
+      1,
+    );
+  });
+
+  it("puts the original back in its place when the edit is abandoned", async () => {
+    vi.mocked(client.acpRemoveFollowup).mockResolvedValueOnce({
+      id: "1",
+      text: "then run the tests",
+      attachments: [],
+    });
+    renderSlot(queued);
+    await userEvent.type(composer(), "my draft");
+    await userEvent.click(screen.getAllByRole("button", { name: "Edit queued prompt" })[0]);
+    await waitFor(() => expect(composer().value).toBe("then run the tests"));
+    await userEvent.type(composer(), " now{Escape}");
+    expect(client.acpSendPrompt).toHaveBeenCalledWith("agent-1", "then run the tests", [], false, 0);
+    expect(composer().value).toBe("my draft");
+  });
+
+  it("puts them back in the composer when the turn is stopped", async () => {
+    vi.mocked(client.acpCancel).mockResolvedValueOnce([
+      { id: "1", text: "then run the tests", attachments: [] },
+      { id: "2", text: "and lint", attachments: [] },
+    ]);
+    renderSlot(queued);
+    await userEvent.click(composer());
+    await userEvent.keyboard("{Escape}");
+    expect(client.acpCancel).toHaveBeenCalledWith("agent-1");
+    await waitFor(() => expect(composer().value).toBe("then run the tests\n\nand lint"));
+  });
+});
+
+describe("⌘F", () => {
+  const events: AcpEvent[] = [
+    READY,
+    { kind: "userMessage", text: "check the cache", attachments: [] },
+    {
+      kind: "tool",
+      tool: { ...toolCall("t1", "execute", "completed", "cargo test"), content: [{ kind: "text", text: "cache miss in lru.rs" }] },
+    },
+    { kind: "tool", tool: toolCall("t2", "read", "completed", "Read lru.rs", "/repo/lru.rs") },
+    { kind: "agentText", text: "The cache is fine." },
+    { kind: "turnEnded", stopReason: "end_turn" },
+  ];
+
+  it("finds text, opening folded tool output that matches", async () => {
+    renderSlot(events);
+    expect(screen.queryByText("cache miss in lru.rs")).toBeNull();
+    await userEvent.click(screen.getByRole("textbox"));
+    await userEvent.keyboard("{Meta>}f{/Meta}");
+    const find = screen.getByLabelText("Find in transcript");
+    expect(document.activeElement).toBe(find);
+    await userEvent.keyboard("cache");
+    expect(screen.getByText("cache miss in lru.rs")).toBeTruthy();
+    // The prompt, the tool output, the reply.
+    await waitFor(() => expect(screen.getByRole("search").textContent).toContain("1/3"));
+    await userEvent.keyboard("{Enter}");
+    expect(screen.getByRole("search").textContent).toContain("2/3");
+    await userEvent.keyboard("{Shift>}{Enter}{Enter}{/Shift}");
+    expect(screen.getByRole("search").textContent).toContain("3/3");
+  });
+
+  it("closes with Esc and refolds", async () => {
+    renderSlot(events);
+    await userEvent.click(screen.getByRole("textbox"));
+    await userEvent.keyboard("{Meta>}f{/Meta}cache{Escape}");
+    expect(screen.queryByRole("search")).toBeNull();
+    expect(screen.queryByText("cache miss in lru.rs")).toBeNull();
   });
 });

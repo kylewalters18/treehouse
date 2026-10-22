@@ -14,6 +14,11 @@ if (!Element.prototype.scrollIntoView) {
   Element.prototype.scrollIntoView = function () {};
 }
 
+// Nor Range geometry, which the ACP find bar reads to place hits.
+if (!Range.prototype.getBoundingClientRect) {
+  Range.prototype.getBoundingClientRect = () => new DOMRect();
+}
+
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async () => {
     throw new Error("invoke called without a test-level mock");

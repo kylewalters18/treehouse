@@ -35,12 +35,14 @@ import {
   SquareTerminal,
   Trash2,
   Wrench,
+  X,
   type LucideIcon,
 } from "lucide-react";
 
 import {
   acpAnswerQuestion,
   acpCancel,
+  acpRemoveFollowup,
   acpRespondPermission,
   acpSendPrompt,
   acpSetConfig,
@@ -49,6 +51,7 @@ import {
 } from "@/ipc/client";
 import type {
   AcpAttachment,
+  AcpFollowup,
   AcpFormField,
   AcpPermissionRequest,
   AcpPlanEntry,
@@ -87,6 +90,7 @@ import { useToastsStore } from "@/stores/toasts";
 import { createAcpLeafState, type AcpLeafState } from "./acp-leaf-state";
 import { AcpPromptBox, isInterruptKey } from "./AcpPromptBox";
 import { AcpPromptJumper, promptLabel, type PromptEntry } from "./AcpPromptJumper";
+import { AcpFindBar, FindQueryContext } from "./AcpFindBar";
 import { composerControls, type ComposerPicker } from "@/lib/acp-composer";
 import { promptHistory } from "@/lib/acp-prompt";
 import type { AgentLeafMode } from "./agent-leaf-state";
@@ -257,7 +261,33 @@ export function AcpAgentSlot({
   }
 
   const [focusNonce, setFocusNonce] = useState(0);
+  // ⌘F: null = closed.
+  const [findQuery, setFindQuery] = useState<string | null>(null);
+  const [findFocus, setFindFocus] = useState(0);
+  function closeFind() {
+    setFindQuery(null);
+    setFocusNonce((n) => n + 1);
+  }
   const [editRequest, setEditRequest] = useState<{ text: string; nonce: number } | null>(null);
+  const [requeueRequest, setRequeueRequest] = useState<{
+    followup: AcpFollowup;
+    position: number;
+    nonce: number;
+  } | null>(null);
+  const [restoreRequest, setRestoreRequest] = useState<{
+    text: string;
+    attachments: AcpAttachment[];
+    nonce: number;
+  } | null>(null);
+  /// Put prompts that never went out back in the composer.
+  function restore(followups: AcpFollowup[]) {
+    if (followups.length === 0) return;
+    setRestoreRequest((prev) => ({
+      text: followups.map((f) => f.text.trim()).filter(Boolean).join("\n\n"),
+      attachments: followups.flatMap((f) => f.attachments),
+      nonce: (prev?.nonce ?? 0) + 1,
+    }));
+  }
   const editLast = useMemo(
     () => (text: string) => setEditRequest((prev) => ({ text, nonce: (prev?.nonce ?? 0) + 1 })),
     [],
@@ -270,11 +300,16 @@ export function AcpAgentSlot({
     useToastsStore.getState().push({ kind: "error", title, body: asMessage(e) });
   }
 
-  async function send(text: string, attachments: AcpAttachment[], interrupt: boolean): Promise<boolean> {
+  async function send(
+    text: string,
+    attachments: AcpAttachment[],
+    interrupt: boolean,
+    position?: number,
+  ): Promise<boolean> {
     if (!state.sessionId || state.exited) return false;
     stickToBottom.current = true;
     try {
-      await acpSendPrompt(state.sessionId, text, attachments, interrupt);
+      await acpSendPrompt(state.sessionId, text, attachments, interrupt, position);
       return true;
     } catch (e) {
       reportError("Couldn't send prompt", e);
@@ -284,7 +319,28 @@ export function AcpAgentSlot({
 
   async function cancel() {
     if (!state.sessionId) return;
-    await acpCancel(state.sessionId).catch((e) => reportError("Couldn't cancel", e));
+    // Stopping takes queued follow-ups back into the composer, unsent.
+    const dropped = await acpCancel(state.sessionId).catch((e) => {
+      reportError("Couldn't cancel", e);
+      return [];
+    });
+    restore(dropped);
+  }
+
+  /// Take a queued follow-up back. To edit (`position` = its place), it
+  /// goes to the composer, which sends it back to that place.
+  async function unqueue(f: AcpFollowup, position: number | null) {
+    if (!state.sessionId) return;
+    try {
+      const removed = await acpRemoveFollowup(state.sessionId, f.id);
+      if (!removed) {
+        useToastsStore.getState().push({ kind: "info", title: "Already sent" });
+      } else if (position !== null) {
+        setRequeueRequest((prev) => ({ followup: removed, position, nonce: (prev?.nonce ?? 0) + 1 }));
+      }
+    } catch (e) {
+      reportError("Couldn't change the queued prompt", e);
+    }
   }
 
   async function setSetting(picker: ComposerPicker, value: string) {
@@ -337,12 +393,19 @@ export function AcpAgentSlot({
 
   return (
     <WorktreeContext.Provider value={worktreeCtx}>
+    <FindQueryContext.Provider value={(findQuery ?? "").toLowerCase()}>
     <div
       ref={rootRef}
       // Focusable, so a click in the transcript keeps keys in the pane.
       tabIndex={-1}
       className="flex h-full w-full flex-col bg-neutral-950 text-[12.5px] text-neutral-300 outline-none"
       onKeyDown={(e) => {
+        if (e.metaKey && !e.shiftKey && !e.altKey && !e.ctrlKey && e.key.toLowerCase() === "f") {
+          e.preventDefault();
+          setFindQuery((q) => q ?? "");
+          setFindFocus((n) => n + 1);
+          return;
+        }
         // ⌃C anywhere in the pane interrupts, as in the agents' TUIs.
         if (running && isInterruptKey(e)) {
           e.preventDefault();
@@ -395,6 +458,16 @@ export function AcpAgentSlot({
       <div className="relative min-h-0 flex-1">
       {pinnedPrompt !== null && (
         <AcpPromptJumper prompts={prompts} current={pinnedPrompt} onJump={jumpToPrompt} />
+      )}
+      {findQuery !== null && (
+        <AcpFindBar
+          scrollRef={scrollRef}
+          query={findQuery}
+          onQuery={setFindQuery}
+          focusNonce={findFocus}
+          onClose={closeFind}
+          onNavigate={() => (stickToBottom.current = false)}
+        />
       )}
       <div
         ref={scrollRef}
@@ -457,6 +530,14 @@ export function AcpAgentSlot({
       </div>
 
       {t.plan.length > 0 && <PlanList entries={t.plan} narrow={narrow} />}
+      {t.followups.length > 0 && (
+        <FollowupList
+          followups={t.followups}
+          narrow={narrow}
+          onEdit={(f, i) => void unqueue(f, i)}
+          onRemove={(f) => void unqueue(f, null)}
+        />
+      )}
 
       <AcpPromptBox
         worktreeId={worktreeId}
@@ -474,10 +555,13 @@ export function AcpAgentSlot({
         history={history}
         editRequest={editRequest}
         insertRequest={insertRequest}
+        restoreRequest={restoreRequest}
+        requeueRequest={requeueRequest}
         narrow={narrow}
         stash={state.composer}
       />
     </div>
+    </FindQueryContext.Provider>
     </WorktreeContext.Provider>
   );
 }
@@ -533,6 +617,12 @@ const FOLD_MIN_TOOLS = 2;
 function ActivityGroup({ items, settled }: { items: AcpItem[]; settled: boolean }) {
   const [open, setOpen] = useState(false);
   const tools = items.flatMap((it) => (it.kind === "tool" ? [it.tool] : []));
+  const find = useContext(FindQueryContext);
+  const found =
+    !!find &&
+    items.some((it) =>
+      it.kind === "tool" ? toolMatches(it.tool, find) : it.kind === "thought" && it.text.toLowerCase().includes(find),
+    );
   const rows = (
     <div className="flex min-w-0 flex-col">
       {items.map((item, j) =>
@@ -546,7 +636,7 @@ function ActivityGroup({ items, settled }: { items: AcpItem[]; settled: boolean 
       )}
     </div>
   );
-  if (!settled || tools.length < FOLD_MIN_TOOLS) return rows;
+  if (!settled || tools.length < FOLD_MIN_TOOLS || found) return rows;
   let added = 0;
   let removed = 0;
   let edits = false;
@@ -709,7 +799,9 @@ function ErrorRow({ message }: { message: string }) {
 }
 
 function Thought({ text }: { text: string }) {
-  const [open, setOpen] = useState(false);
+  const [userOpen, setOpen] = useState(false);
+  const find = useContext(FindQueryContext);
+  const open = userOpen || (!!find && text.toLowerCase().includes(find));
   return (
     <div className="text-[11px] text-neutral-500">
       <button
@@ -760,7 +852,11 @@ function diffStats(tool: AcpToolCall): { added: number; removed: number } | null
 /// One tool call as a quiet row: kind icon (a spinner while it runs),
 /// title, edit counts. Click to expand what it did.
 function ToolRow({ tool }: { tool: AcpToolCall }) {
-  const [open, setOpen] = useState(false);
+  const [userOpen, setOpen] = useState(false);
+  const find = useContext(FindQueryContext);
+  // Opened by a find hit in its body (the title is always on screen).
+  const found = !!find && toolMatches(tool, find, false);
+  const open = userOpen || found;
   const hasBody = toolHasBody(tool);
   const target = primaryTarget(tool);
   const stats = diffStats(tool);
@@ -809,11 +905,26 @@ function ToolRow({ tool }: { tool: AcpToolCall }) {
       </button>
       {open && (
         <div className="mb-2 ml-[5px] mt-1 border-l border-neutral-800 pl-3.5">
-          <ToolBody tool={tool} />
+          <ToolBody tool={tool} full={found} />
         </div>
       )}
     </div>
   );
+}
+
+/// The text a tool row shows when open (and, with `title`, folded), for
+/// find: its command, output, diffs, paths, or raw input.
+function toolMatches(tool: AcpToolCall, query: string, title = true): boolean {
+  const parts = [
+    ...(title ? [toolTitle(tool)] : []),
+    commandOf(tool) ?? "",
+    ...tool.locations.map((l) => l.path),
+    ...tool.content.map((c) =>
+      c.kind === "text" ? c.text : c.kind === "diff" ? `${c.path}\n${c.oldText ?? ""}\n${c.newText}` : "",
+    ),
+    tool.content.length === 0 ? (tool.rawInput ?? "") : "",
+  ];
+  return parts.some((p) => p.toLowerCase().includes(query));
 }
 
 /// A tool's display title: the agent's (minus wrapping backticks), else
@@ -933,8 +1044,10 @@ function toolHasBody(tool: AcpToolCall): boolean {
 /// Long code collapses past this many lines (see `CodeBlock`).
 const BODY_MAX_LINES = 16;
 
-function ToolBody({ tool }: { tool: AcpToolCall }) {
+function ToolBody({ tool, full = false }: { tool: AcpToolCall; full?: boolean }) {
   const command = commandOf(tool);
+  // `full`: a find hit may be past the collapse.
+  const maxLines = full ? undefined : BODY_MAX_LINES;
   // Plans (leaving plan mode) and reasoning come as prose, not code.
   const prose = tool.kind === "switch_mode" || tool.kind === "think";
   return (
@@ -944,13 +1057,13 @@ function ToolBody({ tool }: { tool: AcpToolCall }) {
         .map((l) => (
           <FileLink key={`${l.path}:${l.line}`} target={{ path: l.path, line: l.line }} />
         ))}
-      {command && <CodeBlock code={command} lang="bash" maxLines={BODY_MAX_LINES} compact />}
+      {command && <CodeBlock code={command} lang="bash" maxLines={maxLines} compact />}
       {tool.content.map((c, i) =>
         c.kind === "text" ? (
           prose ? (
             <ForgeMarkdown key={i} source={c.text} codeBlocks />
           ) : (
-            <CodeBlock key={i} code={c.text} maxLines={BODY_MAX_LINES} compact />
+            <CodeBlock key={i} code={c.text} maxLines={maxLines} compact />
           )
         ) : c.kind === "diff" ? (
           <div key={i} className="flex min-w-0 flex-col gap-1">
@@ -963,10 +1076,10 @@ function ToolBody({ tool }: { tool: AcpToolCall }) {
               }}
             />
             {c.oldText ? (
-              <CodeBlock code={diffText(c.oldText, c.newText)} lang="diff" maxLines={BODY_MAX_LINES} compact />
+              <CodeBlock code={diffText(c.oldText, c.newText)} lang="diff" maxLines={maxLines} compact />
             ) : (
               // A new file: its own language reads better than all-`+`.
-              <CodeBlock code={c.newText} lang={langForPath(c.path)} maxLines={BODY_MAX_LINES} compact />
+              <CodeBlock code={c.newText} lang={langForPath(c.path)} maxLines={maxLines} compact />
             )}
           </div>
         ) : (
@@ -976,7 +1089,7 @@ function ToolBody({ tool }: { tool: AcpToolCall }) {
         ),
       )}
       {tool.content.length === 0 && !command && tool.rawInput && (
-        <CodeBlock code={tool.rawInput} lang="json" maxLines={BODY_MAX_LINES} compact />
+        <CodeBlock code={tool.rawInput} lang="json" maxLines={maxLines} compact />
       )}
     </div>
   );
@@ -1368,6 +1481,69 @@ function PlanList({ entries, narrow }: { entries: AcpPlanEntry[]; narrow: boolea
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+/// Prompts held for after the running turn, docked above the composer:
+/// each can be taken back to edit, or dropped.
+function FollowupList({
+  followups,
+  narrow,
+  onEdit,
+  onRemove,
+}: {
+  followups: AcpFollowup[];
+  narrow: boolean;
+  /// `i`: its place in the queue, to go back to.
+  onEdit: (f: AcpFollowup, i: number) => void;
+  onRemove: (f: AcpFollowup) => void;
+}) {
+  return (
+    <div
+      className={cn("mx-auto flex w-full max-w-3xl shrink-0 flex-col gap-1 pb-1.5", narrow ? "px-2" : "px-3")}
+      aria-label="Queued prompts"
+    >
+      {followups.map((f, i) => {
+        const files = f.attachments.length;
+        return (
+          <div
+            key={f.id}
+            className="group/queued flex min-w-0 items-center gap-2 rounded-md border border-dashed border-neutral-800 bg-neutral-900/40 px-2.5 py-1 text-[11.5px]"
+          >
+            <span className="shrink-0 text-[10.5px] uppercase tracking-[0.08em] text-neutral-500">
+              {i === 0 ? "Next" : "Queued"}
+            </span>
+            <span className="min-w-0 flex-1 truncate text-neutral-300" title={f.text}>
+              {promptLabel(f.text, f.attachments.map((a) => (a.kind === "file" ? a.path : "image")))}
+            </span>
+            {files > 0 && f.text.trim() && (
+              <span className="flex shrink-0 items-center gap-0.5 text-[10.5px] text-neutral-500">
+                <Paperclip size={10} />
+                {files}
+              </span>
+            )}
+            <span className="flex shrink-0 items-center gap-0.5">
+              <button
+                onClick={() => onEdit(f, i)}
+                title="Edit (it keeps its place in the queue)"
+                aria-label="Edit queued prompt"
+                className="flex h-5 w-5 items-center justify-center rounded text-neutral-500 transition hover:bg-neutral-800 hover:text-neutral-100"
+              >
+                <Pencil size={11} />
+              </button>
+              <button
+                onClick={() => onRemove(f)}
+                title="Remove from the queue"
+                aria-label="Remove queued prompt"
+                className="flex h-5 w-5 items-center justify-center rounded text-neutral-500 transition hover:bg-neutral-800 hover:text-neutral-100"
+              >
+                <X size={11} />
+              </button>
+            </span>
+          </div>
+        );
+      })}
     </div>
   );
 }

@@ -2,6 +2,7 @@ import type {
   AcpCommand,
   AcpConfigOption,
   AcpEvent,
+  AcpFollowup,
   AcpModes,
   AcpUsage,
   AcpPermissionRequest,
@@ -64,6 +65,8 @@ export type AcpTranscript = {
   pendingChanges: TurnFileChange[] | null;
   /// Session settings: model, effort, mode, fast, …
   config: AcpConfigOption[];
+  /// Prompts held for after the running turn, oldest first.
+  followups: AcpFollowup[];
 };
 
 export function emptyTranscript(): AcpTranscript {
@@ -80,6 +83,7 @@ export function emptyTranscript(): AcpTranscript {
     usage: null,
     pendingChanges: null,
     config: [],
+    followups: [],
   };
 }
 
@@ -118,6 +122,9 @@ export function applyAcpEvent(t: AcpTranscript, ev: AcpEvent): void {
       break;
     case "config":
       t.config = ev.options;
+      break;
+    case "followups":
+      t.followups = ev.items;
       break;
     case "agentText":
       if (last?.kind === "agent") {

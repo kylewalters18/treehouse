@@ -21,7 +21,7 @@ import {
 } from "lucide-react";
 
 import { listFiles } from "@/ipc/client";
-import type { AcpAttachment, AcpCommand, AcpUsage, WorktreeId } from "@/ipc/types";
+import type { AcpAttachment, AcpCommand, AcpFollowup, AcpUsage, WorktreeId } from "@/ipc/types";
 import {
   activeToken,
   applyCompletion,
@@ -89,6 +89,8 @@ export function AcpPromptBox({
   history,
   editRequest,
   insertRequest = null,
+  restoreRequest = null,
+  requeueRequest = null,
   narrow = false,
   stash,
 }: {
@@ -104,7 +106,12 @@ export function AcpPromptBox({
   imagesAllowed: boolean;
   /// Resolves false when sending failed (the draft is kept). `interrupt`
   /// cancels the running turn first.
-  onSend: (text: string, attachments: AcpAttachment[], interrupt: boolean) => Promise<boolean>;
+  onSend: (
+    text: string,
+    attachments: AcpAttachment[],
+    interrupt: boolean,
+    position?: number,
+  ) => Promise<boolean>;
   onCancel: () => void;
   /// Change a session setting through the picker's channel.
   onSetting: (picker: ComposerPicker, value: string) => void;
@@ -117,6 +124,13 @@ export function AcpPromptBox({
   /// Append text to the draft (e.g. an issue reference); a new nonce
   /// inserts again.
   insertRequest?: { text: string; nonce: number } | null;
+  /// Edit a held follow-up taken out of the queue (at `position`): sending
+  /// puts it back there; Esc puts the original back.
+  requeueRequest?: { followup: AcpFollowup; position: number; nonce: number } | null;
+  /// Take back prompts that weren't sent (held follow-ups): their text
+  /// joins the draft, their attachments the composer's. A new nonce
+  /// restores again.
+  restoreRequest?: { text: string; attachments: AcpAttachment[]; nonce: number } | null;
   /// Narrow pane: icon-only pickers, shorter copy, no Interrupt button
   /// (⌘⏎ still interrupts).
   narrow?: boolean;
@@ -147,6 +161,8 @@ export function AcpPromptBox({
   const savedDraft = useRef("");
   /// Editing a sent prompt: sending it interrupts a running turn.
   const [editing, setEditing] = useState(false);
+  /// Editing a held follow-up: where it goes back to, and as it was.
+  const [requeue, setRequeue] = useState<{ followup: AcpFollowup; position: number } | null>(null);
   /// The mode before plan mode was toggled on, to toggle back to.
   const lastNonPlan = useRef<string | null>(null);
   const modeNow = controls.mode?.option.current;
@@ -160,7 +176,8 @@ export function AcpPromptBox({
 
   useEffect(() => {
     if (!editRequest) return;
-    if (!editing) savedDraft.current = draft;
+    if (requeue) putBack();
+    else if (!editing) savedDraft.current = draft;
     setEditing(true);
     setHistoryIndex(null);
     replaceDraft(editRequest.text);
@@ -254,9 +271,52 @@ export function AcpPromptBox({
   }
 
   function stopEditing() {
+    if (requeue) {
+      putBack();
+      setImages(savedAttachments.current.images);
+      setAttached(savedAttachments.current.attached);
+    }
     setEditing(false);
     replaceDraft(savedDraft.current);
   }
+
+  /// Abandon a follow-up edit: the original goes back to its place.
+  function putBack() {
+    if (!requeue) return;
+    const { followup, position } = requeue;
+    setRequeue(null);
+    void onSend(followup.text, followup.attachments, false, position);
+  }
+
+  // A follow-up edit swaps the composer's attachments too; held here.
+  const savedAttachments = useRef<{ images: PastedImage[]; attached: string[] }>({
+    images: [],
+    attached: [],
+  });
+  const seenRequeue = useRef(requeueRequest?.nonce);
+  useEffect(() => {
+    if (!requeueRequest || requeueRequest.nonce === seenRequeue.current) return;
+    seenRequeue.current = requeueRequest.nonce;
+    if (requeue) putBack();
+    else if (!editing) {
+      savedDraft.current = inputRef.current?.value ?? draft;
+      savedAttachments.current = { images, attached };
+    }
+    setEditing(false);
+    const { followup, position } = requeueRequest;
+    setRequeue({ followup, position });
+    setHistoryIndex(null);
+    replaceDraft(followup.text);
+    setAttached(followup.attachments.flatMap((a) => (a.kind === "file" ? [a.path] : [])));
+    setImages(
+      followup.attachments.flatMap((a) =>
+        a.kind === "image"
+          ? [{ mimeType: a.mimeType, data: a.data, url: `data:${a.mimeType};base64,${a.data}` }]
+          : [],
+      ),
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [requeueRequest?.nonce]);
 
   function complete(s: Suggestion) {
     if (!token) return;
@@ -279,6 +339,25 @@ export function AcpPromptBox({
 
   const empty = !draft.trim() && images.length === 0 && attached.length === 0;
 
+  const seenRestore = useRef(restoreRequest?.nonce);
+  useEffect(() => {
+    if (!restoreRequest || restoreRequest.nonce === seenRestore.current) return;
+    seenRestore.current = restoreRequest.nonce;
+    const cur = (inputRef.current?.value ?? draft).trim();
+    const text = restoreRequest.text.trim();
+    replaceDraft(cur && text ? `${text}\n\n${cur}` : text || cur);
+    setHistoryIndex(null);
+    const files = restoreRequest.attachments.flatMap((a) => (a.kind === "file" ? [a.path] : []));
+    const pics = restoreRequest.attachments.flatMap((a) =>
+      a.kind === "image"
+        ? [{ mimeType: a.mimeType, data: a.data, url: `data:${a.mimeType};base64,${a.data}` }]
+        : [],
+    );
+    if (files.length) setAttached((prev) => [...prev, ...files.filter((f) => !prev.includes(f))]);
+    if (pics.length) setImages((prev) => [...prev, ...pics]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [restoreRequest?.nonce]);
+
   async function send(interrupt = false) {
     if (!canSend || disabled || empty) return;
     const cut = running && (interrupt || editing);
@@ -292,16 +371,22 @@ export function AcpPromptBox({
       ...images.map((i) => ({ kind: "image" as const, mimeType: i.mimeType, data: i.data })),
     ];
     const sent = { draft, images, attached };
-    setDraft("");
-    setImages([]);
-    setAttached([]);
+    // An edited follow-up returns to its place (unless it interrupts).
+    const position = requeue && !interrupt ? requeue.position : undefined;
+    const wasRequeue = requeue;
+    const restored = requeue ? { draft: savedDraft.current, ...savedAttachments.current } : null;
+    setDraft(restored?.draft ?? "");
+    setImages(restored?.images ?? []);
+    setAttached(restored?.attached ?? []);
     setNotice(null);
     setHistoryIndex(null);
     setEditing(false);
-    if (!(await onSend(text, attachments, cut))) {
+    setRequeue(null);
+    if (!(await onSend(text, attachments, cut, position))) {
       setDraft(sent.draft);
       setImages(sent.images);
       setAttached(sent.attached);
+      setRequeue(wasRequeue);
     }
   }
 
@@ -399,13 +484,17 @@ export function AcpPromptBox({
           disabled ? "border-neutral-800 opacity-60" : "border-neutral-800 focus-within:border-neutral-700",
         )}
       >
-        {editing && (
+        {(editing || requeue) && (
           <div className="flex items-center gap-1.5 border-b border-neutral-800 px-3 py-1.5 text-[11px] text-neutral-400">
             <Pencil size={11} className="shrink-0 text-blue-400" />
             <span className="min-w-0 truncate">
-              {narrow
-                ? "Editing a sent message"
-                : `Editing a sent message — sends as a new message${running ? ", interrupting the current turn" : ""}`}
+              {requeue
+                ? narrow
+                  ? "Editing a queued prompt"
+                  : "Editing a queued prompt — goes back to its place in the queue"
+                : narrow
+                  ? "Editing a sent message"
+                  : `Editing a sent message — sends as a new message${running ? ", interrupting the current turn" : ""}`}
             </span>
             <button
               onClick={stopEditing}
@@ -466,7 +555,7 @@ export function AcpPromptBox({
             if (isInterruptKey(e) && !running) {
               // Running turns: the slot's pane-wide handler interrupts.
               e.preventDefault();
-              if (editing) stopEditing();
+              if (editing || requeue) stopEditing();
               else {
                 setHistoryIndex(null);
                 replaceDraft("");
@@ -515,7 +604,7 @@ export function AcpPromptBox({
             ) {
               e.preventDefault();
               walkHistory(1);
-            } else if (e.key === "Escape" && editing) {
+            } else if (e.key === "Escape" && (editing || requeue)) {
               e.preventDefault();
               stopEditing();
             } else if (e.key === "Escape" && running) {

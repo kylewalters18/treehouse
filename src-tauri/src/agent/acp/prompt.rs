@@ -4,7 +4,7 @@
 
 use std::path::Path;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use ts_rs::TS;
 
@@ -30,7 +30,7 @@ fn image_mime(path: &Path) -> Option<&'static str> {
 const EMBED_MAX_BYTES: u64 = 256 * 1024;
 
 /// Something attached to a prompt in the ACP pane.
-#[derive(Debug, Clone, Deserialize, TS, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 #[ts(export)]
 pub enum AcpAttachment {

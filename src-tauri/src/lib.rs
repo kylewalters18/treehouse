@@ -147,6 +147,7 @@ pub fn run() {
         ipc::commands::agent_respond_permission,
         ipc::commands::agent_submit_prompt,
         ipc::commands::acp_cancel,
+        ipc::commands::acp_remove_followup,
         ipc::commands::acp_send_prompt,
         ipc::commands::acp_set_mode,
         ipc::commands::acp_set_config,

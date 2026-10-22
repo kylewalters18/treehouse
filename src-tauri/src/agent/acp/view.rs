@@ -17,6 +17,7 @@ use ts_rs::TS;
 
 use super::super::hooks::{first_line, truncate, MESSAGE_MAX, TASK_MAX, TOOL_MAX};
 use super::super::{AgentActivity, PendingPrompt};
+use super::prompt::AcpAttachment;
 use super::question::AcpQuestion;
 
 /// Cap on text carried in one tool-call content block. Tool output (a long
@@ -130,9 +131,24 @@ pub enum AcpEvent {
     Config {
         options: Vec<AcpConfigOption>,
     },
+    /// Prompts sent mid-turn, held by treehouse until the turn ends, in
+    /// send order; the whole list whenever it changes. A held prompt
+    /// appears as `UserMessage` once it's sent.
+    Followups {
+        items: Vec<AcpFollowup>,
+    },
     Error {
         message: String,
     },
+}
+
+/// A prompt waiting for the running turn to end (see `Followups`).
+#[derive(Debug, Clone, Serialize, TS, PartialEq)]
+#[ts(export)]
+pub struct AcpFollowup {
+    pub id: String,
+    pub text: String,
+    pub attachments: Vec<AcpAttachment>,
 }
 
 #[derive(Debug, Clone, Serialize, TS, PartialEq)]

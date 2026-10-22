@@ -905,7 +905,7 @@ const PASTE_END: &[u8] = b"\x1b[201~";
 /// into a PTY agent's TUI, or `session/prompt` for an ACP agent.
 pub fn submit_prompt(registry: &AgentRegistry, id: AgentSessionId, text: &str) -> AppResult<()> {
     match registry.transport_of(id) {
-        Some(AgentTransport::Acp) => acp::send_prompt(registry, id, text, &[], false),
+        Some(AgentTransport::Acp) => acp::send_prompt(registry, id, text, &[], false, None),
         Some(AgentTransport::Pty) => {
             let mut bytes = PASTE_START.to_vec();
             bytes.extend_from_slice(text.as_bytes());

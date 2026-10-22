@@ -313,3 +313,13 @@ describe("activitySummary", () => {
     expect(activitySummary([edit, { ...edit, id: "2" }])).toBe("Edited 1 file");
   });
 });
+
+describe("followups", () => {
+  it("replaces the held list wholesale", () => {
+    const t = emptyTranscript();
+    applyAcpEvent(t, { kind: "followups", items: [{ id: "1", text: "a", attachments: [] }] });
+    expect(t.followups.map((f) => f.text)).toEqual(["a"]);
+    applyAcpEvent(t, { kind: "followups", items: [] });
+    expect(t.followups).toEqual([]);
+  });
+});

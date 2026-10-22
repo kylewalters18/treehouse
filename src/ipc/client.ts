@@ -10,6 +10,7 @@ import type {
   AgentTransport,
   AcpAdapterInfo,
   AcpAttachment,
+  AcpFollowup,
   AgentHistoryEntry,
   AgentSessionId,
   AppFileContent,
@@ -597,15 +598,28 @@ export function acpSendPrompt(
   text: string,
   attachments: AcpAttachment[],
   /// Cancel the running turn and send this once it stops, rather than
-  /// queueing it behind the turn.
+  /// holding it for after the turn (see `AcpFollowup`).
   interrupt = false,
+  /// Where it goes among the held follow-ups (an edited one returning to
+  /// its place); default last.
+  position?: number,
 ): Promise<void> {
-  return invoke<void>("acp_send_prompt", { agentId, text, attachments, interrupt });
+  return invoke<void>("acp_send_prompt", { agentId, text, attachments, interrupt, position });
 }
 
-/// Cancel an ACP agent's running turn.
-export function acpCancel(agentId: AgentSessionId): Promise<void> {
-  return invoke<void>("acp_cancel", { agentId });
+/// Cancel an ACP agent's running turn. Resolves to the held follow-ups
+/// the cancel dropped, for the composer to take back.
+export async function acpCancel(agentId: AgentSessionId): Promise<AcpFollowup[]> {
+  return (await invoke<AcpFollowup[] | null>("acp_cancel", { agentId })) ?? [];
+}
+
+/// Take back a prompt held for after the running turn; null if it was
+/// already sent.
+export function acpRemoveFollowup(
+  agentId: AgentSessionId,
+  followupId: string,
+): Promise<AcpFollowup | null> {
+  return invoke<AcpFollowup | null>("acp_remove_followup", { agentId, followupId });
 }
 
 /// Switch an ACP agent's permission mode; the change streams back as a

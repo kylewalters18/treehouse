@@ -1127,6 +1127,7 @@ pub async fn acp_send_prompt(
     text: String,
     attachments: Vec<agent::acp::AcpAttachment>,
     interrupt: Option<bool>,
+    position: Option<u32>,
     state: State<'_, AppState>,
 ) -> AppResult<()> {
     agent::acp::send_prompt(
@@ -1135,13 +1136,29 @@ pub async fn acp_send_prompt(
         &text,
         &attachments,
         interrupt.unwrap_or(false),
+        position.map(|p| p as usize),
     )
 }
 
-/// Cancel an ACP agent's running turn (`session/cancel`).
+/// Cancel an ACP agent's running turn (`session/cancel`); returns the
+/// held follow-ups it dropped.
 #[tauri::command]
-pub async fn acp_cancel(agent_id: AgentSessionId, state: State<'_, AppState>) -> AppResult<()> {
+pub async fn acp_cancel(
+    agent_id: AgentSessionId,
+    state: State<'_, AppState>,
+) -> AppResult<Vec<agent::acp::AcpFollowup>> {
     agent::acp::cancel(&state.agents, agent_id)
+}
+
+/// Take back a prompt held for after the running turn; `None` if it has
+/// already been sent.
+#[tauri::command]
+pub async fn acp_remove_followup(
+    agent_id: AgentSessionId,
+    followup_id: String,
+    state: State<'_, AppState>,
+) -> AppResult<Option<agent::acp::AcpFollowup>> {
+    agent::acp::remove_followup(&state.agents, agent_id, &followup_id)
 }
 
 /// Switch an ACP agent's permission mode (Manual, Accept edits, Plan, …).

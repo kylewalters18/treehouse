@@ -52,7 +52,7 @@ use super::{
 };
 pub use prompt::AcpAttachment;
 use rpc::{Incoming, RpcConn, AUTH_REQUIRED, INVALID_PARAMS, METHOD_NOT_FOUND};
-pub use view::{AcpEvent, AcpView};
+pub use view::{AcpEvent, AcpFollowup, AcpView};
 
 /// Events kept for replay. Text chunks and tool updates coalesce (see
 /// `push_log`), so this is turns' worth of transcript, not raw messages.
@@ -78,6 +78,10 @@ struct AcpShared {
     /// Prompts that interrupt the running turn: held until the cancelled
     /// turn settles (see `send_prompt`), so the cancel can't swallow them.
     redirects: Vec<Vec<Value>>,
+    /// Prompts sent mid-turn, held until the turn ends rather than queued
+    /// in the agent, so the pane can show, edit and drop them.
+    followups: VecDeque<AcpFollowup>,
+    next_followup: u64,
     /// Permission requests behind the one in `view.pending` (parallel
     /// subagents can ask at once); promoted in order.
     waiting: VecDeque<(Value, RequestPermissionRequest)>,
@@ -118,6 +122,11 @@ impl AcpShared {
                 self.channel = None;
             }
         }
+    }
+
+    fn emit_followups(&mut self) {
+        let items = self.followups.iter().cloned().collect();
+        self.emit_state(AcpEvent::Followups { items });
     }
 
     /// Route a view-produced event to the log or the state stream.
@@ -386,6 +395,8 @@ pub fn launch(
         in_flight: 0,
         baseline: None,
         redirects: Vec::new(),
+        followups: VecDeque::new(),
+        next_followup: 0,
         waiting: VecDeque::new(),
         stderr_tail: VecDeque::new(),
         killed: false,
@@ -796,6 +807,7 @@ fn spawn_prompt(ctx: Ctx, sid: String, blocks: Vec<Value>) {
         for blocks in redirects {
             spawn_prompt(ctx.clone(), sid.clone(), blocks);
         }
+        dispatch_followup(&ctx, &sid);
         // Every ACP conversation lands in history under the agent's own id,
         // which `session/load` reopens (Claude's CLI takes it too).
         ctx.history.observe_as(
@@ -831,6 +843,11 @@ pub fn attach(
     let mut sh = h.shared.lock();
     let mut events = sh.log.clone();
     events.extend(sh.view.state_events());
+    if !sh.followups.is_empty() {
+        events.push(AcpEvent::Followups {
+            items: sh.followups.iter().cloned().collect(),
+        });
+    }
     let _ = channel.send(AgentEvent::AcpBatch { events });
     let _ = channel.send(AgentEvent::Status {
         status: sh.status.clone(),
@@ -846,15 +863,18 @@ pub fn attach(
 const REDIRECT_TIMEOUT: Duration = Duration::from_secs(8);
 
 /// Send a user prompt (`session/prompt`) with any attachments; queued if
-/// the handshake is still running. Sent mid-turn it queues behind the
-/// running turn in the agent — unless `interrupt`, which cancels the turn
-/// and sends this once it has stopped.
+/// the handshake is still running. Sent mid-turn it's held as a follow-up
+/// until the turn ends (see `dispatch_followup`), at `position` in the
+/// held list when given (an edited follow-up going back to its place),
+/// else last — unless `interrupt`, which cancels the turn and sends this
+/// once it has stopped.
 pub fn send_prompt(
     registry: &AgentRegistry,
     id: AgentSessionId,
     text: &str,
     attachments: &[AcpAttachment],
     interrupt: bool,
+    position: Option<usize>,
 ) -> AppResult<()> {
     if text.trim().is_empty() && attachments.is_empty() {
         return Ok(());
@@ -866,6 +886,20 @@ pub fn send_prompt(
     }
     let (blocks, labels) =
         prompt::build_prompt(text, attachments, &h.cwd, sh.view.caps).map_err(AppError::Unknown)?;
+    if !interrupt && sh.in_flight > 0 && sh.view.session_id.is_some() {
+        // Built above only to refuse bad attachments now; it's rebuilt when
+        // sent, so an edit to an attached file in between rides along.
+        sh.next_followup += 1;
+        let followup = AcpFollowup {
+            id: sh.next_followup.to_string(),
+            text: text.to_string(),
+            attachments: attachments.to_vec(),
+        };
+        let at = position.unwrap_or(usize::MAX).min(sh.followups.len());
+        sh.followups.insert(at, followup);
+        sh.emit_followups();
+        return Ok(());
+    }
     let ev = sh.view.prompt_started(text.trim(), labels, now_millis());
     sh.emit(ev);
     match sh.view.session_id.clone() {
@@ -918,10 +952,65 @@ fn prompt_ctx(registry: &AgentRegistry, h: &AcpHandle, id: AgentSessionId) -> Ct
 }
 
 /// `session/cancel` the running turn. Any pending permission is answered
-/// `cancelled`, as the spec requires.
-pub fn cancel(registry: &AgentRegistry, id: AgentSessionId) -> AppResult<()> {
-    cancel_turn(handle(registry, id)?.value());
-    Ok(())
+/// `cancelled`, as the spec requires. Held follow-ups are dropped and
+/// returned, for the pane to put back in the composer.
+pub fn cancel(registry: &AgentRegistry, id: AgentSessionId) -> AppResult<Vec<AcpFollowup>> {
+    let h = handle(registry, id)?;
+    let dropped: Vec<AcpFollowup> = {
+        let mut sh = h.shared.lock();
+        let dropped = sh.followups.drain(..).collect::<Vec<_>>();
+        if !dropped.is_empty() {
+            sh.emit_followups();
+        }
+        dropped
+    };
+    cancel_turn(h.value());
+    Ok(dropped)
+}
+
+/// Take back a held follow-up before it's sent. `None` = already sent (or
+/// never held).
+pub fn remove_followup(
+    registry: &AgentRegistry,
+    id: AgentSessionId,
+    followup_id: &str,
+) -> AppResult<Option<AcpFollowup>> {
+    let h = handle(registry, id)?;
+    let mut sh = h.shared.lock();
+    let Some(i) = sh.followups.iter().position(|f| f.id == followup_id) else {
+        return Ok(None);
+    };
+    let removed = sh.followups.remove(i);
+    sh.emit_followups();
+    Ok(removed)
+}
+
+/// No prompt in flight: send the oldest held follow-up, if any. One that
+/// no longer builds (an attached file gone) is reported and skipped.
+fn dispatch_followup(ctx: &Ctx, sid: &str) {
+    let blocks = {
+        let mut sh = ctx.shared.lock();
+        if sh.in_flight > 0 || sh.killed || !sh.live() {
+            return;
+        }
+        loop {
+            let Some(f) = sh.followups.pop_front() else {
+                return;
+            };
+            sh.emit_followups();
+            match prompt::build_prompt(&f.text, &f.attachments, &ctx.cwd, sh.view.caps) {
+                Ok((blocks, labels)) => {
+                    let ev = sh.view.prompt_started(f.text.trim(), labels, now_millis());
+                    sh.emit(ev);
+                    break blocks;
+                }
+                Err(e) => sh.emit(AcpEvent::Error {
+                    message: format!("Couldn't send a queued prompt: {e}"),
+                }),
+            }
+        }
+    };
+    spawn_prompt(ctx.clone(), sid.to_string(), blocks);
 }
 
 fn cancel_turn(h: &AcpHandle) {
@@ -1381,6 +1470,106 @@ mod tests {
         assert_eq!(answer_summary(&json!({})), None);
     }
 
+    /// A registry holding one live ACP session (session id `s`) on `conn`.
+    fn live_session(conn: Arc<rpc::RpcConn>) -> (AgentRegistry, AgentSessionId) {
+    let registry = AgentRegistry::new();
+    let id = AgentSessionId::new();
+    let mut view = AcpView::new(0);
+    view.session_id = Some("s".into());
+    let shared = AcpShared {
+        view,
+        log: Vec::new(),
+        channel: None,
+        status: AgentStatus::Running,
+        queued: Vec::new(),
+        in_flight: 0,
+        baseline: None,
+        redirects: Vec::new(),
+        followups: VecDeque::new(),
+        next_followup: 0,
+        waiting: VecDeque::new(),
+        stderr_tail: VecDeque::new(),
+        killed: false,
+        reported: None,
+        exited_at: None,
+    };
+    registry.acp.insert(
+        id,
+        AcpHandle {
+            session: AgentSession {
+                id,
+                worktree_id: WorktreeId::new(),
+                backend: AgentBackendKind::Codex,
+                argv: vec![],
+                started_at: 0,
+                cols: 0,
+                rows: 0,
+                status: AgentStatus::Running,
+                resumed: false,
+                transport: AgentTransport::Acp,
+            },
+            shared: Arc::new(Mutex::new(shared)),
+            conn,
+            pid: None,
+            cwd: std::env::temp_dir(),
+        },
+    );
+        (registry, id)
+    }
+
+    type AgentLines = tokio::io::Lines<tokio::io::BufReader<tokio::io::DuplexStream>>;
+
+    async fn read_line(lines: &mut AgentLines) -> Value {
+        serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap()
+    }
+
+    /// A prompt sent mid-turn is held, not sent, until the turn answers;
+    /// cancel hands back what's still held.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn followups_wait_for_the_turn_and_cancel_returns_them() {
+        use tokio::io::{duplex, AsyncWriteExt, BufReader};
+
+        let (client_out, agent_in) = duplex(1 << 16);
+        let (mut agent_out, client_in) = duplex(1 << 16);
+        let (conn, _incoming) = rpc::RpcConn::start(client_in, client_out);
+        let mut lines = BufReader::new(agent_in).lines();
+        let (registry, id) = live_session(conn);
+        let held = |registry: &AgentRegistry| {
+            let h = handle(registry, id).unwrap();
+            let sh = h.shared.lock();
+            sh.followups.iter().map(|f| f.text.clone()).collect::<Vec<_>>()
+        };
+
+        send_prompt(&registry, id, "first", &[], false, None).unwrap();
+        let first = read_line(&mut lines).await;
+        assert_eq!(first["method"], "session/prompt");
+        send_prompt(&registry, id, "second", &[], false, None).unwrap();
+        send_prompt(&registry, id, "third", &[], false, None).unwrap();
+        assert_eq!(held(&registry), ["second", "third"]);
+        let early = tokio::time::timeout(Duration::from_millis(150), read_line(&mut lines)).await;
+        assert!(early.is_err(), "follow-up sent before the turn ended");
+
+        let reply =
+            json!({ "jsonrpc": "2.0", "id": first["id"], "result": { "stopReason": "end_turn" } });
+        agent_out.write_all(format!("{reply}\n").as_bytes()).await.unwrap();
+        let second = read_line(&mut lines).await;
+        assert_eq!(second["method"], "session/prompt");
+        assert_eq!(second["params"]["prompt"][0]["text"], "second");
+        assert_eq!(held(&registry), ["third"]);
+
+        let removed = remove_followup(&registry, id, "2").unwrap().unwrap();
+        assert_eq!(removed.text, "third");
+        assert!(remove_followup(&registry, id, "2").unwrap().is_none());
+
+        send_prompt(&registry, id, "fourth", &[], false, None).unwrap();
+        send_prompt(&registry, id, "third, edited", &[], false, Some(0)).unwrap();
+        send_prompt(&registry, id, "fifth", &[], false, Some(9)).unwrap();
+        assert_eq!(held(&registry), ["third, edited", "fourth", "fifth"]);
+        let dropped = cancel(&registry, id).unwrap();
+        assert_eq!(dropped.len(), 3);
+        assert!(held(&registry).is_empty());
+    }
+
     /// An interrupting prompt cancels the running turn and goes out only
     /// after that turn has answered, so the cancel can't swallow it.
     #[tokio::test(flavor = "multi_thread")]
@@ -1395,52 +1584,13 @@ mod tests {
             serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap()
         }
 
-        let registry = AgentRegistry::new();
-        let id = AgentSessionId::new();
-        let mut view = AcpView::new(0);
-        view.session_id = Some("s".into());
-        let shared = AcpShared {
-            view,
-            log: Vec::new(),
-            channel: None,
-            status: AgentStatus::Running,
-            queued: Vec::new(),
-            in_flight: 0,
-            baseline: None,
-            redirects: Vec::new(),
-            waiting: VecDeque::new(),
-            stderr_tail: VecDeque::new(),
-            killed: false,
-            reported: None,
-            exited_at: None,
-        };
-        registry.acp.insert(
-            id,
-            AcpHandle {
-                session: AgentSession {
-                    id,
-                    worktree_id: WorktreeId::new(),
-                    backend: AgentBackendKind::Codex,
-                    argv: vec![],
-                    started_at: 0,
-                    cols: 0,
-                    rows: 0,
-                    status: AgentStatus::Running,
-                    resumed: false,
-                    transport: AgentTransport::Acp,
-                },
-                shared: Arc::new(Mutex::new(shared)),
-                conn,
-                pid: None,
-                cwd: std::env::temp_dir(),
-            },
-        );
+        let (registry, id) = live_session(conn);
 
-        send_prompt(&registry, id, "first", &[], false).unwrap();
+        send_prompt(&registry, id, "first", &[], false, None).unwrap();
         let first = read(&mut lines).await;
         assert_eq!(first["method"], "session/prompt");
 
-        send_prompt(&registry, id, "second", &[], true).unwrap();
+        send_prompt(&registry, id, "second", &[], true, None).unwrap();
         let cancel = read(&mut lines).await;
         assert_eq!(cancel["method"], "session/cancel");
 
