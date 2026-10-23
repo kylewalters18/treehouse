@@ -1,5 +1,6 @@
 pub mod compute;
 pub mod history;
+mod lfs;
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;

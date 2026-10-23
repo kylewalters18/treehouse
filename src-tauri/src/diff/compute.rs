@@ -1,4 +1,5 @@
 use std::collections::hash_map::DefaultHasher;
+use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -8,6 +9,7 @@ use git2::{Delta, DiffFindOptions, DiffFormat, DiffOptions, Repository};
 use crate::util::errors::AppResult;
 use crate::util::ids::WorktreeId;
 
+use super::lfs;
 use super::{DiffLine, DiffSet, DiffStats, FileDiff, FileStatus, Hunk, MAX_FILES, MAX_LINES};
 
 /// Compute a fresh DiffSet for the given worktree against `base_ref`.
@@ -36,7 +38,7 @@ pub fn compute(
     // view — agents generally don't `git add`, so "workdir vs base_ref" is
     // the right semantic.
     let diff = repo.diff_tree_to_workdir(Some(&base_tree), Some(&mut opts))?;
-    build_set(worktree_id, base_ref, diff)
+    build_set(worktree_id, base_ref, diff, Some(&repo))
 }
 
 /// Compute the DiffSet a single commit introduced: its first parent's tree
@@ -61,25 +63,37 @@ pub fn compute_commit(
     let mut opts = DiffOptions::new();
     opts.context_lines(3).interhunk_lines(1).id_abbrev(8);
     let diff = repo.diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), Some(&mut opts))?;
-    build_set(worktree_id, &base_ref, diff)
+    build_set(worktree_id, &base_ref, diff, None)
 }
 
 /// git's well-known empty tree object id.
 const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
 /// Rename detection + patch walk shared by the workdir and commit views.
+/// `workdir_repo` is set for workdir diffs, where smudged LFS files that
+/// match their base pointer are dropped (see `lfs`).
 fn build_set(
     worktree_id: WorktreeId,
     base_ref: &str,
     mut diff: git2::Diff<'_>,
+    workdir_repo: Option<&Repository>,
 ) -> AppResult<DiffSet> {
     // Detect renames / copies.
     let mut find = DiffFindOptions::new();
     find.renames(true).copies(true).rewrites(true);
     diff.find_similar(Some(&mut find))?;
 
+    let skip: HashSet<PathBuf> = match workdir_repo {
+        Some(repo) => diff
+            .deltas()
+            .filter(|d| lfs::is_unchanged_lfs(repo, d))
+            .filter_map(|d| d.new_file().path().map(Path::to_path_buf))
+            .collect(),
+        None => HashSet::new(),
+    };
+
     let stats = diff.stats()?;
-    let files_changed = stats.files_changed();
+    let files_changed = stats.files_changed().saturating_sub(skip.len());
 
     let computed_at = now_millis();
 
@@ -109,6 +123,9 @@ fn build_set(
             .path()
             .map(|p| p.to_path_buf())
             .unwrap_or_default();
+        if skip.contains(&new_path) {
+            return true;
+        }
 
         // Ensure a FileDiff exists for this delta.
         let file_idx = match files.iter().position(|f| f.path == new_path) {
@@ -284,6 +301,42 @@ mod tests {
             .find(|f| f.path.to_string_lossy() == "README.md")
             .expect("README.md marked deleted");
         assert!(matches!(f.status, FileStatus::Deleted));
+    }
+
+    fn lfs_pointer(content: &[u8]) -> String {
+        use sha2::{Digest, Sha256};
+        let oid: String = Sha256::digest(content)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        format!(
+            "version https://git-lfs.github.com/spec/v1\noid sha256:{oid}\nsize {}\n",
+            content.len()
+        )
+    }
+
+    #[test]
+    fn smudged_lfs_file_matching_pointer_is_hidden() {
+        let r = TempRepo::new();
+        let real: Vec<u8> = (0..4096).map(|i| (i % 251) as u8).collect();
+        let base = r.commit_file("big.bin", &lfs_pointer(&real), "add lfs pointer");
+        std::fs::write(r.root.join("big.bin"), &real).unwrap();
+        let d = compute(WorktreeId::new(), &r.root, &base).unwrap();
+        assert!(d.files.is_empty(), "phantom LFS change: {:?}", d.files);
+        assert_eq!(d.stats.files_changed, 0);
+    }
+
+    #[test]
+    fn changed_lfs_file_still_shows() {
+        let r = TempRepo::new();
+        let real: Vec<u8> = (0..4096).map(|i| (i % 251) as u8).collect();
+        let base = r.commit_file("big.bin", &lfs_pointer(&real), "add lfs pointer");
+        let mut edited = real.clone();
+        edited[0] ^= 0xff;
+        std::fs::write(r.root.join("big.bin"), &edited).unwrap();
+        let d = compute(WorktreeId::new(), &r.root, &base).unwrap();
+        assert_eq!(d.files.len(), 1);
+        assert!(matches!(d.files[0].status, FileStatus::Modified));
     }
 
     #[test]

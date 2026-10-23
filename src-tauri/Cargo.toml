@@ -25,6 +25,7 @@ thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "sync", "io-util", "time", "fs"] }
 parking_lot = "0.12"
 git2 = { version = "0.19", default-features = false }
+sha2 = "0.10"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-appender = "0.2"
