@@ -136,6 +136,11 @@ export function imageMime(path: string): string {
 /// True for raster image formats the File view renders as a picture
 /// instead of a "binary file" placeholder. SVG is excluded: it's text,
 /// so it stays editable in Monaco.
+/// Opened in the File view by PdfView rather than Monaco.
+export function isPdfPath(path: string): boolean {
+  return path.toLowerCase().endsWith(".pdf");
+}
+
 export function isRasterImagePath(path: string): boolean {
   const ext = path.slice(path.lastIndexOf(".") + 1).toLowerCase();
   return ext !== "svg" && ext in IMAGE_MIME;

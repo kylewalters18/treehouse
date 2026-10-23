@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   AlertTriangle,
@@ -61,7 +61,10 @@ import { useDiffsStore } from "@/stores/diffs";
 import { useEditorViewStateStore } from "@/stores/editor-view-state";
 import { inferLanguage } from "./editor-language";
 import { ImageView } from "./ImageView";
-import { isRasterImagePath } from "./markdown-plugins";
+import { isPdfPath, isRasterImagePath } from "./markdown-plugins";
+
+// pdf.js is ~1 MB with its worker; only load it when a PDF is opened.
+const PdfView = lazy(() => import("./PdfView").then((m) => ({ default: m.PdfView })));
 import {
   baseLineMapper,
   rangeFromSelection,
@@ -86,6 +89,13 @@ type Props = {
 export function EditorPane({ worktreeId, path }: Props) {
   if (path && isRasterImagePath(path)) {
     return <ImageView key={path} worktreeId={worktreeId} path={path} />;
+  }
+  if (path && isPdfPath(path)) {
+    return (
+      <Suspense fallback={null}>
+        <PdfView key={path} worktreeId={worktreeId} path={path} />
+      </Suspense>
+    );
   }
   return <TextEditorPane worktreeId={worktreeId} path={path} />;
 }

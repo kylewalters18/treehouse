@@ -43,7 +43,7 @@ import { HistoryPanel } from "./HistoryPanel";
 import { ChangedFileTree } from "./ChangedFileTree";
 import { useIsEditorDirty } from "@/stores/editor-dirty";
 import { MarkdownPreview, isPreviewablePath } from "./MarkdownPreview";
-import { isRasterImagePath } from "./markdown-plugins";
+import { isPdfPath, isRasterImagePath } from "./markdown-plugins";
 import { inferLanguage } from "./editor-language";
 import { THEME_NAME } from "./monaco-theme";
 
@@ -179,10 +179,11 @@ function DiffView({ worktreeId }: { worktreeId: WorktreeId }) {
   // unmounts the editor and silently drops the user's unsaved edits.
   // The editor's own "deleted on disk" banner owns that case.
   const selectedDirty = useIsEditorDirty(worktreeId, selectedFile);
-  // Binary files have no File view, except raster images (ImageView).
+  // Binary files have no File view, except raster images (ImageView) and
+  // PDFs (PdfView).
   const fileTabUnusable =
     ((selected?.binary ?? false) &&
-      !(selectedFile && isRasterImagePath(selectedFile))) ||
+      !(selectedFile && (isRasterImagePath(selectedFile) || isPdfPath(selectedFile)))) ||
     selected?.status.kind === "deleted";
   useEffect(() => {
     if (!selectedFile) return;
